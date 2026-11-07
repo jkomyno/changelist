@@ -22,7 +22,7 @@ so this needs `codemode bridge` plus a host-specific adapter.
 | Pi 1.4.0 | Native callbacks through [`integrations/pi`](../integrations/pi/README.md): nested calls, Pi permission gates, Rust-side authorization, cancellation, and environment containment. Checked offline with a scripted model. | A live model session; interactive approval prompts (`ctx.ui.confirm`) were not exercised; other Pi versions. |
 | OpenCode 1.19.5 | Plugin tool through [`integrations/opencode`](../integrations/opencode/README.md): each guest call passes OpenCode's permission service (`allow`, `deny`, `ask`; approvals granted over OpenCode's HTTP API and refused by `opencode run`, handled as a native rejection), Rust-side authorization, session abort (including during an approval wait), and environment containment. Checked offline with a scripted model. | **Blocker:** plugins cannot call OpenCode's registered tools (built-in, plugin, or MCP), and nested calls do not reach other plugins' `tool.execute` hooks; guest calls reach only host tools passed to the adapter. A live model session; the TUI approval dialog; other OpenCode versions. |
 | Codex | Not checked. | CLI invocation with an explicitly configured provider. Native callbacks need a demonstrated interface for calling Codex tools back; MCP exposes our tool to Codex, not Codex's tools to us. |
-| Composio CLI 0.6.0 | `composio run --file` can launch `codemode run` and read its JSON result (offline mock tools only). | An optional provider bridge using the SDK, with authentication outside the guest. A live provider is untested. |
+| Composio CLI 0.6.0 | Provider through [`integrations/composio`](../integrations/composio/README.md): `composio run` hosts the bridge, and guest calls execute as Composio tools through the CLI's authenticated `execute` helper. **Live, read-only:** two identity reads in parallel, a CLI-rejected invalid input, a Rust-side denial, and the CLI credential absent from the trace. **Offline:** result mapping, cancellation and unobserved executions (`unknown`), and environment containment with a fake helper; the `@composio/core` executor against a stand-in client. | **Blocker:** a live SDK run needs a project API key; the checked machine has only a CLI user key, which `@composio/core` 0.28.0 rejects. The CLI's approval flow (off for the checked account); write tools; other CLI versions. |
 
 Validate launch, framing, tool scope, failure states, approval behavior, and
 cancellation for each host/version before marking it compatible. Do not install
@@ -60,7 +60,7 @@ credentials stay in the host process.
 
 ## Host adapters
 
-Both adapters use [`integrations/shared/bridge-client.ts`](../integrations/shared/bridge-client.ts),
+The adapters use [`integrations/shared/bridge-client.ts`](../integrations/shared/bridge-client.ts),
 a host-neutral client built on Node built-ins. It spawns the bridge with an empty
 environment, frames calls and results, refuses calls that arrive after an abort,
 replaces oversized replies with `too_large`, sends `cancel` on abort, and kills the
@@ -130,6 +130,30 @@ tools from guest code is therefore unsupported, and nested calls do not trigger
 other plugins' `tool.execute.before` or `after` hooks. The deadline includes time
 spent waiting for approvals.
 
+## Composio adapter
+
+The [Composio provider](../integrations/composio/composio-provider.ts) maps one
+bridge call to one Composio tool execution by slug. Its [host script](../integrations/composio/host.ts)
+runs under `composio run`, which injects an authenticated `execute(slug, data)`
+helper and keeps the CLI credential in that process. For each run it:
+
+1. authorizes exactly the slugs passed in `--tools`;
+2. starts `codemode bridge` with an empty environment and explicit executable paths;
+3. refuses non-object arguments, then runs the call with the CLI helper, which
+   starts one `composio execute` process per call;
+4. maps `successful: true` to the tool's `data` and `successful: false` to
+   `composio_tool_failed`. An execution that ends without a result is left
+   unanswered and the run cancelled, so Rust records it as `unknown`;
+5. on SIGINT, SIGTERM, or the deadline, prints the summary and exits; running calls
+   are `unknown`, because the helper cannot abort an execution.
+
+`codemode run` and `codemode bridge` treat SIGTERM like Ctrl-C on Unix: they cancel
+the run and still emit its record. `composio run` forwards signals to its process
+group, which includes the bridge.
+
+An `@composio/core` executor (`sdkExecutor`) forwards each call's abort signal to
+the SDK request. The Rust core contains nothing Composio-specific.
+
 ## Guest protocol
 
 The Deno launcher is an implementation detail, not a host API. It receives one
@@ -155,4 +179,6 @@ not required inside the scheduler.
   at [OpenCode tools](https://opencode.ai/docs/tools/) and [server plugins](https://opencode.ai/docs/build/plugins/server).
   The v2 plugin API (`@opencode-ai/plugin/v2`) registers no tools.
 - [Codex MCP](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
-- [Composio CLI](https://docs.composio.dev/docs/cli).
+- [Composio CLI](https://docs.composio.dev/docs/cli) 0.6.0 (release tag `@composio/cli@0.6.0`):
+  `composio run --help` and `composio execute --help`; the `run` helper contract was
+  checked by probing it. `@composio/core` 0.28.0 `tools.execute`.

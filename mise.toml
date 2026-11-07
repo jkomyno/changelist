@@ -31,3 +31,11 @@ run = "integrations/opencode/run-demo.sh"
 [tasks.opencode-check]
 description = "Run native OpenCode 1.19.5 integration checks"
 run = "mise exec aqua:anomalyco/opencode@1.19.5 -- cargo test --locked --test opencode -- --ignored"
+
+[tasks.composio-demo]
+description = "Run the offline Composio provider example"
+run = "integrations/composio/run-demo.sh"
+
+[tasks.composio-live-check]
+description = "Run read-only Composio tools through the logged-in Composio CLI"
+run = "integrations/composio/run-live-check.sh"

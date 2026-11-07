@@ -49,6 +49,10 @@ mise run pi-check
 mise run opencode-check
 ```
 
+The offline Composio adapter tests run in `mise run check`. With `composio login`
+and GitHub and Slack connected, `mise run composio-live-check` executes read-only
+tools; report its result separately from offline checks.
+
 For compatibility changes, also test the declared MSRV:
 
 ```sh

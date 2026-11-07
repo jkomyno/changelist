@@ -14,8 +14,11 @@ A native [Pi 1.4.0 integration](integrations/pi/README.md) uses the bridge to ru
 Pi's own tools with Pi's permission gates. An [OpenCode 1.19.5 plugin](integrations/opencode/README.md)
 gates every call through OpenCode's permission service and abort, but runs only
 host tools passed to it: OpenCode exposes no plugin API for calling its own tools.
-Codex and a real Composio provider remain targets. See [host integration](docs/integrations.md) for what
-each host has and has not been verified to do.
+An optional [Composio provider](integrations/composio/README.md) runs guest calls
+as Composio tools from `composio run`, which keeps the credential in the host;
+it has passed a live, read-only check. Codex remains a target. See
+[host integration](docs/integrations.md) for what each host has and has not been
+verified to do.
 
 ## Run it
 
@@ -87,9 +90,16 @@ mise run pi-demo
 mise run opencode-demo
 ```
 
-Composio is one intended adapter. Its backend ToolRouter informs experiments
-around scheduling, result movement, and outcome preservation. Authentication,
-catalogs, billing, and persistent workbenches do not define this runtime's core.
+Composio is the worked example of adding a provider: [`composio-provider.ts`](integrations/composio/composio-provider.ts)
+supplies one executor function to the shared bridge client and maps Composio's
+`successful`/`data`/`error` result to a bridge reply. Nothing in the Rust core
+changed for it. Authentication, catalogs, billing, and persistent workbenches stay
+outside this runtime.
+
+```sh
+mise run composio-demo        # offline
+mise run composio-live-check  # read-only, needs `composio login`
+```
 
 ## Development
 
