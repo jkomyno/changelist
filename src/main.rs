@@ -170,12 +170,27 @@ fn read_source(path: &PathBuf) -> Result<String, Box<dyn Error>> {
     Ok(source)
 }
 
+/// Cancel on Ctrl-C and, on Unix, on SIGTERM, so a host that signals its whole
+/// process group still receives a report.
 fn cancel_on_interrupt(cancellation: &RunCancellation) -> tokio::task::JoinHandle<()> {
     let signal = cancellation.clone();
     tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            signal.cancel();
+        #[cfg(unix)]
+        let terminate = async {
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut stream) => {
+                    stream.recv().await;
+                }
+                Err(_) => std::future::pending().await,
+            }
+        };
+        #[cfg(not(unix))]
+        let terminate = std::future::pending::<()>();
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => if result.is_err() { return; },
+            () = terminate => {}
         }
+        signal.cancel();
     })
 }
 

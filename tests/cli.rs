@@ -146,3 +146,33 @@ fn bridge_subcommand_speaks_the_host_protocol_over_process_stdio() {
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("not accepted by bridge"));
 }
+
+/// SIGTERM, like Ctrl-C, cancels the run and still prints its record.
+#[cfg(unix)]
+#[test]
+fn sigterm_cancels_the_run_and_still_reports() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_codemode"))
+        .args(["run", "--code", "-", "--timeout-ms", "20000"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("CLI starts");
+    child
+        .stdin
+        .take()
+        .expect("stdin is piped")
+        .write_all(b"return await tools.call('mock.wait', {ms: 15000});")
+        .expect("source is writable");
+    // The signal handler is installed before the guest starts.
+    std::thread::sleep(std::time::Duration::from_millis(1_000));
+    let status = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("kill runs");
+    assert!(status.success());
+    let output = child.wait_with_output().expect("CLI finishes");
+    assert_eq!(output.status.code(), Some(130), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("stdout is one JSON object");
+    assert_eq!(report["status"], "cancelled");
+}
