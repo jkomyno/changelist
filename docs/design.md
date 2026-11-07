@@ -45,7 +45,7 @@ Compare the same workload and concurrency cap under batch and rolling policies
 before claiming an improvement. Mixed-latency calls can expose idle slots at a
 batch barrier. Equal-duration calls, provider rate limits, startup cost, or very
 small workflows can remove the advantage. That is an algorithmic hypothesis,
-not an inherent Rust speed claim.
+not an inherent Rust speed claim; [the evaluation](evaluation.md) measures it.
 
 ## Execution evidence
 

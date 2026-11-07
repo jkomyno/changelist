@@ -115,6 +115,16 @@ the ignored Pi 1.4.0 integration tests and `mise run opencode-check` the OpenCod
 build profiles are retained. `target/` belongs to Mr Boxington; use
 `mise exec -- mbx clean` for project cleanup.
 
+## Evaluation
+
+`mise run eval` compares sequential, fixed-batch (`--dispatch batch`), and rolling
+dispatch on identical offline fixtures with the same budget, and checks every
+run's outputs, outcomes, and policy behavior from its trace. On the measured
+machine, rolling finished mixed-latency tool work in 230 ms against 404 ms for
+batch, matched batch on equal latencies, and started more work before a failure.
+See [the evaluation](docs/evaluation.md) for method, distributions, limits, and
+which claims are offline or live.
+
 See [GOAL.md](GOAL.md), [STRATEGY.md](STRATEGY.md), the [design](docs/design.md),
 and [CONTRIBUTING.md](CONTRIBUTING.md). Performance and stronger isolation claims
 need representative measurements and explicit evidence.

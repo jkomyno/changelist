@@ -1,0 +1,6575 @@
+{
+  "environment": {
+    "os": "macos",
+    "arch": "aarch64",
+    "cpu_model": "Apple M1 Pro",
+    "logical_cpus": 10,
+    "codemode_version": "0.1.0",
+    "build_profile": "release",
+    "git_commit": "d16dbc7dbc8a097e0a3d41e1cdb5d83c1999717b",
+    "git_dirty": false,
+    "deno_version": "deno 2.9.8 (long term support, release, aarch64-apple-darwin)"
+  },
+  "config": {
+    "reps": 21,
+    "warmup": 2,
+    "manifest": "eval/fixtures.json",
+    "default_timeout_ms": 5000,
+    "max_calls": 32,
+    "max_output_bytes": 262144,
+    "percentiles": "nearest-rank",
+    "ordering": "round-robin policies per repetition; starting policy rotates each repetition"
+  },
+  "fixtures": [
+    {
+      "name": "mixed-latency",
+      "file": "fixtures/mixed-latency.ts",
+      "description": "8 independent calls; a slow call heads each 4-call chunk",
+      "latencies_ms": [
+        200,
+        25,
+        25,
+        25,
+        200,
+        25,
+        25,
+        25
+      ],
+      "ideal_model": true,
+      "expect": {
+        "status": "success",
+        "output": {
+          "equals": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
+        },
+        "outcomes": {
+          "succeeded": 8
+        }
+      }
+    },
+    {
+      "name": "equal-latency",
+      "file": "fixtures/equal-latency.ts",
+      "description": "8 independent 50 ms calls; batch and rolling should match",
+      "latencies_ms": [
+        50,
+        50,
+        50,
+        50,
+        50,
+        50,
+        50,
+        50
+      ],
+      "ideal_model": true,
+      "expect": {
+        "status": "success",
+        "output": {
+          "equals": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
+        },
+        "outcomes": {
+          "succeeded": 8
+        }
+      }
+    },
+    {
+      "name": "partial-failure",
+      "file": "fixtures/partial-failure.ts",
+      "description": "6 mixed calls with one immediate failure, collected with Promise.allSettled",
+      "latencies_ms": [
+        120,
+        30,
+        0,
+        30,
+        120,
+        30
+      ],
+      "ideal_model": true,
+      "expect": {
+        "status": "success",
+        "output": {
+          "equals": [
+            {
+              "status": "fulfilled",
+              "value": "a"
+            },
+            {
+              "status": "fulfilled",
+              "value": "b"
+            },
+            {
+              "code": "mock_failure",
+              "status": "rejected"
+            },
+            {
+              "status": "fulfilled",
+              "value": "d"
+            },
+            {
+              "status": "fulfilled",
+              "value": "e"
+            },
+            {
+              "status": "fulfilled",
+              "value": "f"
+            }
+          ]
+        },
+        "outcomes": {
+          "provider_failed": 1,
+          "succeeded": 5
+        }
+      }
+    },
+    {
+      "name": "fail-fast",
+      "file": "fixtures/fail-fast.ts",
+      "description": "Promise.all over 8 calls; the second fails immediately",
+      "note": "per-policy counts follow from call order: the failure frees a slot that rolling refills at once, while batch waits for its whole batch; they assume the guest reports its error within the 120 ms that the other dispatched calls take.",
+      "latencies_ms": [
+        120,
+        0,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120
+      ],
+      "ideal_model": false,
+      "expect": {
+        "status": "guest_error",
+        "output": "absent",
+        "outcomes": {
+          "provider_failed": 1
+        },
+        "outcomes_by_policy": {
+          "sequential": {
+            "cancelled_before_dispatch": 5,
+            "succeeded": 2
+          },
+          "batch": {
+            "cancelled_before_dispatch": 4,
+            "succeeded": 3
+          },
+          "rolling": {
+            "cancelled_before_dispatch": 3,
+            "succeeded": 4
+          }
+        }
+      }
+    },
+    {
+      "name": "deadline",
+      "file": "fixtures/deadline.ts",
+      "description": "12 calls (one 700 ms, eleven 200 ms) against a 540 ms run deadline",
+      "note": "reported, not asserted, because the split depends on startup. With 0 to about 130 ms from run start to first dispatch, expect sequential unknown=1, cancelled_before_dispatch=11; batch succeeded=3, unknown=1, cancelled_before_dispatch=8; rolling succeeded=6, unknown=4, cancelled_before_dispatch=2. All calls are admitted within startup, far ahead of the deadline.",
+      "timeout_ms": 540,
+      "latencies_ms": [
+        700,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200
+      ],
+      "ideal_model": false,
+      "expect": {
+        "status": "deadline",
+        "output": "absent"
+      }
+    }
+  ],
+  "runs": [
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 0,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 281,
+      "startup_ms": 39,
+      "tool_span_ms": 230,
+      "queue_wait_sum_ms": 135,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 0,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 643,
+      "startup_ms": 58,
+      "tool_span_ms": 572,
+      "queue_wait_sum_ms": 2550,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 0,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 463,
+      "startup_ms": 45,
+      "tool_span_ms": 404,
+      "queue_wait_sum_ms": 808,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 0,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 158,
+      "startup_ms": 50,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 0,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 469,
+      "startup_ms": 42,
+      "tool_span_ms": 423,
+      "queue_wait_sum_ms": 1483,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 0,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 149,
+      "startup_ms": 43,
+      "tool_span_ms": 103,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 0,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 177,
+      "startup_ms": 42,
+      "tool_span_ms": 123,
+      "queue_wait_sum_ms": 32,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 0,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 392,
+      "startup_ms": 46,
+      "tool_span_ms": 342,
+      "queue_wait_sum_ms": 928,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 0,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 287,
+      "startup_ms": 39,
+      "tool_span_ms": 243,
+      "queue_wait_sum_ms": 250,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 0,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 152,
+      "startup_ms": 31,
+      "tool_span_ms": 121,
+      "queue_wait_sum_ms": 3,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 0,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 283,
+      "startup_ms": 39,
+      "tool_span_ms": 244,
+      "queue_wait_sum_ms": 907,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 0,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 182,
+      "startup_ms": 60,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 8,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 0,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 550,
+      "startup_ms": 58,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2799,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 0,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 552,
+      "startup_ms": 56,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5368,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 0,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 552,
+      "startup_ms": 84,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 3728,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 1,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 659,
+      "startup_ms": 66,
+      "tool_span_ms": 581,
+      "queue_wait_sum_ms": 2570,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 1,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 479,
+      "startup_ms": 57,
+      "tool_span_ms": 408,
+      "queue_wait_sum_ms": 820,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 1,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 294,
+      "startup_ms": 57,
+      "tool_span_ms": 228,
+      "queue_wait_sum_ms": 131,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 1,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 463,
+      "startup_ms": 44,
+      "tool_span_ms": 415,
+      "queue_wait_sum_ms": 1448,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 1,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 138,
+      "startup_ms": 31,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 204,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 1,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 151,
+      "startup_ms": 39,
+      "tool_span_ms": 106,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 1,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 394,
+      "startup_ms": 39,
+      "tool_span_ms": 342,
+      "queue_wait_sum_ms": 928,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 1,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 296,
+      "startup_ms": 50,
+      "tool_span_ms": 243,
+      "queue_wait_sum_ms": 242,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 1,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 164,
+      "startup_ms": 32,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 32,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 1,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 287,
+      "startup_ms": 42,
+      "tool_span_ms": 245,
+      "queue_wait_sum_ms": 899,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 1,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 187,
+      "startup_ms": 65,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 8,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 1,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 166,
+      "startup_ms": 43,
+      "tool_span_ms": 123,
+      "queue_wait_sum_ms": 3,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 1,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 550,
+      "startup_ms": 38,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5544,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 1,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 546,
+      "startup_ms": 51,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 3920,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 1,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 544,
+      "startup_ms": 42,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2812,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 2,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 442,
+      "startup_ms": 36,
+      "tool_span_ms": 404,
+      "queue_wait_sum_ms": 804,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 2,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 267,
+      "startup_ms": 33,
+      "tool_span_ms": 228,
+      "queue_wait_sum_ms": 131,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 2,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 613,
+      "startup_ms": 42,
+      "tool_span_ms": 565,
+      "queue_wait_sum_ms": 2497,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 2,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 147,
+      "startup_ms": 35,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 2,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 144,
+      "startup_ms": 32,
+      "tool_span_ms": 103,
+      "queue_wait_sum_ms": 204,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 2,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 475,
+      "startup_ms": 40,
+      "tool_span_ms": 420,
+      "queue_wait_sum_ms": 1471,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 2,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 311,
+      "startup_ms": 55,
+      "tool_span_ms": 245,
+      "queue_wait_sum_ms": 244,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 2,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 174,
+      "startup_ms": 50,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 33,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 2,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 383,
+      "startup_ms": 27,
+      "tool_span_ms": 339,
+      "queue_wait_sum_ms": 923,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 2,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 182,
+      "startup_ms": 58,
+      "tool_span_ms": 123,
+      "queue_wait_sum_ms": 5,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 2,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 177,
+      "startup_ms": 55,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 6,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 2,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 297,
+      "startup_ms": 53,
+      "tool_span_ms": 244,
+      "queue_wait_sum_ms": 864,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 2,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 549,
+      "startup_ms": 61,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 3840,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 2,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 545,
+      "startup_ms": 57,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2803,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 2,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 547,
+      "startup_ms": 40,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5522,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 3,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 302,
+      "startup_ms": 60,
+      "tool_span_ms": 229,
+      "queue_wait_sum_ms": 135,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 3,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 630,
+      "startup_ms": 45,
+      "tool_span_ms": 572,
+      "queue_wait_sum_ms": 2522,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 3,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 475,
+      "startup_ms": 60,
+      "tool_span_ms": 404,
+      "queue_wait_sum_ms": 808,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 3,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 164,
+      "startup_ms": 49,
+      "tool_span_ms": 103,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 3,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 477,
+      "startup_ms": 44,
+      "tool_span_ms": 422,
+      "queue_wait_sum_ms": 1462,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 3,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 155,
+      "startup_ms": 47,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 3,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 162,
+      "startup_ms": 37,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 32,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 3,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 391,
+      "startup_ms": 36,
+      "tool_span_ms": 351,
+      "queue_wait_sum_ms": 927,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 3,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 310,
+      "startup_ms": 45,
+      "tool_span_ms": 244,
+      "queue_wait_sum_ms": 244,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 3,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 170,
+      "startup_ms": 48,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 6,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 3,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 292,
+      "startup_ms": 45,
+      "tool_span_ms": 247,
+      "queue_wait_sum_ms": 919,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 3,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 181,
+      "startup_ms": 59,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 8,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 3,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 549,
+      "startup_ms": 50,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2805,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 3,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 549,
+      "startup_ms": 51,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5390,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 3,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 544,
+      "startup_ms": 44,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 3976,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 4,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 614,
+      "startup_ms": 35,
+      "tool_span_ms": 569,
+      "queue_wait_sum_ms": 2517,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 4,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 452,
+      "startup_ms": 43,
+      "tool_span_ms": 403,
+      "queue_wait_sum_ms": 804,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 4,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 276,
+      "startup_ms": 43,
+      "tool_span_ms": 228,
+      "queue_wait_sum_ms": 135,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 4,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 477,
+      "startup_ms": 43,
+      "tool_span_ms": 419,
+      "queue_wait_sum_ms": 1457,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 4,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 156,
+      "startup_ms": 50,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 4,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 140,
+      "startup_ms": 32,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 4,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 389,
+      "startup_ms": 37,
+      "tool_span_ms": 342,
+      "queue_wait_sum_ms": 924,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 4,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 303,
+      "startup_ms": 51,
+      "tool_span_ms": 246,
+      "queue_wait_sum_ms": 246,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 4,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 169,
+      "startup_ms": 42,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 33,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 4,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 292,
+      "startup_ms": 43,
+      "tool_span_ms": 249,
+      "queue_wait_sum_ms": 909,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 4,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 195,
+      "startup_ms": 73,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 8,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 4,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 166,
+      "startup_ms": 43,
+      "tool_span_ms": 123,
+      "queue_wait_sum_ms": 6,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 4,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 546,
+      "startup_ms": 50,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5390,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 4,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 553,
+      "startup_ms": 55,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 3896,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 4,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 551,
+      "startup_ms": 56,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2790,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 5,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 484,
+      "startup_ms": 67,
+      "tool_span_ms": 404,
+      "queue_wait_sum_ms": 808,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 5,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 300,
+      "startup_ms": 56,
+      "tool_span_ms": 231,
+      "queue_wait_sum_ms": 135,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 5,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 630,
+      "startup_ms": 50,
+      "tool_span_ms": 567,
+      "queue_wait_sum_ms": 2510,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 5,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 168,
+      "startup_ms": 59,
+      "tool_span_ms": 105,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 5,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 145,
+      "startup_ms": 40,
+      "tool_span_ms": 103,
+      "queue_wait_sum_ms": 204,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 5,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 459,
+      "startup_ms": 28,
+      "tool_span_ms": 426,
+      "queue_wait_sum_ms": 1469,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 5,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 292,
+      "startup_ms": 37,
+      "tool_span_ms": 244,
+      "queue_wait_sum_ms": 246,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 5,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 178,
+      "startup_ms": 50,
+      "tool_span_ms": 121,
+      "queue_wait_sum_ms": 32,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 5,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 402,
+      "startup_ms": 43,
+      "tool_span_ms": 344,
+      "queue_wait_sum_ms": 934,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 5,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 180,
+      "startup_ms": 58,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 8,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 5,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 184,
+      "startup_ms": 61,
+      "tool_span_ms": 123,
+      "queue_wait_sum_ms": 5,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 5,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 287,
+      "startup_ms": 43,
+      "tool_span_ms": 244,
+      "queue_wait_sum_ms": 904,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 5,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 551,
+      "startup_ms": 64,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 3816,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 5,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 550,
+      "startup_ms": 51,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2806,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 5,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 548,
+      "startup_ms": 54,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5357,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 6,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 292,
+      "startup_ms": 47,
+      "tool_span_ms": 230,
+      "queue_wait_sum_ms": 129,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 6,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 642,
+      "startup_ms": 54,
+      "tool_span_ms": 572,
+      "queue_wait_sum_ms": 2533,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 6,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 463,
+      "startup_ms": 57,
+      "tool_span_ms": 402,
+      "queue_wait_sum_ms": 802,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 6,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 147,
+      "startup_ms": 40,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 6,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 478,
+      "startup_ms": 45,
+      "tool_span_ms": 422,
+      "queue_wait_sum_ms": 1473,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 6,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 168,
+      "startup_ms": 59,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 6,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 167,
+      "startup_ms": 37,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 32,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 6,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 395,
+      "startup_ms": 43,
+      "tool_span_ms": 341,
+      "queue_wait_sum_ms": 919,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 6,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 304,
+      "startup_ms": 49,
+      "tool_span_ms": 244,
+      "queue_wait_sum_ms": 244,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 6,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 172,
+      "startup_ms": 49,
+      "tool_span_ms": 123,
+      "queue_wait_sum_ms": 6,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 6,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 291,
+      "startup_ms": 45,
+      "tool_span_ms": 246,
+      "queue_wait_sum_ms": 931,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 6,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 177,
+      "startup_ms": 56,
+      "tool_span_ms": 121,
+      "queue_wait_sum_ms": 8,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 6,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 549,
+      "startup_ms": 62,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2781,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 6,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 553,
+      "startup_ms": 46,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5467,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 6,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 549,
+      "startup_ms": 56,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 3880,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 7,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 640,
+      "startup_ms": 50,
+      "tool_span_ms": 575,
+      "queue_wait_sum_ms": 2541,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 7,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 465,
+      "startup_ms": 50,
+      "tool_span_ms": 410,
+      "queue_wait_sum_ms": 832,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 7,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 284,
+      "startup_ms": 40,
+      "tool_span_ms": 230,
+      "queue_wait_sum_ms": 135,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 7,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 474,
+      "startup_ms": 54,
+      "tool_span_ms": 417,
+      "queue_wait_sum_ms": 1461,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 7,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 133,
+      "startup_ms": 26,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 7,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 141,
+      "startup_ms": 33,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 7,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 399,
+      "startup_ms": 44,
+      "tool_span_ms": 344,
+      "queue_wait_sum_ms": 934,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 7,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 298,
+      "startup_ms": 50,
+      "tool_span_ms": 243,
+      "queue_wait_sum_ms": 242,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 7,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 167,
+      "startup_ms": 39,
+      "tool_span_ms": 121,
+      "queue_wait_sum_ms": 32,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 7,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 290,
+      "startup_ms": 45,
+      "tool_span_ms": 245,
+      "queue_wait_sum_ms": 904,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 7,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 190,
+      "startup_ms": 68,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 8,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 7,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 190,
+      "startup_ms": 68,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 3,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 7,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 548,
+      "startup_ms": 57,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5324,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 7,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 552,
+      "startup_ms": 48,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 3960,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 7,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 551,
+      "startup_ms": 53,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2800,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 8,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 461,
+      "startup_ms": 47,
+      "tool_span_ms": 403,
+      "queue_wait_sum_ms": 804,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 8,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 293,
+      "startup_ms": 48,
+      "tool_span_ms": 240,
+      "queue_wait_sum_ms": 135,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 8,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 629,
+      "startup_ms": 41,
+      "tool_span_ms": 574,
+      "queue_wait_sum_ms": 2533,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 8,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 148,
+      "startup_ms": 40,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 204,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 8,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 141,
+      "startup_ms": 31,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 8,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 468,
+      "startup_ms": 43,
+      "tool_span_ms": 417,
+      "queue_wait_sum_ms": 1458,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 8,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 297,
+      "startup_ms": 49,
+      "tool_span_ms": 244,
+      "queue_wait_sum_ms": 244,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 8,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 179,
+      "startup_ms": 48,
+      "tool_span_ms": 121,
+      "queue_wait_sum_ms": 31,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 8,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 392,
+      "startup_ms": 48,
+      "tool_span_ms": 342,
+      "queue_wait_sum_ms": 924,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 8,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 170,
+      "startup_ms": 48,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 4,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 8,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 177,
+      "startup_ms": 55,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 6,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 8,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 288,
+      "startup_ms": 43,
+      "tool_span_ms": 245,
+      "queue_wait_sum_ms": 894,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 8,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 552,
+      "startup_ms": 71,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 3768,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 8,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 548,
+      "startup_ms": 56,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2792,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 8,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 547,
+      "startup_ms": 63,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5258,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 9,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 300,
+      "startup_ms": 59,
+      "tool_span_ms": 231,
+      "queue_wait_sum_ms": 133,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 9,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 625,
+      "startup_ms": 46,
+      "tool_span_ms": 567,
+      "queue_wait_sum_ms": 2510,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 9,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 475,
+      "startup_ms": 52,
+      "tool_span_ms": 405,
+      "queue_wait_sum_ms": 808,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 9,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 159,
+      "startup_ms": 49,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 9,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 470,
+      "startup_ms": 46,
+      "tool_span_ms": 417,
+      "queue_wait_sum_ms": 1454,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 9,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 173,
+      "startup_ms": 66,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 9,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 170,
+      "startup_ms": 40,
+      "tool_span_ms": 123,
+      "queue_wait_sum_ms": 32,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 9,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 412,
+      "startup_ms": 46,
+      "tool_span_ms": 354,
+      "queue_wait_sum_ms": 953,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 9,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 301,
+      "startup_ms": 53,
+      "tool_span_ms": 245,
+      "queue_wait_sum_ms": 246,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 9,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 155,
+      "startup_ms": 33,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 3,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 9,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 278,
+      "startup_ms": 34,
+      "tool_span_ms": 244,
+      "queue_wait_sum_ms": 869,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 9,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 172,
+      "startup_ms": 50,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 8,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 9,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 542,
+      "startup_ms": 53,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2800,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 9,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 553,
+      "startup_ms": 27,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5654,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 9,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 550,
+      "startup_ms": 98,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 3544,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 10,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 642,
+      "startup_ms": 51,
+      "tool_span_ms": 574,
+      "queue_wait_sum_ms": 2533,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 10,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 470,
+      "startup_ms": 53,
+      "tool_span_ms": 404,
+      "queue_wait_sum_ms": 808,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 10,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 301,
+      "startup_ms": 62,
+      "tool_span_ms": 228,
+      "queue_wait_sum_ms": 135,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 10,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 489,
+      "startup_ms": 56,
+      "tool_span_ms": 424,
+      "queue_wait_sum_ms": 1481,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 10,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 167,
+      "startup_ms": 53,
+      "tool_span_ms": 105,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 10,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 157,
+      "startup_ms": 50,
+      "tool_span_ms": 103,
+      "queue_wait_sum_ms": 204,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 10,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 404,
+      "startup_ms": 46,
+      "tool_span_ms": 345,
+      "queue_wait_sum_ms": 938,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 10,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 311,
+      "startup_ms": 63,
+      "tool_span_ms": 247,
+      "queue_wait_sum_ms": 248,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 10,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 147,
+      "startup_ms": 22,
+      "tool_span_ms": 121,
+      "queue_wait_sum_ms": 32,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 10,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 277,
+      "startup_ms": 33,
+      "tool_span_ms": 244,
+      "queue_wait_sum_ms": 874,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 10,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 185,
+      "startup_ms": 63,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 8,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 10,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 174,
+      "startup_ms": 51,
+      "tool_span_ms": 123,
+      "queue_wait_sum_ms": 6,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 10,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 545,
+      "startup_ms": 51,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5390,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 10,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 546,
+      "startup_ms": 46,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 3968,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 10,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 545,
+      "startup_ms": 42,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2828,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 11,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 456,
+      "startup_ms": 47,
+      "tool_span_ms": 404,
+      "queue_wait_sum_ms": 812,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 11,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 285,
+      "startup_ms": 35,
+      "tool_span_ms": 230,
+      "queue_wait_sum_ms": 134,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 11,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 638,
+      "startup_ms": 49,
+      "tool_span_ms": 572,
+      "queue_wait_sum_ms": 2521,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 11,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 152,
+      "startup_ms": 45,
+      "tool_span_ms": 103,
+      "queue_wait_sum_ms": 204,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 11,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 148,
+      "startup_ms": 39,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 204,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 11,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 468,
+      "startup_ms": 46,
+      "tool_span_ms": 420,
+      "queue_wait_sum_ms": 1461,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 11,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 287,
+      "startup_ms": 29,
+      "tool_span_ms": 245,
+      "queue_wait_sum_ms": 244,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 11,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 189,
+      "startup_ms": 57,
+      "tool_span_ms": 123,
+      "queue_wait_sum_ms": 32,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 11,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 397,
+      "startup_ms": 47,
+      "tool_span_ms": 341,
+      "queue_wait_sum_ms": 927,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 11,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 176,
+      "startup_ms": 54,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 8,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 11,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 166,
+      "startup_ms": 45,
+      "tool_span_ms": 121,
+      "queue_wait_sum_ms": 6,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 11,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 287,
+      "startup_ms": 44,
+      "tool_span_ms": 243,
+      "queue_wait_sum_ms": 862,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 11,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 547,
+      "startup_ms": 52,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 3912,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 11,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 552,
+      "startup_ms": 57,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2786,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 11,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 548,
+      "startup_ms": 56,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5345,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 12,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 298,
+      "startup_ms": 56,
+      "tool_span_ms": 230,
+      "queue_wait_sum_ms": 135,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 12,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 637,
+      "startup_ms": 57,
+      "tool_span_ms": 569,
+      "queue_wait_sum_ms": 2529,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 12,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 478,
+      "startup_ms": 61,
+      "tool_span_ms": 403,
+      "queue_wait_sum_ms": 808,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 12,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 165,
+      "startup_ms": 57,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 12,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 483,
+      "startup_ms": 45,
+      "tool_span_ms": 434,
+      "queue_wait_sum_ms": 1482,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 12,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 157,
+      "startup_ms": 51,
+      "tool_span_ms": 102,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 12,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 175,
+      "startup_ms": 45,
+      "tool_span_ms": 121,
+      "queue_wait_sum_ms": 32,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 12,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 410,
+      "startup_ms": 57,
+      "tool_span_ms": 344,
+      "queue_wait_sum_ms": 935,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 12,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 331,
+      "startup_ms": 73,
+      "tool_span_ms": 245,
+      "queue_wait_sum_ms": 246,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 12,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 176,
+      "startup_ms": 54,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 3,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 12,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 297,
+      "startup_ms": 53,
+      "tool_span_ms": 244,
+      "queue_wait_sum_ms": 908,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 12,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 170,
+      "startup_ms": 48,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 8,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 12,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 545,
+      "startup_ms": 53,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2802,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 12,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 550,
+      "startup_ms": 54,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5368,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 12,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 550,
+      "startup_ms": 58,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 3880,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 13,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 649,
+      "startup_ms": 52,
+      "tool_span_ms": 578,
+      "queue_wait_sum_ms": 2535,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 13,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 461,
+      "startup_ms": 41,
+      "tool_span_ms": 405,
+      "queue_wait_sum_ms": 812,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 13,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 298,
+      "startup_ms": 57,
+      "tool_span_ms": 230,
+      "queue_wait_sum_ms": 139,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 13,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 482,
+      "startup_ms": 57,
+      "tool_span_ms": 416,
+      "queue_wait_sum_ms": 1454,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 13,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 157,
+      "startup_ms": 47,
+      "tool_span_ms": 105,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 13,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 155,
+      "startup_ms": 44,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 13,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 395,
+      "startup_ms": 46,
+      "tool_span_ms": 340,
+      "queue_wait_sum_ms": 923,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 13,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 317,
+      "startup_ms": 55,
+      "tool_span_ms": 244,
+      "queue_wait_sum_ms": 246,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 13,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 191,
+      "startup_ms": 56,
+      "tool_span_ms": 125,
+      "queue_wait_sum_ms": 32,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 13,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 298,
+      "startup_ms": 47,
+      "tool_span_ms": 250,
+      "queue_wait_sum_ms": 929,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 13,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 174,
+      "startup_ms": 52,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 4,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 13,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 155,
+      "startup_ms": 33,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 3,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 13,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 544,
+      "startup_ms": 43,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5489,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 13,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 544,
+      "startup_ms": 37,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 4032,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 13,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 546,
+      "startup_ms": 42,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2818,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 14,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 489,
+      "startup_ms": 68,
+      "tool_span_ms": 406,
+      "queue_wait_sum_ms": 816,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 14,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 308,
+      "startup_ms": 67,
+      "tool_span_ms": 229,
+      "queue_wait_sum_ms": 135,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 14,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 635,
+      "startup_ms": 58,
+      "tool_span_ms": 567,
+      "queue_wait_sum_ms": 2514,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 14,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 156,
+      "startup_ms": 47,
+      "tool_span_ms": 103,
+      "queue_wait_sum_ms": 200,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 14,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 156,
+      "startup_ms": 48,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 204,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 14,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 475,
+      "startup_ms": 42,
+      "tool_span_ms": 419,
+      "queue_wait_sum_ms": 1464,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 14,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 303,
+      "startup_ms": 46,
+      "tool_span_ms": 244,
+      "queue_wait_sum_ms": 242,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 14,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 192,
+      "startup_ms": 59,
+      "tool_span_ms": 123,
+      "queue_wait_sum_ms": 32,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 14,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 406,
+      "startup_ms": 52,
+      "tool_span_ms": 343,
+      "queue_wait_sum_ms": 934,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 14,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 180,
+      "startup_ms": 54,
+      "tool_span_ms": 126,
+      "queue_wait_sum_ms": 4,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 14,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 173,
+      "startup_ms": 52,
+      "tool_span_ms": 121,
+      "queue_wait_sum_ms": 3,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 14,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 292,
+      "startup_ms": 45,
+      "tool_span_ms": 247,
+      "queue_wait_sum_ms": 894,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 14,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 553,
+      "startup_ms": 45,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 3978,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 14,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 551,
+      "startup_ms": 48,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2804,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 14,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 550,
+      "startup_ms": 54,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5368,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 15,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 300,
+      "startup_ms": 58,
+      "tool_span_ms": 230,
+      "queue_wait_sum_ms": 135,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 15,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 629,
+      "startup_ms": 54,
+      "tool_span_ms": 570,
+      "queue_wait_sum_ms": 2516,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 15,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 458,
+      "startup_ms": 42,
+      "tool_span_ms": 404,
+      "queue_wait_sum_ms": 804,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 15,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 165,
+      "startup_ms": 55,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 15,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 473,
+      "startup_ms": 44,
+      "tool_span_ms": 418,
+      "queue_wait_sum_ms": 1461,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 15,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 153,
+      "startup_ms": 45,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 15,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 167,
+      "startup_ms": 40,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 31,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 15,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 396,
+      "startup_ms": 47,
+      "tool_span_ms": 341,
+      "queue_wait_sum_ms": 927,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 15,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 301,
+      "startup_ms": 47,
+      "tool_span_ms": 244,
+      "queue_wait_sum_ms": 244,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 15,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 173,
+      "startup_ms": 51,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 6,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 15,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 295,
+      "startup_ms": 50,
+      "tool_span_ms": 245,
+      "queue_wait_sum_ms": 924,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 15,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 159,
+      "startup_ms": 37,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 8,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 15,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 546,
+      "startup_ms": 46,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2810,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 15,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 550,
+      "startup_ms": 62,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5269,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 15,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 555,
+      "startup_ms": 65,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 3816,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 16,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 664,
+      "startup_ms": 81,
+      "tool_span_ms": 572,
+      "queue_wait_sum_ms": 2520,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 16,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 469,
+      "startup_ms": 57,
+      "tool_span_ms": 404,
+      "queue_wait_sum_ms": 808,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 16,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 288,
+      "startup_ms": 48,
+      "tool_span_ms": 227,
+      "queue_wait_sum_ms": 130,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 16,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 484,
+      "startup_ms": 53,
+      "tool_span_ms": 418,
+      "queue_wait_sum_ms": 1459,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 16,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 167,
+      "startup_ms": 55,
+      "tool_span_ms": 105,
+      "queue_wait_sum_ms": 212,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 16,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 156,
+      "startup_ms": 50,
+      "tool_span_ms": 103,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 16,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 386,
+      "startup_ms": 43,
+      "tool_span_ms": 339,
+      "queue_wait_sum_ms": 926,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 16,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 305,
+      "startup_ms": 46,
+      "tool_span_ms": 246,
+      "queue_wait_sum_ms": 246,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 16,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 197,
+      "startup_ms": 71,
+      "tool_span_ms": 121,
+      "queue_wait_sum_ms": 31,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 16,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 289,
+      "startup_ms": 43,
+      "tool_span_ms": 246,
+      "queue_wait_sum_ms": 874,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 16,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 184,
+      "startup_ms": 63,
+      "tool_span_ms": 121,
+      "queue_wait_sum_ms": 8,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 16,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 164,
+      "startup_ms": 43,
+      "tool_span_ms": 121,
+      "queue_wait_sum_ms": 6,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 16,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 549,
+      "startup_ms": 40,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5522,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 16,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 544,
+      "startup_ms": 56,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 3880,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 16,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 556,
+      "startup_ms": 45,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2808,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 17,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 468,
+      "startup_ms": 54,
+      "tool_span_ms": 403,
+      "queue_wait_sum_ms": 808,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 17,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 298,
+      "startup_ms": 56,
+      "tool_span_ms": 229,
+      "queue_wait_sum_ms": 135,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 17,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 622,
+      "startup_ms": 46,
+      "tool_span_ms": 565,
+      "queue_wait_sum_ms": 2497,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 17,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 165,
+      "startup_ms": 58,
+      "tool_span_ms": 103,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 17,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 149,
+      "startup_ms": 43,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 212,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 17,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 456,
+      "startup_ms": 30,
+      "tool_span_ms": 421,
+      "queue_wait_sum_ms": 1460,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 17,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 300,
+      "startup_ms": 41,
+      "tool_span_ms": 244,
+      "queue_wait_sum_ms": 244,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 17,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 168,
+      "startup_ms": 35,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 33,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 17,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 405,
+      "startup_ms": 58,
+      "tool_span_ms": 338,
+      "queue_wait_sum_ms": 914,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 17,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 186,
+      "startup_ms": 64,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 8,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 17,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 168,
+      "startup_ms": 46,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 6,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 17,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 299,
+      "startup_ms": 53,
+      "tool_span_ms": 246,
+      "queue_wait_sum_ms": 869,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 17,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 548,
+      "startup_ms": 60,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 3848,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 17,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 554,
+      "startup_ms": 53,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2822,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 17,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 551,
+      "startup_ms": 50,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5412,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 18,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 309,
+      "startup_ms": 63,
+      "tool_span_ms": 230,
+      "queue_wait_sum_ms": 135,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 18,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 623,
+      "startup_ms": 51,
+      "tool_span_ms": 567,
+      "queue_wait_sum_ms": 2512,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 18,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 454,
+      "startup_ms": 41,
+      "tool_span_ms": 403,
+      "queue_wait_sum_ms": 808,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 18,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 177,
+      "startup_ms": 60,
+      "tool_span_ms": 109,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 18,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 474,
+      "startup_ms": 44,
+      "tool_span_ms": 420,
+      "queue_wait_sum_ms": 1471,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 18,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 167,
+      "startup_ms": 55,
+      "tool_span_ms": 106,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 18,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 176,
+      "startup_ms": 45,
+      "tool_span_ms": 123,
+      "queue_wait_sum_ms": 33,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 18,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 410,
+      "startup_ms": 48,
+      "tool_span_ms": 344,
+      "queue_wait_sum_ms": 925,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 18,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 306,
+      "startup_ms": 46,
+      "tool_span_ms": 246,
+      "queue_wait_sum_ms": 244,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 18,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 176,
+      "startup_ms": 55,
+      "tool_span_ms": 121,
+      "queue_wait_sum_ms": 3,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 18,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 301,
+      "startup_ms": 55,
+      "tool_span_ms": 246,
+      "queue_wait_sum_ms": 944,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 18,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 170,
+      "startup_ms": 48,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 4,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 18,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 552,
+      "startup_ms": 53,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2800,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 18,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 553,
+      "startup_ms": 60,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5302,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 18,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 548,
+      "startup_ms": 55,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 3888,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 19,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 642,
+      "startup_ms": 54,
+      "tool_span_ms": 568,
+      "queue_wait_sum_ms": 2507,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 19,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 472,
+      "startup_ms": 56,
+      "tool_span_ms": 405,
+      "queue_wait_sum_ms": 808,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 19,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 282,
+      "startup_ms": 51,
+      "tool_span_ms": 228,
+      "queue_wait_sum_ms": 131,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 19,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 475,
+      "startup_ms": 44,
+      "tool_span_ms": 421,
+      "queue_wait_sum_ms": 1467,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 19,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 154,
+      "startup_ms": 46,
+      "tool_span_ms": 105,
+      "queue_wait_sum_ms": 211,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 19,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 152,
+      "startup_ms": 45,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 19,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 389,
+      "startup_ms": 40,
+      "tool_span_ms": 342,
+      "queue_wait_sum_ms": 931,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 19,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 303,
+      "startup_ms": 46,
+      "tool_span_ms": 245,
+      "queue_wait_sum_ms": 245,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 19,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 185,
+      "startup_ms": 56,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 32,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 19,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 294,
+      "startup_ms": 50,
+      "tool_span_ms": 244,
+      "queue_wait_sum_ms": 899,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 19,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 158,
+      "startup_ms": 37,
+      "tool_span_ms": 121,
+      "queue_wait_sum_ms": 8,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 19,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 175,
+      "startup_ms": 52,
+      "tool_span_ms": 123,
+      "queue_wait_sum_ms": 6,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 19,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 552,
+      "startup_ms": 60,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5335,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 19,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 549,
+      "startup_ms": 49,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 3944,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 19,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 548,
+      "startup_ms": 52,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2804,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "repetition": 20,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 462,
+      "startup_ms": 47,
+      "tool_span_ms": 404,
+      "queue_wait_sum_ms": 808,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "repetition": 20,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 288,
+      "startup_ms": 46,
+      "tool_span_ms": 229,
+      "queue_wait_sum_ms": 131,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "repetition": 20,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 632,
+      "startup_ms": 49,
+      "tool_span_ms": 569,
+      "queue_wait_sum_ms": 2520,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "repetition": 20,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 158,
+      "startup_ms": 49,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "repetition": 20,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 151,
+      "startup_ms": 43,
+      "tool_span_ms": 104,
+      "queue_wait_sum_ms": 208,
+      "peak_active": 4,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "repetition": 20,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 473,
+      "startup_ms": 45,
+      "tool_span_ms": 420,
+      "queue_wait_sum_ms": 1466,
+      "peak_active": 1,
+      "outcomes": {
+        "succeeded": 8
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "repetition": 20,
+      "order": 0,
+      "status": "success",
+      "elapsed_ms": 303,
+      "startup_ms": 50,
+      "tool_span_ms": 248,
+      "queue_wait_sum_ms": 246,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "repetition": 20,
+      "order": 1,
+      "status": "success",
+      "elapsed_ms": 179,
+      "startup_ms": 47,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 32,
+      "peak_active": 4,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "repetition": 20,
+      "order": 2,
+      "status": "success",
+      "elapsed_ms": 407,
+      "startup_ms": 49,
+      "tool_span_ms": 348,
+      "queue_wait_sum_ms": 937,
+      "peak_active": 1,
+      "outcomes": {
+        "provider_failed": 1,
+        "succeeded": 5
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "repetition": 20,
+      "order": 0,
+      "status": "guest_error",
+      "elapsed_ms": 163,
+      "startup_ms": 41,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 8,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 4,
+        "provider_failed": 1,
+        "succeeded": 3
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "repetition": 20,
+      "order": 1,
+      "status": "guest_error",
+      "elapsed_ms": 175,
+      "startup_ms": 53,
+      "tool_span_ms": 122,
+      "queue_wait_sum_ms": 3,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 3,
+        "provider_failed": 1,
+        "succeeded": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "repetition": 20,
+      "order": 2,
+      "status": "guest_error",
+      "elapsed_ms": 301,
+      "startup_ms": 54,
+      "tool_span_ms": 247,
+      "queue_wait_sum_ms": 901,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 5,
+        "provider_failed": 1,
+        "succeeded": 2
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "repetition": 20,
+      "order": 0,
+      "status": "deadline",
+      "elapsed_ms": 543,
+      "startup_ms": 55,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 3888,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 8,
+        "succeeded": 3,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "repetition": 20,
+      "order": 1,
+      "status": "deadline",
+      "elapsed_ms": 546,
+      "startup_ms": 41,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 2820,
+      "peak_active": 4,
+      "outcomes": {
+        "cancelled_before_dispatch": 2,
+        "succeeded": 6,
+        "unknown": 4
+      },
+      "correct": true,
+      "failures": []
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "repetition": 20,
+      "order": 2,
+      "status": "deadline",
+      "elapsed_ms": 562,
+      "startup_ms": 42,
+      "tool_span_ms": null,
+      "queue_wait_sum_ms": 5478,
+      "peak_active": 1,
+      "outcomes": {
+        "cancelled_before_dispatch": 11,
+        "unknown": 1
+      },
+      "correct": true,
+      "failures": []
+    }
+  ],
+  "aggregates": [
+    {
+      "fixture": "mixed-latency",
+      "policy": "sequential",
+      "dispatch": "rolling",
+      "max_concurrency": 1,
+      "timeout_ms": 5000,
+      "ideal_model_ms": 550,
+      "runs": 21,
+      "correct_runs": 21,
+      "elapsed_ms": {
+        "min": 613,
+        "p50": 635,
+        "p90": 649,
+        "max": 664,
+        "mean": 635.1428571428571
+      },
+      "tool_span_ms": {
+        "min": 565,
+        "p50": 570,
+        "p90": 575,
+        "max": 581,
+        "mean": 570.7142857142857
+      },
+      "startup_ms": {
+        "min": 35,
+        "p50": 51,
+        "p90": 58,
+        "max": 81,
+        "mean": 51.857142857142854
+      },
+      "queue_wait_sum_ms": {
+        "min": 2497,
+        "p50": 2520,
+        "p90": 2541,
+        "max": 2570,
+        "mean": 2523.190476190476
+      },
+      "peak_active_max": 1,
+      "outcome_distribution": [
+        {
+          "outcomes": {
+            "succeeded": 8
+          },
+          "runs": 21
+        }
+      ],
+      "median_trace_repetition": 15
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "batch",
+      "dispatch": "batch",
+      "max_concurrency": 4,
+      "timeout_ms": 5000,
+      "ideal_model_ms": 400,
+      "runs": 21,
+      "correct_runs": 21,
+      "elapsed_ms": {
+        "min": 442,
+        "p50": 465,
+        "p90": 479,
+        "max": 489,
+        "mean": 466.4761904761905
+      },
+      "tool_span_ms": {
+        "min": 402,
+        "p50": 404,
+        "p90": 406,
+        "max": 410,
+        "mean": 404.3809523809524
+      },
+      "startup_ms": {
+        "min": 36,
+        "p50": 52,
+        "p90": 61,
+        "max": 68,
+        "mean": 51.476190476190474
+      },
+      "queue_wait_sum_ms": {
+        "min": 802,
+        "p50": 808,
+        "p90": 816,
+        "max": 832,
+        "mean": 809.4285714285714
+      },
+      "peak_active_max": 4,
+      "outcome_distribution": [
+        {
+          "outcomes": {
+            "succeeded": 8
+          },
+          "runs": 21
+        }
+      ],
+      "median_trace_repetition": 0
+    },
+    {
+      "fixture": "mixed-latency",
+      "policy": "rolling",
+      "dispatch": "rolling",
+      "max_concurrency": 4,
+      "timeout_ms": 5000,
+      "ideal_model_ms": 225,
+      "runs": 21,
+      "correct_runs": 21,
+      "elapsed_ms": {
+        "min": 267,
+        "p50": 294,
+        "p90": 302,
+        "max": 309,
+        "mean": 292.57142857142856
+      },
+      "tool_span_ms": {
+        "min": 227,
+        "p50": 230,
+        "p90": 231,
+        "max": 240,
+        "mean": 229.76190476190476
+      },
+      "startup_ms": {
+        "min": 33,
+        "p50": 56,
+        "p90": 62,
+        "max": 67,
+        "mean": 51.476190476190474
+      },
+      "queue_wait_sum_ms": {
+        "min": 129,
+        "p50": 135,
+        "p90": 135,
+        "max": 139,
+        "mean": 133.76190476190476
+      },
+      "peak_active_max": 4,
+      "outcome_distribution": [
+        {
+          "outcomes": {
+            "succeeded": 8
+          },
+          "runs": 21
+        }
+      ],
+      "median_trace_repetition": 0
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "sequential",
+      "dispatch": "rolling",
+      "max_concurrency": 1,
+      "timeout_ms": 5000,
+      "ideal_model_ms": 400,
+      "runs": 21,
+      "correct_runs": 21,
+      "elapsed_ms": {
+        "min": 456,
+        "p50": 474,
+        "p90": 483,
+        "max": 489,
+        "mean": 473.42857142857144
+      },
+      "tool_span_ms": {
+        "min": 415,
+        "p50": 420,
+        "p90": 424,
+        "max": 434,
+        "mean": 420.42857142857144
+      },
+      "startup_ms": {
+        "min": 28,
+        "p50": 44,
+        "p90": 54,
+        "max": 57,
+        "mean": 44.523809523809526
+      },
+      "queue_wait_sum_ms": {
+        "min": 1448,
+        "p50": 1462,
+        "p90": 1481,
+        "max": 1483,
+        "mean": 1464.857142857143
+      },
+      "peak_active_max": 1,
+      "outcome_distribution": [
+        {
+          "outcomes": {
+            "succeeded": 8
+          },
+          "runs": 21
+        }
+      ],
+      "median_trace_repetition": 20
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "batch",
+      "dispatch": "batch",
+      "max_concurrency": 4,
+      "timeout_ms": 5000,
+      "ideal_model_ms": 100,
+      "runs": 21,
+      "correct_runs": 21,
+      "elapsed_ms": {
+        "min": 133,
+        "p50": 156,
+        "p90": 168,
+        "max": 173,
+        "mean": 156.57142857142858
+      },
+      "tool_span_ms": {
+        "min": 102,
+        "p50": 104,
+        "p90": 105,
+        "max": 106,
+        "mean": 104.04761904761905
+      },
+      "startup_ms": {
+        "min": 26,
+        "p50": 47,
+        "p90": 59,
+        "max": 66,
+        "mean": 47.95238095238095
+      },
+      "queue_wait_sum_ms": {
+        "min": 200,
+        "p50": 208,
+        "p90": 208,
+        "max": 212,
+        "mean": 207.38095238095238
+      },
+      "peak_active_max": 4,
+      "outcome_distribution": [
+        {
+          "outcomes": {
+            "succeeded": 8
+          },
+          "runs": 21
+        }
+      ],
+      "median_trace_repetition": 3
+    },
+    {
+      "fixture": "equal-latency",
+      "policy": "rolling",
+      "dispatch": "rolling",
+      "max_concurrency": 4,
+      "timeout_ms": 5000,
+      "ideal_model_ms": 100,
+      "runs": 21,
+      "correct_runs": 21,
+      "elapsed_ms": {
+        "min": 140,
+        "p50": 152,
+        "p90": 165,
+        "max": 177,
+        "mean": 153.38095238095238
+      },
+      "tool_span_ms": {
+        "min": 103,
+        "p50": 104,
+        "p90": 104,
+        "max": 109,
+        "mean": 104.0952380952381
+      },
+      "startup_ms": {
+        "min": 31,
+        "p50": 44,
+        "p90": 55,
+        "max": 60,
+        "mean": 44.23809523809524
+      },
+      "queue_wait_sum_ms": {
+        "min": 204,
+        "p50": 208,
+        "p90": 208,
+        "max": 212,
+        "mean": 207.23809523809524
+      },
+      "peak_active_max": 4,
+      "outcome_distribution": [
+        {
+          "outcomes": {
+            "succeeded": 8
+          },
+          "runs": 21
+        }
+      ],
+      "median_trace_repetition": 17
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "sequential",
+      "dispatch": "rolling",
+      "max_concurrency": 1,
+      "timeout_ms": 5000,
+      "ideal_model_ms": 330,
+      "runs": 21,
+      "correct_runs": 21,
+      "elapsed_ms": {
+        "min": 383,
+        "p50": 396,
+        "p90": 410,
+        "max": 412,
+        "mean": 397.8095238095238
+      },
+      "tool_span_ms": {
+        "min": 338,
+        "p50": 342,
+        "p90": 348,
+        "max": 354,
+        "mean": 343.14285714285717
+      },
+      "startup_ms": {
+        "min": 27,
+        "p50": 46,
+        "p90": 52,
+        "max": 58,
+        "mean": 44.857142857142854
+      },
+      "queue_wait_sum_ms": {
+        "min": 914,
+        "p50": 927,
+        "p90": 937,
+        "max": 953,
+        "mean": 929.0952380952381
+      },
+      "peak_active_max": 1,
+      "outcome_distribution": [
+        {
+          "outcomes": {
+            "provider_failed": 1,
+            "succeeded": 5
+          },
+          "runs": 21
+        }
+      ],
+      "median_trace_repetition": 8
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "batch",
+      "dispatch": "batch",
+      "max_concurrency": 4,
+      "timeout_ms": 5000,
+      "ideal_model_ms": 240,
+      "runs": 21,
+      "correct_runs": 21,
+      "elapsed_ms": {
+        "min": 287,
+        "p50": 303,
+        "p90": 311,
+        "max": 331,
+        "mean": 303.14285714285717
+      },
+      "tool_span_ms": {
+        "min": 243,
+        "p50": 244,
+        "p90": 246,
+        "max": 248,
+        "mean": 244.71428571428572
+      },
+      "startup_ms": {
+        "min": 29,
+        "p50": 49,
+        "p90": 55,
+        "max": 73,
+        "mean": 48.57142857142857
+      },
+      "queue_wait_sum_ms": {
+        "min": 242,
+        "p50": 244,
+        "p90": 246,
+        "max": 250,
+        "mean": 244.9047619047619
+      },
+      "peak_active_max": 4,
+      "outcome_distribution": [
+        {
+          "outcomes": {
+            "provider_failed": 1,
+            "succeeded": 5
+          },
+          "runs": 21
+        }
+      ],
+      "median_trace_repetition": 13
+    },
+    {
+      "fixture": "partial-failure",
+      "policy": "rolling",
+      "dispatch": "rolling",
+      "max_concurrency": 4,
+      "timeout_ms": 5000,
+      "ideal_model_ms": 120,
+      "runs": 21,
+      "correct_runs": 21,
+      "elapsed_ms": {
+        "min": 147,
+        "p50": 175,
+        "p90": 191,
+        "max": 197,
+        "mean": 174.9047619047619
+      },
+      "tool_span_ms": {
+        "min": 121,
+        "p50": 122,
+        "p90": 123,
+        "max": 125,
+        "mean": 122.0952380952381
+      },
+      "startup_ms": {
+        "min": 22,
+        "p50": 45,
+        "p90": 57,
+        "max": 71,
+        "mean": 45.23809523809524
+      },
+      "queue_wait_sum_ms": {
+        "min": 31,
+        "p50": 32,
+        "p90": 33,
+        "max": 33,
+        "mean": 32.04761904761905
+      },
+      "peak_active_max": 4,
+      "outcome_distribution": [
+        {
+          "outcomes": {
+            "provider_failed": 1,
+            "succeeded": 5
+          },
+          "runs": 21
+        }
+      ],
+      "median_trace_repetition": 17
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "sequential",
+      "dispatch": "rolling",
+      "max_concurrency": 1,
+      "timeout_ms": 5000,
+      "ideal_model_ms": null,
+      "runs": 21,
+      "correct_runs": 21,
+      "elapsed_ms": {
+        "min": 277,
+        "p50": 292,
+        "p90": 299,
+        "max": 301,
+        "mean": 291.1904761904762
+      },
+      "tool_span_ms": {
+        "min": 243,
+        "p50": 245,
+        "p90": 247,
+        "max": 250,
+        "mean": 245.47619047619048
+      },
+      "startup_ms": {
+        "min": 33,
+        "p50": 45,
+        "p90": 53,
+        "max": 55,
+        "mean": 45.666666666666664
+      },
+      "queue_wait_sum_ms": {
+        "min": 862,
+        "p50": 901,
+        "p90": 929,
+        "max": 944,
+        "mean": 898.952380952381
+      },
+      "peak_active_max": 1,
+      "outcome_distribution": [
+        {
+          "outcomes": {
+            "cancelled_before_dispatch": 5,
+            "provider_failed": 1,
+            "succeeded": 2
+          },
+          "runs": 21
+        }
+      ],
+      "median_trace_repetition": 7
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "batch",
+      "dispatch": "batch",
+      "max_concurrency": 4,
+      "timeout_ms": 5000,
+      "ideal_model_ms": null,
+      "runs": 21,
+      "correct_runs": 21,
+      "elapsed_ms": {
+        "min": 158,
+        "p50": 180,
+        "p90": 187,
+        "max": 195,
+        "mean": 177.1904761904762
+      },
+      "tool_span_ms": {
+        "min": 121,
+        "p50": 122,
+        "p90": 122,
+        "max": 126,
+        "mean": 122.0952380952381
+      },
+      "startup_ms": {
+        "min": 37,
+        "p50": 56,
+        "p90": 65,
+        "max": 73,
+        "mean": 55.04761904761905
+      },
+      "queue_wait_sum_ms": {
+        "min": 4,
+        "p50": 8,
+        "p90": 8,
+        "max": 8,
+        "mean": 7.095238095238095
+      },
+      "peak_active_max": 4,
+      "outcome_distribution": [
+        {
+          "outcomes": {
+            "cancelled_before_dispatch": 4,
+            "provider_failed": 1,
+            "succeeded": 3
+          },
+          "runs": 21
+        }
+      ],
+      "median_trace_repetition": 11
+    },
+    {
+      "fixture": "fail-fast",
+      "policy": "rolling",
+      "dispatch": "rolling",
+      "max_concurrency": 4,
+      "timeout_ms": 5000,
+      "ideal_model_ms": null,
+      "runs": 21,
+      "correct_runs": 21,
+      "elapsed_ms": {
+        "min": 152,
+        "p50": 173,
+        "p90": 177,
+        "max": 190,
+        "mean": 170.66666666666666
+      },
+      "tool_span_ms": {
+        "min": 121,
+        "p50": 122,
+        "p90": 123,
+        "max": 123,
+        "mean": 122.04761904761905
+      },
+      "startup_ms": {
+        "min": 31,
+        "p50": 51,
+        "p90": 55,
+        "max": 68,
+        "mean": 48.61904761904762
+      },
+      "queue_wait_sum_ms": {
+        "min": 3,
+        "p50": 6,
+        "p90": 6,
+        "max": 6,
+        "mean": 4.666666666666667
+      },
+      "peak_active_max": 4,
+      "outcome_distribution": [
+        {
+          "outcomes": {
+            "cancelled_before_dispatch": 3,
+            "provider_failed": 1,
+            "succeeded": 4
+          },
+          "runs": 21
+        }
+      ],
+      "median_trace_repetition": 20
+    },
+    {
+      "fixture": "deadline",
+      "policy": "sequential",
+      "dispatch": "rolling",
+      "max_concurrency": 1,
+      "timeout_ms": 540,
+      "ideal_model_ms": null,
+      "runs": 21,
+      "correct_runs": 21,
+      "elapsed_ms": {
+        "min": 544,
+        "p50": 550,
+        "p90": 553,
+        "max": 562,
+        "mean": 549.8571428571429
+      },
+      "tool_span_ms": null,
+      "startup_ms": {
+        "min": 27,
+        "p50": 51,
+        "p90": 60,
+        "max": 63,
+        "mean": 50.19047619047619
+      },
+      "queue_wait_sum_ms": {
+        "min": 5258,
+        "p50": 5390,
+        "p90": 5522,
+        "max": 5654,
+        "mean": 5407.238095238095
+      },
+      "peak_active_max": 1,
+      "outcome_distribution": [
+        {
+          "outcomes": {
+            "cancelled_before_dispatch": 11,
+            "unknown": 1
+          },
+          "runs": 21
+        }
+      ],
+      "median_trace_repetition": 1
+    },
+    {
+      "fixture": "deadline",
+      "policy": "batch",
+      "dispatch": "batch",
+      "max_concurrency": 4,
+      "timeout_ms": 540,
+      "ideal_model_ms": null,
+      "runs": 21,
+      "correct_runs": 21,
+      "elapsed_ms": {
+        "min": 543,
+        "p50": 549,
+        "p90": 553,
+        "max": 555,
+        "mean": 548.8095238095239
+      },
+      "tool_span_ms": null,
+      "startup_ms": {
+        "min": 37,
+        "p50": 55,
+        "p90": 71,
+        "max": 98,
+        "mean": 57.61904761904762
+      },
+      "queue_wait_sum_ms": {
+        "min": 3544,
+        "p50": 3888,
+        "p90": 3976,
+        "max": 4032,
+        "mean": 3874.3809523809523
+      },
+      "peak_active_max": 4,
+      "outcome_distribution": [
+        {
+          "outcomes": {
+            "cancelled_before_dispatch": 8,
+            "succeeded": 3,
+            "unknown": 1
+          },
+          "runs": 21
+        }
+      ],
+      "median_trace_repetition": 6
+    },
+    {
+      "fixture": "deadline",
+      "policy": "rolling",
+      "dispatch": "rolling",
+      "max_concurrency": 4,
+      "timeout_ms": 540,
+      "ideal_model_ms": null,
+      "runs": 21,
+      "correct_runs": 21,
+      "elapsed_ms": {
+        "min": 542,
+        "p50": 549,
+        "p90": 552,
+        "max": 556,
+        "mean": 548.5714285714286
+      },
+      "tool_span_ms": null,
+      "startup_ms": {
+        "min": 41,
+        "p50": 53,
+        "p90": 57,
+        "max": 62,
+        "mean": 50.95238095238095
+      },
+      "queue_wait_sum_ms": {
+        "min": 2781,
+        "p50": 2804,
+        "p90": 2820,
+        "max": 2828,
+        "mean": 2804.285714285714
+      },
+      "peak_active_max": 4,
+      "outcome_distribution": [
+        {
+          "outcomes": {
+            "cancelled_before_dispatch": 2,
+            "succeeded": 6,
+            "unknown": 4
+          },
+          "runs": 21
+        }
+      ],
+      "median_trace_repetition": 3
+    }
+  ]
+}

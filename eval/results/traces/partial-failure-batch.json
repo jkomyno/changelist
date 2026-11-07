@@ -1,0 +1,262 @@
+{
+  "schema_version": 1,
+  "code": "// Six calls submitted together, one of which fails immediately. Promise.allSettled\n// keeps every result, so the run succeeds and returns a deterministic summary.\nconst steps = [\n  { tool: \"mock.wait\", args: { ms: 120, value: \"a\" } },\n  { tool: \"mock.wait\", args: { ms: 30, value: \"b\" } },\n  { tool: \"mock.fail\", args: { message: \"controlled failure\" } },\n  { tool: \"mock.wait\", args: { ms: 30, value: \"d\" } },\n  { tool: \"mock.wait\", args: { ms: 120, value: \"e\" } },\n  { tool: \"mock.wait\", args: { ms: 30, value: \"f\" } },\n];\nconst settled = await Promise.allSettled(steps.map((step) => tools.call(step.tool, step.args)));\nreturn settled.map((result) =>\n  result.status === \"fulfilled\"\n    ? { status: \"fulfilled\", value: result.value }\n    : { status: \"rejected\", code: (result.reason as { code?: string }).code ?? null }\n);\n",
+  "status": "success",
+  "limits": {
+    "timeout_ms": 5000,
+    "max_calls": 32,
+    "max_concurrency": 4,
+    "max_output_bytes": 262144,
+    "dispatch": "batch"
+  },
+  "output": [
+    {
+      "status": "fulfilled",
+      "value": "a"
+    },
+    {
+      "status": "fulfilled",
+      "value": "b"
+    },
+    {
+      "code": "mock_failure",
+      "status": "rejected"
+    },
+    {
+      "status": "fulfilled",
+      "value": "d"
+    },
+    {
+      "status": "fulfilled",
+      "value": "e"
+    },
+    {
+      "status": "fulfilled",
+      "value": "f"
+    }
+  ],
+  "calls": [
+    {
+      "call": {
+        "id": 1,
+        "tool": "mock.wait",
+        "arguments": {
+          "ms": 120,
+          "value": "a"
+        }
+      },
+      "guest_id": 0,
+      "outcome": {
+        "status": "succeeded",
+        "value": "a"
+      },
+      "started_ms": 55,
+      "finished_ms": 178
+    },
+    {
+      "call": {
+        "id": 2,
+        "tool": "mock.wait",
+        "arguments": {
+          "ms": 30,
+          "value": "b"
+        }
+      },
+      "guest_id": 1,
+      "outcome": {
+        "status": "succeeded",
+        "value": "b"
+      },
+      "started_ms": 55,
+      "finished_ms": 87
+    },
+    {
+      "call": {
+        "id": 3,
+        "tool": "mock.fail",
+        "arguments": {
+          "message": "controlled failure"
+        }
+      },
+      "guest_id": 2,
+      "outcome": {
+        "status": "provider_failed",
+        "error": {
+          "code": "mock_failure",
+          "message": "controlled failure"
+        }
+      },
+      "started_ms": 55,
+      "finished_ms": 55
+    },
+    {
+      "call": {
+        "id": 4,
+        "tool": "mock.wait",
+        "arguments": {
+          "ms": 30,
+          "value": "d"
+        }
+      },
+      "guest_id": 3,
+      "outcome": {
+        "status": "succeeded",
+        "value": "d"
+      },
+      "started_ms": 55,
+      "finished_ms": 87
+    },
+    {
+      "call": {
+        "id": 5,
+        "tool": "mock.wait",
+        "arguments": {
+          "ms": 120,
+          "value": "e"
+        }
+      },
+      "guest_id": 4,
+      "outcome": {
+        "status": "succeeded",
+        "value": "e"
+      },
+      "started_ms": 178,
+      "finished_ms": 299
+    },
+    {
+      "call": {
+        "id": 6,
+        "tool": "mock.wait",
+        "arguments": {
+          "ms": 30,
+          "value": "f"
+        }
+      },
+      "guest_id": 5,
+      "outcome": {
+        "status": "succeeded",
+        "value": "f"
+      },
+      "started_ms": 178,
+      "finished_ms": 209
+    }
+  ],
+  "events": [
+    {
+      "id": 1,
+      "call_id": 1,
+      "kind": "admitted",
+      "at_ms": 55
+    },
+    {
+      "id": 2,
+      "call_id": 2,
+      "kind": "admitted",
+      "at_ms": 55
+    },
+    {
+      "id": 3,
+      "call_id": 3,
+      "kind": "admitted",
+      "at_ms": 55
+    },
+    {
+      "id": 4,
+      "call_id": 4,
+      "kind": "admitted",
+      "at_ms": 55
+    },
+    {
+      "id": 5,
+      "call_id": 5,
+      "kind": "admitted",
+      "at_ms": 55
+    },
+    {
+      "id": 6,
+      "call_id": 6,
+      "kind": "admitted",
+      "at_ms": 55
+    },
+    {
+      "id": 7,
+      "call_id": 1,
+      "kind": "dispatched",
+      "at_ms": 55
+    },
+    {
+      "id": 8,
+      "call_id": 2,
+      "kind": "dispatched",
+      "at_ms": 55
+    },
+    {
+      "id": 9,
+      "call_id": 3,
+      "kind": "dispatched",
+      "at_ms": 55
+    },
+    {
+      "id": 10,
+      "call_id": 4,
+      "kind": "dispatched",
+      "at_ms": 55
+    },
+    {
+      "id": 11,
+      "call_id": 3,
+      "kind": "provider_failed",
+      "at_ms": 55
+    },
+    {
+      "id": 12,
+      "call_id": 4,
+      "kind": "succeeded",
+      "at_ms": 87
+    },
+    {
+      "id": 13,
+      "call_id": 2,
+      "kind": "succeeded",
+      "at_ms": 87
+    },
+    {
+      "id": 14,
+      "call_id": 1,
+      "kind": "succeeded",
+      "at_ms": 178
+    },
+    {
+      "id": 15,
+      "call_id": 5,
+      "kind": "dispatched",
+      "at_ms": 178
+    },
+    {
+      "id": 16,
+      "call_id": 6,
+      "kind": "dispatched",
+      "at_ms": 178
+    },
+    {
+      "id": 17,
+      "call_id": 6,
+      "kind": "succeeded",
+      "at_ms": 209
+    },
+    {
+      "id": 18,
+      "call_id": 5,
+      "kind": "succeeded",
+      "at_ms": 300
+    },
+    {
+      "id": 19,
+      "call_id": null,
+      "kind": "run_finished",
+      "at_ms": 318
+    }
+  ],
+  "elapsed_ms": 317,
+  "diagnostic": null
+}
