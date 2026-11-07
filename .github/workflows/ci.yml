@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+      - name: Show mise-managed build tools
+        run: |
+          mise exec -- rustc --version
+          mise exec -- mbx --version
+      - run: mise run check
+
+  msrv:
+    name: Rust 1.85 (MSRV)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+      - name: Install minimum supported Rust
+        run: mise exec -- rustup toolchain install 1.85.0 --profile minimal
+      - name: Test MSRV through mise and Mr Boxington
+        run: |
+          mise exec -- mbx --version
+          mise exec -- cargo +1.85.0 test --locked

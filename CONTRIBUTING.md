@@ -1,0 +1,92 @@
+# Contributing
+
+## Set up development
+
+Install the [prerequisites listed in the README](README.md#prerequisites), then
+run these commands from the repository root:
+
+```sh
+mise trust
+mise install rust mr-boxington
+mise run check
+```
+
+Use mise for both development and CI. Nix is not part of the toolchain.
+`mise.toml` selects stable Rust and a specific Mr Boxington release.
+`Cargo.toml` declares the minimum supported Rust version, currently 1.85.
+
+## Make a change
+
+Keep each change focused on one problem. Put reusable behavior in `src/lib.rs`
+and process I/O in `src/main.rs`. Add dependencies only when the change needs them.
+
+Document public APIs with runnable examples and relevant error or panic
+conditions. Add or update tests for changed behavior, bug regressions, or public
+contracts. Prefer existing tests over duplicate coverage.
+
+Use `#[cfg(test)] mod tests` for private internals, `tests/` for public API
+integration tests, and rustdoc examples for usage. The starter's greeting example
+is a doc test. Avoid tests that only check trivial wiring or implementation details.
+
+## Run checks
+
+Before submitting a code or build change, run:
+
+```sh
+mise run check
+```
+
+The task checks formatting, runs Clippy on all targets and features, runs tests
+including doc tests, and builds documentation. Clippy and rustdoc warnings fail
+the check. To fix formatting, run `mise exec -- cargo fmt --all`.
+
+For compatibility changes, also test the declared MSRV:
+
+```sh
+mise exec -- rustup toolchain install 1.85.0 --profile minimal
+mise exec -- cargo +1.85.0 test --locked
+```
+
+Both [CI jobs](.github/workflows/ci.yml) install tools with mise and run Cargo
+through Mr Boxington. CI currently runs on Linux. Check platform-specific changes
+on the affected platform and report what you tested.
+
+## Manage dependencies and build storage
+
+Use `mise exec -- cargo add <crate>` when adding a dependency. Include the
+resulting `Cargo.toml` and `Cargo.lock` changes together. Keep `Cargo.lock` under
+version control, including for library development. The `--locked` checks reject
+unrecorded dependency changes.
+
+mise's `mr_boxington = true` option wraps Cargo with mbx. Use `mise exec -- cargo
+...` in non-interactive sessions, or activate mise in your shell. Editors should
+inherit the same environment. Do not add `mbx setup` hooks or a `rustc-wrapper`.
+
+mbx manages `target/` as a symlink and collects old build state automatically.
+Inspect the cache with `mise exec -- mbx cache stats`. Clear this project's build
+state with `mise exec -- mbx clean`. Do not use `cargo clean` or delete `target/`
+directly. A remote compilation cache is not configured.
+
+## Update tools and skills
+
+Change tool selections in `mise.toml`, then run `mise install rust mr-boxington`
+and `mise run check`. Stable Rust follows a moving channel. Pin an exact Rust
+release there if your project needs a fixed compiler.
+
+If the MSRV changes, update `Cargo.toml`, the CI job, and the documented commands
+in README, AGENTS, and this file together. Test the new minimum toolchain.
+
+Keep skill content in `.agents/skills/`. For a new skill, add a relative link in
+`.claude/skills/`, following the existing links. Preserve the upstream license
+and revision when updating vendored skills. The update procedure is recorded in
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+
+## Submit a pull request
+
+Explain the problem, resulting behavior, and checks you ran. Include a reproducer
+for a bug fix. Note any checks you could not run and any public API or MSRV changes.
+Use small Conventional Commits, such as `fix: preserve empty input`.
+
+Measure representative workloads before claiming a performance improvement.
+Publishing remains disabled until the package metadata and release process are
+configured for the project.
