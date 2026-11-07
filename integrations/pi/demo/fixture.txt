@@ -1,0 +1,2 @@
+codemode Pi bridge fixture
+This file is read through Pi's own read tool.

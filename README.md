@@ -1,129 +1,111 @@
-# rust-template
+# codemode
 
-Pragmatic Rust 2024 template for a library, a binary, or both, with
-[mise](https://mise.jdx.dev/), [Mr Boxington](https://github.com/jdx/mr-boxington),
-and shared coding-agent skills.
+A local Rust runtime for agent-written TypeScript/JavaScript tool workflows.
+Designed for use from **Pi, OpenCode, Codex, and the Composio CLI**, with one
+provider-independent core and host-specific adapters.
 
-One Cargo package, zero crate dependencies. The development toolchain is defined
-in [`mise.toml`](mise.toml).
+Rust owns three things: **run-level control**, **rolling tool scheduling**, and
+**execution evidence**. A replaceable backend executes the guest program;
+a trusted provider executes explicitly authorized tools outside it.
 
-## Table of contents
+The current prototype uses Deno 2.9.8 as its guest backend. `codemode run` uses an
+offline mock provider; `codemode bridge` lets a parent host execute the tools.
+A native [Pi 1.4.0 integration](integrations/pi/README.md) uses the bridge to run
+Pi's own tools with Pi's permission gates. OpenCode, Codex, and a real Composio
+provider remain targets. See [host integration](docs/integrations.md) for what
+each host has and has not been verified to do.
 
-- [Prerequisites](#prerequisites)
-- [Getting started](#getting-started)
-- [What's included](#whats-included)
-- [Available commands](#available-commands)
-- [Coding agents](#coding-agents)
-- [Contributing](#contributing)
-- [License](#license)
+## Run it
 
-## Prerequisites
-
-- [Git](https://git-scm.com/downloads) to clone and version your repository.
-- [mise](https://mise.jdx.dev/getting-started.html) **2026.9.2 or newer**, available on `PATH`.
-- A native compiler and linker for your platform, as required by
-  [Rust](https://www.rust-lang.org/tools/install).
-
-| Platform | Native build tools |
-| --- | --- |
-| macOS | Xcode Command Line Tools. Run `xcode-select --install`. |
-| Debian / Ubuntu | GCC and standard build tools. Run `sudo apt install build-essential`. |
-| Other Linux distributions | Install the distribution's C compiler, linker, and development headers. |
-| Windows | Visual Studio Build Tools with **Desktop development with C++**, including the Windows SDK. |
-
-mise installs Rust, rustup, rustfmt, Clippy, and the configured Mr Boxington
-release. The first installation needs network access. Nix is not used.
-
-On Windows, enable Developer Mode and clone with `git -c core.symlinks=true clone <repository-url>`
-to preserve the shared agent-skill links.
-
-## Getting started
-
-Create your own repository with [Use this template](https://github.com/jkomyno/rust-template/generate),
-then clone it locally.
-
-After copying this template or cloning your repository, run:
+Install Git, mise, and your platform's Rust compiler/linker prerequisites, then:
 
 ```sh
 mise trust
-mise install rust mr-boxington
-mise run check
-mise exec -- cargo run
+mise install rust mr-boxington deno
+mise exec -- cargo run -- run --code examples/compose.ts --concurrency 2 --trace /tmp/codemode-trace.json
 ```
 
-The binary prints `Hello, Rust!`. `mise run check` runs formatting, Clippy,
-tests, and documentation checks, matching CI.
+With `--trace`, stdout contains a compact JSON object with `status`, the trace
+path, and `output` when a guest value was observed (including JSON `null`). The file contains the full execution record. Without
+`--trace`, stdout contains that record directly. Diagnostics use stderr.
 
-Make the template yours:
+The example calls four mock tools concurrently, preserves input ordering in its
+returned array, and returns only two selected values. Rust starts queued calls as
+provider slots become free. To inspect a controlled failure:
 
-1. Rename the package in `Cargo.toml` and the `rust_template` imports in `src/`.
-2. Update this README and the package description. Run `mise exec -- cargo check` to refresh `Cargo.lock`.
-3. Replace `greeting` with your API. Keep process I/O in `src/main.rs`.
-4. Before publishing, set your repository URL, review the MIT license, and remove `publish = false`.
+```sh
+mise exec -- cargo run -- run --code examples/failure.ts
+```
 
-For a library only, delete `src/main.rs`. For a binary only, delete `src/lib.rs`
-and replace its call in `src/main.rs`. Add other executables under `src/bin/`.
-Introduce a workspace when you need independently versioned or published packages.
+That command exits unsuccessfully and records the earlier completed call as well
+as the provider failure. No service account or external tool call is involved.
+Run `mise exec -- cargo run -- --help` for limits, stdin input, and exit behavior.
 
-## What's included
+## Execution contract
 
-- **Rust 2024**, with current stable Rust selected by mise. The minimum supported
-  Rust version (MSRV) is **1.85**, tested separately in CI.
-- **Library and binary targets** in [`src/lib.rs`](src/lib.rs) and
-  [`src/main.rs`](src/main.rs), discovered automatically by Cargo.
-- **rustfmt and Clippy**, using default formatting and a small lint set in
-  [`Cargo.toml`](Cargo.toml). Unsafe code is forbidden. CI rejects Clippy and
-  rustdoc warnings.
-- **Mr Boxington**, pinned in mise and enabled through
-  [mise's native Cargo integration](https://mise.jdx.dev/lang/rust.html#cache-cargo-builds-with-mr-boxington).
-  It shares compiled outputs across projects and worktrees and manages build storage.
-- **GitHub Actions**, using mise and Mr Boxington in both the stable and MSRV
-  jobs. The workflow lives in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
-- **Shared agent instructions and skills**, including idiomatic Rust writing
-  and review guidance from [BeautifulRust](https://github.com/morganlinton/BeautifulRust).
+- One absolute deadline includes child startup and provider work. Cancellation
+  stops new dispatch and terminates the child. Remote effects cannot be undone.
+- The host authorizes tool names and validates the mock tool arguments. A rolling
+  scheduler limits active provider calls and the total helper-call allowance.
+- Rust assigns trace identities and records outcomes. Child stdout is untrusted;
+  it cannot supply authoritative provider results or trace events.
+- Serialized tool replies and final output share a byte allowance. Frames are
+  capped at 64 KiB. This is an output/transport limit, not a process-memory limit.
+- A returned guest value, a provider result, and a run's terminal status are
+  distinct. Unobserved dispatched calls remain unknown; queued calls never sent
+  to a provider are identified separately. There are no automatic retries.
 
-Rust uses its default build profiles. No remote compilation cache or release
-automation is configured. Add dependencies and tooling when the project needs them.
+The Deno process receives a cleared environment and denied filesystem, network,
+environment, process, system-information, FFI, and external-import permissions.
+Guest code runs in a permission-restricted data-URL worker. Built-in and inline
+`data:` imports and child stdio remain accessible. These runtime restrictions do
+not establish OS isolation, hard memory containment, or crash recovery.
 
-## Available commands
+## Library, helpers, and providers
 
-| Command | Purpose |
-| --- | --- |
-| `mise run check` | Run all required stable-Rust checks. |
-| `mise exec -- cargo run` | Run the binary. |
-| `mise exec -- cargo build --release` | Build optimized library and binary targets. |
-| `mise exec -- cargo fmt --all` | Format Rust source. |
-| `mise exec -- cargo test --locked` | Run tests, including public API doc examples. |
-| `mise exec -- cargo doc --locked --no-deps --open` | Build and open API documentation. |
-| `mise exec -- mbx cache stats` | Inspect the shared compilation cache. |
+Reusable Rust APIs live in [src/lib.rs](src/lib.rs). The CLI owns argument parsing,
+source input, signals, trace files, stdout, and exit codes in [src/main.rs](src/main.rs).
+The [TypeScript declarations](types/codemode.d.ts) describe `tools.call` for the
+mock tools through an augmentable `CodemodeTools` interface;
+[`integrations/pi/pi-tools.d.ts`](integrations/pi/pi-tools.d.ts) adds Pi's built-ins.
 
-Use `mise exec -- cargo ...` in terminals, editors, and agent sessions to select
-the repository's tools and Cargo wrapper. Plain Cargo commands also work in a
-[mise-activated shell](https://mise.jdx.dev/installing-mise.html#shells).
+A Rust `ToolProvider` receives an authorized `ToolCall` and a `CallContext`
+containing the shared deadline and cancellation signal. It returns a JSON value
+or `ProviderError`. Configure the authorized names separately from guest code.
+Provider credentials belong on this trusted side. A host adapter must preserve
+its own permission and approval behavior; a type declaration does not supply it.
 
-## Coding agents
+`serve_bridge` (and `codemode bridge`) supplies a provider whose calls are sent
+to the parent host over a versioned stdio protocol and answered by it. The host
+decides which tool names are authorized; Rust still rejects everything else,
+schedules calls, and writes the trace. To try it with Pi, without credentials:
 
-[`AGENTS.md`](AGENTS.md) holds repository instructions. All skill content lives
-in [`.agents/skills/`](.agents/skills/).
+```sh
+mise run pi-demo
+```
 
-| Agent | Instructions | Skills |
-| --- | --- | --- |
-| Codex | `AGENTS.md` | Discovers `.agents/skills/`. |
-| Claude Code | `CLAUDE.md` imports `AGENTS.md`. | `.claude/skills/` links to canonical skill directories. |
-| Pi | `AGENTS.md` | Discovers `.agents/skills/`. |
+Composio is one intended adapter. Its backend ToolRouter informs experiments
+around scheduling, result movement, and outcome preservation. Authentication,
+catalogs, billing, and persistent workbenches do not define this runtime's core.
 
-`rust-best-practices` covers ownership, API design, errors, and measured
-performance. `rust-review` produces concrete, prioritized findings. Reference
-digests load on demand. Edit skills only in `.agents/skills/`.
+## Development
 
-The vendored revision and license are recorded in
-[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+```sh
+mise run check
+mise exec -- cargo +1.85.0 test --locked
+```
 
-## Contributing
+Tests execute real guest programs with the mock provider and an in-process fake
+bridge host, so Deno must be on the mise-managed PATH. `mise run pi-check` runs
+the ignored Pi 1.4.0 integration tests; mise fetches Pi on first use. Rust 1.85 is the MSRV. One Cargo package, safe Rust, and default
+build profiles are retained. `target/` belongs to Mr Boxington; use
+`mise exec -- mbx clean` for project cleanup.
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the development workflow, MSRV
-checks, tool updates, and pull request expectations.
+See [GOAL.md](GOAL.md), [STRATEGY.md](STRATEGY.md), the [design](docs/design.md),
+and [CONTRIBUTING.md](CONTRIBUTING.md). Performance and stronger isolation claims
+need representative measurements and explicit evidence.
 
 ## License
 
-[MIT](LICENSE). Vendored skills retain their upstream license notices.
+[MIT](LICENSE). Vendored skills retain their notices in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

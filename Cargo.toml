@@ -1,10 +1,10 @@
 [package]
-name = "rust-template"
+name = "codemode"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "A minimal Rust library and binary starter."
-repository = "https://github.com/jkomyno/rust-template"
+description = "A local Rust execution runtime for bounded agent-written tool workflows."
+repository = "https://github.com/jkomyno/codemode"
 license = "MIT"
 publish = false
 
@@ -16,3 +16,11 @@ missing_docs = "warn"
 dbg_macro = "warn"
 todo = "warn"
 unimplemented = "warn"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "sync", "time", "signal", "fs"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
