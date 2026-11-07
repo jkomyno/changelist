@@ -4,9 +4,11 @@ use std::fs::OpenOptions;
 use std::future::Future;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::task::Poll;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -36,6 +38,39 @@ pub struct RunConfig {
     pub deno: PathBuf,
     /// Tool names authorized by this host, independently of guest requests.
     pub allowed_tools: Vec<String>,
+    /// How queued calls start when provider slots are free.
+    pub dispatch: DispatchPolicy,
+}
+
+/// When an admitted call may start, given the concurrency cap.
+///
+/// A sequential baseline is either policy with `max_concurrency` set to 1.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DispatchPolicy {
+    /// Start a queued call as soon as any active call finishes.
+    #[default]
+    Rolling,
+    /// Start up to the cap only when no call is active, then wait for that whole
+    /// batch. A batch includes every complete call frame the host has received
+    /// when it forms. Calls submitted in one synchronous guest turn arrive in one
+    /// write and share a batch, up to the cap; calls from later turns may not.
+    Batch,
+}
+
+/// The host-chosen limits a run executed under, recorded with its trace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct RunLimits {
+    /// Absolute wall-clock budget in milliseconds.
+    pub timeout_ms: u64,
+    /// Maximum admitted calls.
+    pub max_calls: usize,
+    /// Maximum simultaneously executing provider calls.
+    pub max_concurrency: usize,
+    /// Shared serialized response and output byte allowance.
+    pub max_output_bytes: usize,
+    /// Dispatch policy under the concurrency cap.
+    pub dispatch: DispatchPolicy,
 }
 
 impl Default for RunConfig {
@@ -49,6 +84,7 @@ impl Default for RunConfig {
             allowed_tools: ["mock.echo", "mock.wait", "mock.fail"]
                 .map(String::from)
                 .to_vec(),
+            dispatch: DispatchPolicy::Rolling,
         }
     }
 }
@@ -284,6 +320,8 @@ pub struct RunReport {
     pub code: String,
     /// Host-selected terminal status.
     pub status: RunStatus,
+    /// Limits and dispatch policy chosen by the host for this run.
+    pub limits: RunLimits,
     /// Guest-returned JSON value, when observed within limits; omitted from JSON when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<Value>,
@@ -474,6 +512,35 @@ fn validate_call(call: &ToolCall, config: &RunConfig) -> Result<(), ProviderErro
     }
 }
 
+/// Whether [`frame`] can finish now without waiting: a complete frame, end of
+/// input, an error, or an oversized frame is available. Bytes of an incomplete
+/// frame move into `partial`, where [`frame`] resumes, so a guest that stops
+/// mid-frame cannot hold back dispatch.
+async fn frame_ready(
+    reader: &mut (impl AsyncBufRead + Unpin),
+    partial: &mut Vec<u8>,
+    limit: usize,
+) -> bool {
+    std::future::poll_fn(|context| {
+        loop {
+            let count = match Pin::new(&mut *reader).poll_fill_buf(context) {
+                Poll::Pending => return Poll::Ready(false),
+                Poll::Ready(Ok(bytes))
+                    if !bytes.is_empty()
+                        && !bytes.contains(&b'\n')
+                        && partial.len() + bytes.len() <= limit =>
+                {
+                    partial.extend_from_slice(bytes);
+                    bytes.len()
+                }
+                Poll::Ready(_) => return Poll::Ready(true),
+            };
+            Pin::new(&mut *reader).consume(count);
+        }
+    })
+    .await
+}
+
 /// Read one LF-terminated frame of at most `limit` bytes, keeping partial input
 /// in `bytes` so a cancelled read can resume.
 pub(crate) async fn frame(
@@ -565,6 +632,13 @@ pub async fn run(
         schema_version: 1,
         code: code.into(),
         status: RunStatus::Success,
+        limits: RunLimits {
+            timeout_ms: config.timeout_ms,
+            max_calls: config.max_calls,
+            max_concurrency: config.max_concurrency,
+            max_output_bytes: config.max_output_bytes,
+            dispatch: config.dispatch,
+        },
         output: None,
         calls: Vec::new(),
         events: Vec::new(),
@@ -648,7 +722,17 @@ pub async fn run(
                 );
             }
         }
-        while !guest_done && running.len() < config.max_concurrency {
+        // A batch forms only while nothing runs, after every complete call frame
+        // already received is admitted.
+        let slots_open = match config.dispatch {
+            DispatchPolicy::Rolling => true,
+            DispatchPolicy::Batch => {
+                running.is_empty()
+                    && (guest_done
+                        || !frame_ready(&mut output, &mut partial_frame, FRAME_BYTES).await)
+            }
+        };
+        while slots_open && !guest_done && running.len() < config.max_concurrency {
             // Dispatch is linearized at this check; future effects may outlive cancellation.
             if cancellation.is_cancelled() || Instant::now() >= deadline {
                 break;

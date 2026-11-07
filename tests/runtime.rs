@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use codemode::{
-    CallContext, CallOutcome, MockProvider, ProviderError, RunCancellation, RunConfig, RunStatus,
-    ToolCall, ToolProvider, run,
+    CallContext, CallOutcome, DispatchPolicy, MockProvider, ProviderError, RunCancellation,
+    RunConfig, RunStatus, ToolCall, ToolProvider, run,
 };
 use serde_json::{Value, json};
 
@@ -100,6 +100,94 @@ impl ToolProvider for RollingProvider {
         }
         Ok(call.arguments)
     }
+}
+
+fn position(report: &codemode::RunReport, call_id: u64, kind: &str) -> usize {
+    report
+        .events
+        .iter()
+        .position(|e| e.call_id == Some(call_id) && e.kind == kind)
+        .unwrap_or_else(|| panic!("call {call_id} has a {kind} event"))
+}
+
+#[tokio::test]
+async fn batch_dispatch_waits_for_the_whole_batch_and_groups_submitted_calls() {
+    let mut options = config();
+    options.max_concurrency = 2;
+    options.dispatch = DispatchPolicy::Batch;
+    let report = run(
+        "return await Promise.all([{ms:150,value:0},{ms:0,value:1},{ms:0,value:2},{ms:0,value:3}].map(a => tools.call('mock.wait', a)));",
+        options,
+        MockProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("batch run completes");
+    assert_eq!(report.status, RunStatus::Success, "{report:?}");
+    assert_eq!(report.output, Some(json!([0, 1, 2, 3])));
+    assert_eq!(report.limits.dispatch, DispatchPolicy::Batch);
+    // Both calls submitted together form the first batch.
+    assert!(position(&report, 2, "dispatched") < position(&report, 2, "succeeded"));
+    assert!(position(&report, 2, "dispatched") < position(&report, 1, "succeeded"));
+    // The idle slot is not refilled until the slow call finishes the batch.
+    assert!(position(&report, 3, "dispatched") > position(&report, 1, "succeeded"));
+    assert!(position(&report, 4, "dispatched") < position(&report, 3, "succeeded"));
+}
+
+#[tokio::test]
+async fn uncloneable_arguments_reject_only_their_own_call() {
+    let report = run(
+        "const results = await Promise.allSettled([tools.call('mock.echo', 1), tools.call('mock.echo', () => 2), tools.call(() => 3, null), tools.call(4, null)]); return results.map(r => r.status);",
+        config(),
+        MockProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("run completes");
+    assert_eq!(report.status, RunStatus::Success, "{report:?}");
+    assert_eq!(
+        report.output,
+        Some(json!(["fulfilled", "rejected", "rejected", "rejected"]))
+    );
+    assert_eq!(report.calls.len(), 1, "rejected calls never reach the host");
+}
+
+#[tokio::test]
+async fn a_call_submitted_as_the_program_settles_reaches_the_host() {
+    let report = run(
+        "queueMicrotask(() => { void tools.call('mock.echo', 'late'); }); return 'done';",
+        config(),
+        MockProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("run completes");
+    assert_eq!(report.status, RunStatus::Success, "{report:?}");
+    assert_eq!(report.calls.len(), 1, "{report:?}");
+    assert!(matches!(
+        report.calls[0].outcome,
+        CallOutcome::Succeeded { .. }
+    ));
+}
+
+#[tokio::test]
+async fn an_incomplete_stdout_frame_cannot_hold_back_a_batch() {
+    let mut options = config();
+    options.timeout_ms = 1_500;
+    options.dispatch = DispatchPolicy::Batch;
+    let report = run(
+        r#"Deno.stdout.writeSync(new TextEncoder().encode('{"type":"call","id":1000,"tool":"mock.echo","arguments":1}\n{')); await new Promise(() => {});"#,
+        options,
+        MockProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("run produces a report");
+    assert_eq!(report.status, RunStatus::Deadline, "{report:?}");
+    assert!(
+        matches!(report.calls[0].outcome, CallOutcome::Succeeded { .. }),
+        "{report:?}"
+    );
 }
 
 #[tokio::test]

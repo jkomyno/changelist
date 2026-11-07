@@ -61,6 +61,14 @@ function launch(code: string): Worker {
   const source = `
 let nextId = 0;
 const pending = new Map();
+// Calls submitted in one synchronous turn reach the host in one write.
+let outgoing = [];
+const flush = () => {
+  if (outgoing.length === 0) return;
+  const calls = outgoing;
+  outgoing = [];
+  postMessage({ type: "calls", calls });
+};
 globalThis.onmessage = ({ data }) => {
   const call = pending.get(data.id);
   if (!call) return;
@@ -74,12 +82,16 @@ globalThis.onmessage = ({ data }) => {
 };
 const tools = {
   call(tool: string, args: unknown = null): Promise<unknown> {
+    if (typeof tool !== "string") return Promise.reject(new TypeError("Tool name must be a string"));
     if (!Number.isSafeInteger(nextId)) return Promise.reject(new Error("Call IDs exhausted"));
     const id = nextId++;
     return new Promise((resolve, reject) => {
+      // Clone now so a value that cannot be posted rejects only its own call.
+      let call;
+      try { call = structuredClone({ id, tool, arguments: args }); } catch (error) { reject(error); return; }
       pending.set(id, { resolve, reject });
-      try { postMessage({ type: "call", id, tool, arguments: args }); }
-      catch (error) { pending.delete(id); reject(error); }
+      outgoing.push(call);
+      if (outgoing.length === 1) queueMicrotask(flush);
     });
   },
 };
@@ -89,8 +101,9 @@ for (const level of ["log", "info", "warn", "error"]) {
 (async () => {
 ${code}
 })().then(
-  value => postMessage({ type: "output", value: value ?? null }),
-  error => postMessage({ type: "error", message: error instanceof Error ? error.message : String(error) }),
+  // Calls submitted before the program settled reach the host before its result.
+  value => { flush(); postMessage({ type: "output", value: value ?? null }); },
+  error => { flush(); postMessage({ type: "error", message: error instanceof Error ? error.message : String(error) }); },
 );
 `;
   const child = new Worker("data:application/typescript," + encodeURIComponent(source), {
@@ -103,8 +116,15 @@ ${code}
       if (!record(data)) throw new Error("Invalid worker frame");
       if (data.type === "log" && typeof data.message === "string") {
         write(Deno.stderr, data.message + "\n");
-      } else if (data.type === "call" && validId(data.id) && typeof data.tool === "string" && data.arguments !== undefined) {
-        write(Deno.stdout, JSON.stringify({ type: "call", id: data.id, tool: data.tool, arguments: data.arguments }) + "\n");
+      } else if (data.type === "calls" && Array.isArray(data.calls)) {
+        let frames = "";
+        for (const call of data.calls) {
+          if (!record(call) || !validId(call.id) || typeof call.tool !== "string" || call.arguments === undefined) {
+            throw new Error("Invalid worker frame");
+          }
+          frames += JSON.stringify({ type: "call", id: call.id, tool: call.tool, arguments: call.arguments }) + "\n";
+        }
+        write(Deno.stdout, frames);
       } else if (data.type === "output" && "value" in data) {
         finish({ type: "output", value: data.value ?? null });
       } else if (data.type === "error" && typeof data.message === "string") {

@@ -34,6 +34,13 @@ The guest program expresses dependencies with ordinary awaits and independent
 work with promises. Rust starts a queued call when an active slot becomes free.
 There is no separate dependency-graph planner.
 
+`RunConfig::dispatch` (`--dispatch rolling|batch`) selects the policy; rolling
+is the default. The batch policy is a baseline: it starts up to the cap only when
+no call is active and waits for the whole batch, as chunked parallel execution
+does. Calls the guest submits in one synchronous turn reach Rust in one write, so
+they share a batch. A sequential baseline is either policy with a cap of 1. The
+report records the policy and limits it ran under.
+
 Compare the same workload and concurrency cap under batch and rolling policies
 before claiming an improvement. Mixed-latency calls can expose idle slots at a
 batch barrier. Equal-duration calls, provider rate limits, startup cost, or very

@@ -9,7 +9,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use codemode::{
-    BridgeError, MockProvider, RunCancellation, RunConfig, RunReport, run, serve_bridge,
+    BridgeError, DispatchPolicy, MockProvider, RunCancellation, RunConfig, RunReport, run,
+    serve_bridge,
 };
 
 const MAX_CODE_BYTES: u64 = 64 * 1024;
@@ -23,6 +24,8 @@ Options:
   --timeout-ms <n>        Total run deadline, including startup (default: 5000)
   --max-calls <n>         Maximum helper-call attempts (default: 32)
   --concurrency <n>       Maximum active provider calls (default: 4)
+  --dispatch <policy>     rolling (refill each free slot) or batch (wait for
+                          each whole batch); default: rolling
   --max-output-bytes <n>  Cumulative JSON response/output bytes (default: 262144)
   --trace <file.json>     Save the full trace; print only status, output, and path (run only)
   --deno <executable>     Deno executable (default: deno from PATH)
@@ -95,6 +98,7 @@ fn parse_arguments() -> Result<Command, CliError> {
                 | "--timeout-ms"
                 | "--max-calls"
                 | "--concurrency"
+                | "--dispatch"
                 | "--max-output-bytes"
         ) {
             return Err(CliError(format!("unknown option '{flag}'")));
@@ -115,6 +119,13 @@ fn parse_arguments() -> Result<Command, CliError> {
             }
             "--trace" => trace = Some(PathBuf::from(value)),
             "--deno" => config.deno = PathBuf::from(value),
+            "--dispatch" => {
+                config.dispatch = match value.to_str() {
+                    Some("rolling") => DispatchPolicy::Rolling,
+                    Some("batch") => DispatchPolicy::Batch,
+                    _ => return Err(CliError("--dispatch must be rolling or batch".into())),
+                }
+            }
             _ => {
                 let number = value
                     .to_str()
