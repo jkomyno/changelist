@@ -2,17 +2,18 @@
 
 ## Set up development
 
-Install the [prerequisites listed in the README](README.md#prerequisites), then
+Follow the [setup instructions in the README](README.md#run-it), then
 run these commands from the repository root:
 
 ```sh
 mise trust
-mise install rust mr-boxington
+mise install rust mr-boxington deno
 mise run check
 ```
 
 Use mise for both development and CI. Nix is not part of the toolchain.
-`mise.toml` selects stable Rust and a specific Mr Boxington release.
+`mise.toml` selects stable Rust, a specific Mr Boxington release, and the
+prototype's Deno execution backend.
 `Cargo.toml` declares the minimum supported Rust version, currently 1.85.
 
 ## Make a change
@@ -25,8 +26,8 @@ conditions. Add or update tests for changed behavior, bug regressions, or public
 contracts. Prefer existing tests over duplicate coverage.
 
 Use `#[cfg(test)] mod tests` for private internals, `tests/` for public API
-integration tests, and rustdoc examples for usage. The starter's greeting example
-is a doc test. Avoid tests that only check trivial wiring or implementation details.
+integration tests, and rustdoc examples for usage. Avoid tests that only check
+trivial wiring or implementation details.
 
 ## Run checks
 
@@ -39,6 +40,13 @@ mise run check
 The task checks formatting, runs Clippy on all targets and features, runs tests
 including doc tests, and builds documentation. Clippy and rustdoc warnings fail
 the check. To fix formatting, run `mise exec -- cargo fmt --all`.
+
+For changes to the bridge or `integrations/pi`, also run the Pi checks, which
+fetch Pi 1.4.0 through mise and need no credentials:
+
+```sh
+mise run pi-check
+```
 
 For compatibility changes, also test the declared MSRV:
 
@@ -69,7 +77,7 @@ directly. A remote compilation cache is not configured.
 
 ## Update tools and skills
 
-Change tool selections in `mise.toml`, then run `mise install rust mr-boxington`
+Change tool selections in `mise.toml`, then run `mise install rust mr-boxington deno`
 and `mise run check`. Stable Rust follows a moving channel. Pin an exact Rust
 release there if your project needs a fixed compiler.
 

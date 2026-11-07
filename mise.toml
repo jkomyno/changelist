@@ -4,6 +4,7 @@ min_version = "2026.9.2"
 # Keep mbx ahead of Rust's Cargo bin directory in PATH.
 mr-boxington = "1.26.0"
 rust = { version = "stable", profile = "minimal", components = ["clippy", "rustfmt"], mr_boxington = true }
+deno = "2.9.8"
 
 [tasks.check]
 description = "Check formatting, lints, tests, and documentation"
@@ -14,3 +15,11 @@ run = [
     "cargo test --locked",
     "cargo doc --locked --no-deps",
 ]
+
+[tasks.pi-demo]
+description = "Run the offline Pi 1.4.0 integration example"
+run = "integrations/pi/run-demo.sh"
+
+[tasks.pi-check]
+description = "Run native Pi 1.4.0 integration checks"
+run = "mise exec npm:@earendil-works/pi-coding-agent@1.4.0 -- cargo test --locked --test pi -- --ignored"
