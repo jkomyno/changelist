@@ -11,8 +11,10 @@ a trusted provider executes explicitly authorized tools outside it.
 The current prototype uses Deno 2.9.8 as its guest backend. `codemode run` uses an
 offline mock provider; `codemode bridge` lets a parent host execute the tools.
 A native [Pi 1.4.0 integration](integrations/pi/README.md) uses the bridge to run
-Pi's own tools with Pi's permission gates. OpenCode, Codex, and a real Composio
-provider remain targets. See [host integration](docs/integrations.md) for what
+Pi's own tools with Pi's permission gates. An [OpenCode 1.19.5 plugin](integrations/opencode/README.md)
+gates every call through OpenCode's permission service and abort, but runs only
+host tools passed to it: OpenCode exposes no plugin API for calling its own tools.
+Codex and a real Composio provider remain targets. See [host integration](docs/integrations.md) for what
 each host has and has not been verified to do.
 
 ## Run it
@@ -78,10 +80,11 @@ its own permission and approval behavior; a type declaration does not supply it.
 `serve_bridge` (and `codemode bridge`) supplies a provider whose calls are sent
 to the parent host over a versioned stdio protocol and answered by it. The host
 decides which tool names are authorized; Rust still rejects everything else,
-schedules calls, and writes the trace. To try it with Pi, without credentials:
+schedules calls, and writes the trace. To try it without credentials:
 
 ```sh
 mise run pi-demo
+mise run opencode-demo
 ```
 
 Composio is one intended adapter. Its backend ToolRouter informs experiments
@@ -97,7 +100,8 @@ mise exec -- cargo +1.85.0 test --locked
 
 Tests execute real guest programs with the mock provider and an in-process fake
 bridge host, so Deno must be on the mise-managed PATH. `mise run pi-check` runs
-the ignored Pi 1.4.0 integration tests; mise fetches Pi on first use. Rust 1.85 is the MSRV. One Cargo package, safe Rust, and default
+the ignored Pi 1.4.0 integration tests and `mise run opencode-check` the OpenCode
+1.19.5 ones; mise fetches each host on first use. Rust 1.85 is the MSRV. One Cargo package, safe Rust, and default
 build profiles are retained. `target/` belongs to Mr Boxington; use
 `mise exec -- mbx clean` for project cleanup.
 

@@ -41,11 +41,12 @@ The task checks formatting, runs Clippy on all targets and features, runs tests
 including doc tests, and builds documentation. Clippy and rustdoc warnings fail
 the check. To fix formatting, run `mise exec -- cargo fmt --all`.
 
-For changes to the bridge or `integrations/pi`, also run the Pi checks, which
-fetch Pi 1.4.0 through mise and need no credentials:
+For changes to the bridge or `integrations/`, also run the host checks, which
+fetch Pi 1.4.0 and OpenCode 1.19.5 through mise and need no credentials:
 
 ```sh
 mise run pi-check
+mise run opencode-check
 ```
 
 For compatibility changes, also test the declared MSRV:
