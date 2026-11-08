@@ -848,6 +848,11 @@ impl fmt::Debug for PreparedGuest {
 }
 
 impl PreparedGuest {
+    /// Wait until the guest process exits, for example while it waits for a program.
+    pub(crate) async fn exited(&mut self) -> io::Result<std::process::ExitStatus> {
+        self.child.wait().await
+    }
+
     /// Start the guest with `deno`, before its program is known.
     ///
     /// Requires a Tokio runtime with I/O enabled.

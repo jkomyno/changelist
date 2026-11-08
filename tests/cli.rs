@@ -176,3 +176,50 @@ fn sigterm_cancels_the_run_and_still_reports() {
     let report: Value = serde_json::from_slice(&output.stdout).expect("stdout is one JSON object");
     assert_eq!(report["status"], "cancelled");
 }
+
+/// A bridge waiting for its program, as a prewarmed one does, still stops on SIGTERM.
+#[cfg(unix)]
+#[test]
+fn an_idle_bridge_stops_on_sigterm() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_codemode"))
+        .arg("bridge")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("bridge starts");
+    // Keep the input open, so only the signal can stop the bridge.
+    let _input = child.stdin.take();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let status = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("kill runs");
+    assert!(status.success());
+    let started = std::time::Instant::now();
+    let output = child.wait_with_output().expect("bridge exits");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("cancelled before the start frame"));
+}
+
+/// A bridge whose guest dies while waiting reports it instead of waiting forever.
+#[cfg(unix)]
+#[test]
+fn a_bridge_whose_guest_exits_before_its_program_reports_it() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_codemode"))
+        .args(["bridge", "--deno", "/usr/bin/true"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("bridge starts");
+    // Keep the input open, so only the guest's exit can stop the bridge.
+    let _input = child.stdin.take();
+    let output = child.wait_with_output().expect("bridge exits");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("guest exited before the start frame"),
+        "{output:?}"
+    );
+}

@@ -79,6 +79,8 @@ export interface StartedBridge {
   exited: boolean;
   /** The end of the bridge's stderr. */
   stderr: string;
+  /** Set if the process could not be started or failed while waiting. */
+  error?: Error;
 }
 
 export interface BridgeRun extends BridgeLimits {
@@ -164,6 +166,11 @@ export function startBridge(limits: BridgeLimits): StartedBridge {
   const child = spawn(limits.bin, bridgeArgs(limits), { cwd: limits.cwd, env: {}, stdio: ["pipe", "pipe", "pipe"] });
   const started: StartedBridge = { child, key: keyOf(limits), exited: false, stderr: "" };
   child.once("close", () => {
+    started.exited = true;
+  });
+  // Kept for runBridge, so a failed spawn of an unused bridge cannot crash the host.
+  child.on("error", (error) => {
+    started.error ??= error;
     started.exited = true;
   });
   child.stdin.on("error", () => {
@@ -283,6 +290,10 @@ export async function runBridge(run: BridgeRun): Promise<RunReport> {
         let start = 0;
         let newline: number;
         while ((newline = chunk.indexOf(10, start)) !== -1) {
+          if (pending + newline - start > frameLimit) {
+            fail(new Error(`bridge frame exceeds ${frameLimit} bytes`));
+            return;
+          }
           pieces.push(chunk.subarray(start, newline));
           const line = Buffer.concat(pieces).toString("utf8");
           pieces = [];
@@ -318,8 +329,9 @@ export async function runBridge(run: BridgeRun): Promise<RunReport> {
         reject(new Error(`codemode bridge ended without a report: ${reason}`));
       };
       child.on("close", ended);
-      // A started bridge may have exited while it waited.
-      if (bridge.exited) ended(child.exitCode, child.signalCode);
+      // A started bridge may have failed or exited while it waited.
+      if (bridge.error) fail(bridge.error);
+      else if (bridge.exited) ended(child.exitCode, child.signalCode);
     });
   } finally {
     run.signal?.removeEventListener("abort", onAbort);

@@ -449,11 +449,24 @@ async fn start_and_run<R>(
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
-    // Start the guest while waiting for the program.
-    let guest = PreparedGuest::start(&config.deno).map_err(BridgeError::Run)?;
+    // Start the guest while waiting for the program. A waiting bridge still stops
+    // on cancellation (SIGTERM) or when its guest dies, so an unused one cannot linger.
+    let mut guest = PreparedGuest::start(&config.deno).map_err(BridgeError::Run)?;
     let mut input = BufReader::new(input);
     let mut partial = Vec::new();
-    let bytes = match frame(&mut input, &mut partial, BRIDGE_FRAME_BYTES).await {
+    let first = tokio::select! {
+        first = frame(&mut input, &mut partial, BRIDGE_FRAME_BYTES) => first,
+        () = cancellation.cancelled() => {
+            return Err(BridgeError::Protocol("cancelled before the start frame".into()));
+        }
+        status = guest.exited() => {
+            let status = status.map_or_else(|error| error.to_string(), |status| status.to_string());
+            return Err(BridgeError::Run(RunError::Io(io::Error::other(format!(
+                "guest exited before the start frame: {status}"
+            )))));
+        }
+    };
+    let bytes = match first {
         Ok(Some(bytes)) => bytes,
         Ok(None) => return Err(BridgeError::Protocol("input closed before start".into())),
         Err(error) if error.kind() == io::ErrorKind::InvalidData => {
