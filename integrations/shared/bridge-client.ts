@@ -59,6 +59,8 @@ export interface BridgeRun {
   timeoutMs: number;
   concurrency: number;
   maxCalls: number;
+  /** Shared reply and output byte budget; defaults to 262144. */
+  maxOutputBytes?: number;
   /** Aborting it cancels the run. */
   signal?: AbortSignal;
   /** Run one authorized call. Rejections become `tool_error`. */
@@ -101,14 +103,15 @@ export function summarize(report: RunReport): Record<string, unknown> {
  * Bound on frames read from the bridge. The report holds the source, every call's
  * arguments, values and errors within the output budget, and per-call events.
  */
-function reportLimit(maxCalls: number): number {
+function reportLimit(maxCalls: number, outputBytes: number): number {
   // The first call beyond the allowance is also recorded, as rejected.
-  return 2 * GUEST_FRAME_BYTES + (maxCalls + 1) * (GUEST_FRAME_BYTES + 4096) + OUTPUT_BYTES + HOST_FRAME_BYTES;
+  return 2 * GUEST_FRAME_BYTES + (maxCalls + 1) * (GUEST_FRAME_BYTES + 4096) + outputBytes + HOST_FRAME_BYTES;
 }
 
 /** Run one program through `codemode bridge` and resolve with its execution record. */
 export async function runBridge(run: BridgeRun): Promise<RunReport> {
-  const frameLimit = reportLimit(run.maxCalls);
+  const outputBytes = run.maxOutputBytes ?? OUTPUT_BYTES;
+  const frameLimit = reportLimit(run.maxCalls, outputBytes);
   const args = [
     "bridge",
     "--timeout-ms",
@@ -118,7 +121,7 @@ export async function runBridge(run: BridgeRun): Promise<RunReport> {
     "--max-calls",
     String(run.maxCalls),
     "--max-output-bytes",
-    String(OUTPUT_BYTES),
+    String(outputBytes),
     "--deno",
     run.deno,
   ];
