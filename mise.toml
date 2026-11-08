@@ -54,4 +54,11 @@ run = "mise exec bun@1.4.4 -- bench/verify-expected.sh"
 
 [tasks.bench]
 description = "Benchmark codemode, Pi, and OpenCode code-mode engines on shared fixtures"
-run = "mise exec bun@1.4.4 -- bun bench/run.ts --engines codemode,codemode-c4,pi,opencode --scenarios triage,triage-large,denied,deadline,guest-exception,lost-response --profiles zero,equal,mixed --reps 20 --warmup 3 --cold 8 --out bench/results/local"
+run = "mise exec bun@1.4.4 -- bun bench/run.ts --engines codemode,codemode-c4,codemode-prewarm,pi,opencode --scenarios triage,triage-large,denied,deadline,guest-exception,lost-response --profiles zero,equal,mixed --reps 20 --warmup 3 --cold 8 --out bench/results/local"
+
+[tasks.demo]
+description = "Run the offline demonstration: a workflow, prewarming, a denial, a lost response, and inspection"
+run = [
+    "cargo build --release --locked --bin codemode",
+    "mise exec bun@1.4.4 -- bun bench/demo.ts",
+]
