@@ -4,7 +4,8 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use codemode::{
-    BridgeError, CallOutcome, RunCancellation, RunConfig, RunReport, RunStatus, serve_bridge,
+    BridgeError, CallOutcome, ProviderFactKind, RunCancellation, RunConfig, RunReport, RunStatus,
+    serve_bridge,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, Lines};
@@ -173,13 +174,26 @@ async fn oversized_host_results_stop_the_run_instead_of_becoming_catchable_error
     for ok in [true, false] {
         let mut host = Host::begin(config(), code, &["host.dump", "host.write"]).await;
         let call = host.next().await;
-        host.send(json!({"type":"result","id":call["id"],"ok":ok,"too_large":true}))
-            .await;
+        host.send(
+            json!({"type":"result","id":call["id"],"ok":ok,"too_large":true,"bytes":5_000_000}),
+        )
+        .await;
         let (_, report) = host.report().await;
         assert_eq!(report.status, RunStatus::OutputLimit);
         assert_eq!(report.calls.len(), 1, "the guest never reached host.write");
         assert_eq!(report.calls[0].outcome, CallOutcome::ResultTooLarge);
+        // The host's measurement, not the size of Rust's internal placeholder.
+        assert_eq!(report.calls[0].result_bytes, Some(5_000_000));
+        assert_eq!(report.bytes.omitted, 5_000_000);
     }
+    // Without a host measurement the size is unknown, not invented.
+    let mut host = Host::begin(config(), code, &["host.dump", "host.write"]).await;
+    let call = host.next().await;
+    host.send(json!({"type":"result","id":call["id"],"ok":true,"too_large":true}))
+        .await;
+    let (_, report) = host.report().await;
+    assert_eq!(report.calls[0].result_bytes, None);
+    assert_eq!(report.bytes.omitted, 0);
 }
 
 #[tokio::test]
@@ -254,7 +268,7 @@ async fn deadline_records_unanswered_host_calls_as_unknown() {
 async fn unsupported_start_frames_are_refused_before_any_guest_runs() {
     for (start, expected) in [
         (
-            json!({"type":"start","version":2,"code":"return 1;","tools":[]}),
+            json!({"type":"start","version":3,"code":"return 1;","tools":[]}),
             "unsupported protocol version",
         ),
         (
@@ -276,4 +290,141 @@ async fn unsupported_start_frames_are_refused_before_any_guest_runs() {
         let result = host.bridge.await.expect("bridge task completes");
         assert!(matches!(result, Err(BridgeError::Protocol(_))));
     }
+}
+
+/// Kinds of the call's events, in order.
+fn call_events(report: &RunReport, call_id: u64) -> Vec<&str> {
+    report
+        .events
+        .iter()
+        .filter(|event| event.call_id == Some(call_id))
+        .map(|event| event.kind.as_str())
+        .collect()
+}
+
+#[tokio::test]
+async fn host_facts_are_recorded_as_host_claims_beside_rust_observations() {
+    let mut host = Host::start(config(), RunCancellation::default());
+    host.send(json!({"type":"start","version":2,"code":"const a = await tools.call('host.read', {key:'k'}); await tools.call('host.read', {key:'z'}); return a;","tools":["host.read"]}))
+        .await;
+    let call = host.next().await;
+    let id = call["id"].clone();
+    for (kind, host_ms) in [
+        ("received", 10.25),
+        ("permission_requested", 10.5),
+        ("permission_granted", 31.0),
+        ("executor_started", 31.5),
+    ] {
+        host.send(json!({"type":"fact","id":id,"kind":kind,"host_ms":host_ms}))
+            .await;
+    }
+    host.reply(&call, json!("value")).await;
+    // A fact for a finished call is counted as dropped rather than attached to it.
+    let second = host.next().await;
+    host.send(json!({"type":"fact","id":id,"kind":"executor_started"}))
+        .await;
+    host.reply(&second, json!("other")).await;
+    let (_, report) = host.report().await;
+    assert_eq!(report.provider_facts_dropped, 1);
+    assert_eq!(report.status, RunStatus::Success, "{report:?}");
+    let facts: Vec<(ProviderFactKind, Option<f64>)> = report
+        .provider_facts
+        .iter()
+        .map(|fact| (fact.kind, fact.provider_ms))
+        .collect();
+    assert_eq!(
+        facts,
+        [
+            (ProviderFactKind::Received, Some(10.25)),
+            (ProviderFactKind::PermissionRequested, Some(10.5)),
+            (ProviderFactKind::PermissionGranted, Some(31.0)),
+            (ProviderFactKind::ExecutorStarted, Some(31.5)),
+        ]
+    );
+    let record = &report.calls[0];
+    assert!(report.provider_facts.iter().all(|fact| fact.call_id == 1
+        && record.started_ms <= Some(fact.received_ms)
+        && Some(fact.received_ms) <= record.finished_ms));
+    assert_eq!(
+        call_events(&report, 1),
+        ["admitted", "dispatched", "succeeded", "reply_written"]
+    );
+    assert_eq!(report.output, Some(json!("value")));
+    let bridge = report.bridge.expect("bridge totals");
+    assert!(bridge.from_host > 0 && bridge.to_host > 0, "{bridge:?}");
+}
+
+#[tokio::test]
+async fn host_acknowledgment_without_a_result_leaves_the_call_unknown_with_its_evidence() {
+    let mut options = config();
+    options.timeout_ms = 1_000;
+    let mut host = Host::start(options, RunCancellation::default());
+    host.send(json!({"type":"start","version":2,"code":"await Promise.all([tools.call('host.write', {}), tools.call('host.write', {})]);","tools":["host.write"]}))
+        .await;
+    let first = host.next().await;
+    let _second = host.next().await;
+    host.send(json!({"type":"fact","id":first["id"],"kind":"executor_started"}))
+        .await;
+    let (_, report) = host.report().await;
+    assert_eq!(report.status, RunStatus::Deadline);
+    for call_id in [1, 2] {
+        let unknown = report
+            .events
+            .iter()
+            .find(|event| event.call_id == Some(call_id) && event.kind == "unknown")
+            .expect("unknown event");
+        assert_eq!(unknown.reason.as_deref(), Some("deadline"));
+    }
+    // Only the first call has host evidence; the second has none, which is not
+    // evidence that it did not run.
+    assert_eq!(report.provider_facts.len(), 1);
+    assert_eq!(report.provider_facts[0].call_id, 1);
+    assert_eq!(
+        report.provider_facts[0].kind,
+        ProviderFactKind::ExecutorStarted
+    );
+    assert_eq!(report.provider_facts[0].provider_ms, None);
+}
+
+#[tokio::test]
+async fn facts_beyond_the_per_call_limit_are_counted_not_kept() {
+    let mut host = Host::start(config(), RunCancellation::default());
+    host.send(json!({"type":"start","version":2,"code":"return await tools.call('host.read', {});","tools":["host.read"]}))
+        .await;
+    let call = host.next().await;
+    for _ in 0..10 {
+        host.send(json!({"type":"fact","id":call["id"],"kind":"received"}))
+            .await;
+    }
+    host.reply(&call, json!(1)).await;
+    let (_, report) = host.report().await;
+    assert_eq!(report.provider_facts.len(), 8);
+    assert_eq!(report.provider_facts_dropped, 2);
+}
+
+#[tokio::test]
+async fn version_one_hosts_cannot_send_facts() {
+    let mut host = Host::begin(
+        config(),
+        "return await tools.call('host.read', {});",
+        &["host.read"],
+    )
+    .await;
+    let call = host.next().await;
+    host.send(json!({"type":"fact","id":call["id"],"kind":"received"}))
+        .await;
+    let (_, report) = host.report().await;
+    assert_eq!(report.status, RunStatus::ProtocolError);
+    assert_eq!(
+        report.diagnostic.as_deref(),
+        Some("fact frames need protocol version 2")
+    );
+    assert_eq!(report.calls[0].outcome, CallOutcome::Unknown);
+    // The call ended because of the protocol error, not a host cancellation.
+    let unknown = report
+        .events
+        .iter()
+        .find(|event| event.kind == "unknown")
+        .expect("unknown event");
+    assert_eq!(unknown.reason.as_deref(), Some("protocol_error"));
 }

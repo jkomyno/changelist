@@ -164,6 +164,21 @@ fn outcomes(trace: &Value) -> Vec<(Value, Value, Value)> {
 }
 
 /// Run a command to completion, killing it if it outlives `timeout`.
+/// Host-reported facts as (call id, kind), in arrival order.
+fn facts(trace: &Value) -> Vec<(u64, String)> {
+    trace["provider_facts"]
+        .as_array()
+        .expect("provider facts")
+        .iter()
+        .map(|fact| {
+            (
+                fact["call_id"].as_u64().expect("call id"),
+                fact["kind"].as_str().expect("kind").to_owned(),
+            )
+        })
+        .collect()
+}
+
 fn output_within(command: &mut Command, timeout: Duration) -> Output {
     let mut child = command
         .stdout(Stdio::piped())
@@ -245,6 +260,26 @@ fn opencode_permissions_gate_nested_calls_under_rust_scheduling() {
             .is_some_and(|message| message.contains("specified a rule")),
         "OpenCode's deny rule applied: {trace}"
     );
+    // OpenCode's permission decisions reach the trace as host claims; the call Rust
+    // rejected never reached the host.
+    let granted = [
+        "received",
+        "permission_requested",
+        "permission_granted",
+        "executor_started",
+    ];
+    let mut expected: Vec<(u64, String)> = Vec::new();
+    for id in [1, 2] {
+        expected.extend(granted.iter().map(|kind| (id, (*kind).to_owned())));
+    }
+    expected.extend(
+        ["received", "permission_requested", "permission_denied"]
+            .iter()
+            .map(|kind| (3, (*kind).to_owned())),
+    );
+    let mut actual = facts(&trace);
+    actual.sort_by_key(|(id, _)| *id);
+    assert_eq!(actual, expected, "{trace}");
     // A rule denial needs no approval, the denied tool never ran, and the turn continued.
     assert_eq!(
         scratch.events(),
@@ -533,6 +568,12 @@ fn opencode_abort_during_approval_prevents_a_late_approved_call() {
     assert_eq!(
         outcomes(&trace),
         [(json!("publish"), json!("unknown"), Value::Null)],
+        "{trace}"
+    );
+    // The trace shows the call was still waiting for approval: no executor entry.
+    assert_eq!(
+        facts(&trace),
+        [(1, "received".into()), (1, "permission_requested".into())],
         "{trace}"
     );
     let audit = scratch.audit();

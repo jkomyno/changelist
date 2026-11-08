@@ -15,11 +15,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::{self, Instant};
 
 pub(crate) const FRAME_BYTES: usize = 64 * 1024;
+/// Version of the serialized [`RunReport`] format written by this build.
+pub const REPORT_SCHEMA_VERSION: u32 = 2;
+/// Provider facts kept per call; later facts for that call are counted as dropped.
+const MAX_FACTS_PER_CALL: usize = 8;
+/// Provider facts buffered between the provider and the run loop.
+const FACT_CHANNEL_CAPACITY: usize = 1024;
 const MAX_GUEST_ID: u64 = 9_007_199_254_740_991;
 static LAUNCHER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -61,7 +67,7 @@ pub enum DispatchPolicy {
 }
 
 /// The host-chosen limits a run executed under, recorded with its trace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunLimits {
     /// Absolute wall-clock budget in milliseconds.
     pub timeout_ms: u64,
@@ -128,7 +134,7 @@ impl RunCancellation {
 }
 
 /// Host identity and validated input passed to a provider.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     /// Sequential host-assigned identity, independent of guest correlation tokens.
     pub id: u64,
@@ -145,6 +151,84 @@ pub struct CallContext {
     pub deadline: Instant,
     /// Cooperative cancellation signal; provider side effects cannot be rolled back.
     pub cancellation: RunCancellation,
+    /// Records facts the provider reports about its calls, such as a permission decision.
+    pub facts: FactSink,
+}
+
+/// A provider-reported milestone for one call. Rust records it as the provider's
+/// claim, separately from what Rust observed itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderFactKind {
+    /// The provider received the call and took responsibility for it.
+    Received,
+    /// The provider began waiting for a permission or approval decision.
+    PermissionRequested,
+    /// The provider's permission check allowed the call.
+    PermissionGranted,
+    /// The provider's permission check refused the call.
+    PermissionDenied,
+    /// The provider invoked the tool implementation; effects may occur from here.
+    ExecutorStarted,
+}
+
+/// A provider-reported fact, stamped with the time Rust received it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderFact {
+    /// Host-assigned call identity the provider named.
+    pub call_id: u64,
+    /// What the provider reported.
+    pub kind: ProviderFactKind,
+    /// Rust monotonic milliseconds since run start when the fact arrived.
+    pub received_ms: u64,
+    /// The provider's own timestamp, in its own clock; not comparable with Rust times.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_ms: Option<f64>,
+}
+
+/// A fact on its way to the run loop, stamped when the provider reported it.
+#[derive(Debug)]
+struct PendingFact {
+    call_id: u64,
+    kind: ProviderFactKind,
+    provider_ms: Option<f64>,
+    at: Instant,
+}
+
+/// Where a provider sends [`ProviderFact`]s; reporting never blocks.
+///
+/// Facts for calls that are not running, beyond a small per-call limit, or that
+/// arrive while the buffer is full are dropped and counted in the report.
+#[derive(Debug, Clone)]
+pub struct FactSink {
+    sender: mpsc::Sender<PendingFact>,
+    dropped: Arc<AtomicU64>,
+}
+
+impl FactSink {
+    fn new() -> (Self, mpsc::Receiver<PendingFact>) {
+        let (sender, receiver) = mpsc::channel(FACT_CHANNEL_CAPACITY);
+        let sink = Self {
+            sender,
+            dropped: Arc::new(AtomicU64::new(0)),
+        };
+        (sink, receiver)
+    }
+
+    /// Report `kind` for call `call_id`, with an optional timestamp from the provider's clock.
+    pub fn report(&self, call_id: u64, kind: ProviderFactKind, provider_ms: Option<f64>) {
+        let provider_ms = provider_ms.filter(|value| value.is_finite());
+        // Stamped now, so a busy run loop does not delay the recorded arrival time.
+        let fact = PendingFact {
+            call_id,
+            kind,
+            provider_ms,
+            at: Instant::now(),
+        };
+        if self.sender.try_send(fact).is_err() {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 /// Executes host-authorized calls; implementations must yield instead of blocking the executor.
@@ -214,7 +298,7 @@ impl ToolProvider for MockProvider {
 }
 
 /// The terminal reason recorded by the host.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
     /// The guest returned output and all dispatched calls were observed.
@@ -243,6 +327,21 @@ impl RunStatus {
         self == Self::Success
     }
 
+    /// The status name as serialized in a report.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::GuestError => "guest_error",
+            Self::ProviderTaskError => "provider_task_error",
+            Self::CallLimit => "call_limit",
+            Self::OutputLimit => "output_limit",
+            Self::Deadline => "deadline",
+            Self::Cancelled => "cancelled",
+            Self::ProtocolError => "protocol_error",
+        }
+    }
+
     /// CLI exit code: success 0, cancellation 130, deadline 124, other failure 1.
     #[must_use]
     pub fn exit_code(self) -> u8 {
@@ -256,7 +355,7 @@ impl RunStatus {
 }
 
 /// Observed outcome, distinguishing rejection from uncertain effects.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum CallOutcome {
     /// Queued; only appears while the host is executing.
@@ -287,7 +386,9 @@ pub enum CallOutcome {
 }
 
 /// One host-assigned call and its observed lifecycle.
-#[derive(Debug, Clone, Serialize)]
+///
+/// Times are Rust monotonic milliseconds since run start, floored.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallRecord {
     /// Validated request and trusted identity.
     pub call: ToolCall,
@@ -295,14 +396,30 @@ pub struct CallRecord {
     pub guest_id: u64,
     /// Observed result or precise reason no result is known.
     pub outcome: CallOutcome,
+    /// Admission time; absent in schema version 1 reports.
+    #[serde(default)]
+    pub admitted_ms: Option<u64>,
     /// Dispatch time since run start; absent for calls never dispatched.
     pub started_ms: Option<u64>,
     /// Completion or termination time since run start.
     pub finished_ms: Option<u64>,
+    /// When the reply frame was completely written to the guest's input. The guest
+    /// may not have read it; absent when no reply was delivered.
+    #[serde(default)]
+    pub delivered_ms: Option<u64>,
+    /// Serialized size of the guest-supplied arguments.
+    #[serde(default)]
+    pub argument_bytes: u64,
+    /// Serialized size of the observed value or error, including omitted ones.
+    #[serde(default)]
+    pub result_bytes: Option<u64>,
+    /// Bytes of the reply frame queued for the guest.
+    #[serde(default)]
+    pub reply_bytes: Option<u64>,
 }
 
 /// A host-created lifecycle event, never accepted from child stdout.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunEvent {
     /// Sequential host-created event identity.
     pub id: u64,
@@ -312,10 +429,50 @@ pub struct RunEvent {
     pub kind: String,
     /// Monotonic time elapsed since run start.
     pub at_ms: u64,
+    /// Why the event happened, for example the run status that left a call unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Which clock stamped the report's Rust times.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClockInfo {
+    /// What zero means: `run_start`, taken before the guest process is spawned.
+    pub origin: String,
+    /// The clock: `rust_monotonic`, the host's monotonic clock read by Rust.
+    pub source: String,
+    /// Unit and rounding: `ms_floor`, whole milliseconds rounded down.
+    pub unit: String,
+}
+
+impl Default for ClockInfo {
+    fn default() -> Self {
+        Self {
+            origin: "run_start".into(),
+            source: "rust_monotonic".into(),
+            unit: "ms_floor".into(),
+        }
+    }
+}
+
+/// Serialized byte accounting observed by Rust.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ByteTotals {
+    /// Bytes of complete frames read from the guest.
+    pub from_guest: u64,
+    /// Bytes written to the guest's input, including the initial source frame.
+    pub to_guest: u64,
+    /// Serialized arguments, observed values and errors, and output kept in this report.
+    pub retained: u64,
+    /// Serialized observed values or errors that were not kept, such as oversized results.
+    pub omitted: u64,
 }
 
 /// Serializable source, output, and host-observed trace for one execution.
-#[derive(Debug, Clone, Serialize)]
+///
+/// `events`, call times, and `bytes` are Rust observations. `provider_facts` are
+/// claims a provider reported; a missing fact does not show that a call did not run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunReport {
     /// Version of this serialized report format.
     pub schema_version: u32,
@@ -332,10 +489,34 @@ pub struct RunReport {
     pub calls: Vec<CallRecord>,
     /// Host-generated events in observation order.
     pub events: Vec<RunEvent>,
+    /// Facts the provider reported about dispatched calls, in arrival order.
+    #[serde(default)]
+    pub provider_facts: Vec<ProviderFact>,
+    /// Provider facts discarded: over the per-call limit, for calls not running, or unbuffered.
+    #[serde(default)]
+    pub provider_facts_dropped: u64,
     /// Monotonic elapsed wall-clock milliseconds.
     pub elapsed_ms: u64,
+    /// The clock behind every Rust time in this report.
+    #[serde(default)]
+    pub clock: ClockInfo,
+    /// Bytes moved, retained, and omitted, as Rust observed them.
+    #[serde(default)]
+    pub bytes: ByteTotals,
+    /// Bridge stdio accounting, present when the run was served over the bridge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge: Option<BridgeTotals>,
     /// A bounded explanation of the terminal status; child stderr is discarded.
     pub diagnostic: Option<String>,
+}
+
+/// Bytes the bridge exchanged with its host, excluding the final report frame.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BridgeTotals {
+    /// Bytes of host frames read, including the start frame.
+    pub from_host: u64,
+    /// Bytes of call frames written to the host.
+    pub to_host: u64,
 }
 
 /// Failure to configure, launch, or communicate with the child process.
@@ -412,6 +593,23 @@ impl Write for BoundedJson {
         Ok(())
     }
 }
+/// Serialized JSON length without allocating the output.
+fn json_len(value: &impl Serialize) -> u64 {
+    struct Count(u64);
+    impl Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0 += bytes.len() as u64;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    let _ = serde_json::to_writer(&mut count, value);
+    count.0
+}
+
 fn bounded_json(value: &impl Serialize, limit: usize) -> Option<Vec<u8>> {
     let mut writer = BoundedJson {
         bytes: Vec::new(),
@@ -476,11 +674,48 @@ fn elapsed(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 fn event(report: &mut RunReport, start: Instant, call_id: Option<u64>, kind: &str) {
+    event_because(report, start, call_id, kind, None);
+}
+fn event_because(
+    report: &mut RunReport,
+    start: Instant,
+    call_id: Option<u64>,
+    kind: &str,
+    reason: Option<&str>,
+) {
     report.events.push(RunEvent {
         id: report.events.len() as u64 + 1,
         call_id,
         kind: kind.into(),
         at_ms: elapsed(start),
+        reason: reason.map(String::from),
+    });
+}
+/// Keep a provider fact only for a running call and within the per-call limit.
+fn record_fact(
+    report: &mut RunReport,
+    start: Instant,
+    counts: &mut HashMap<u64, usize>,
+    fact: PendingFact,
+) {
+    let running = usize::try_from(fact.call_id)
+        .ok()
+        .and_then(|id| id.checked_sub(1))
+        .and_then(|index| report.calls.get(index))
+        .is_some_and(|record| record.outcome == CallOutcome::Running);
+    // Only running calls get a counter, so the map is bounded by the call allowance.
+    let count = running.then(|| counts.entry(fact.call_id).or_default());
+    let Some(count) = count.filter(|count| **count < MAX_FACTS_PER_CALL) else {
+        report.provider_facts_dropped += 1;
+        return;
+    };
+    *count += 1;
+    let received = fact.at.saturating_duration_since(start).as_millis();
+    report.provider_facts.push(ProviderFact {
+        call_id: fact.call_id,
+        kind: fact.kind,
+        received_ms: u64::try_from(received).unwrap_or(u64::MAX),
+        provider_ms: fact.provider_ms,
     });
 }
 fn invalid_arguments(message: &str) -> ProviderError {
@@ -632,7 +867,7 @@ pub async fn run(
         .checked_add(Duration::from_millis(config.timeout_ms))
         .ok_or_else(|| RunError::Config("timeout is too large".into()))?;
     let mut report = RunReport {
-        schema_version: 1,
+        schema_version: REPORT_SCHEMA_VERSION,
         code: code.into(),
         status: RunStatus::Success,
         limits: RunLimits {
@@ -645,7 +880,12 @@ pub async fn run(
         output: None,
         calls: Vec::new(),
         events: Vec::new(),
+        provider_facts: Vec::new(),
+        provider_facts_dropped: 0,
         elapsed_ms: 0,
+        clock: ClockInfo::default(),
+        bytes: ByteTotals::default(),
+        bridge: None,
         diagnostic: None,
     };
     let launcher = Launcher::create()?;
@@ -676,6 +916,7 @@ pub async fn run(
         .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()?;
+    event(&mut report, start, None, "guest_spawned");
     let mut input = child
         .stdin
         .take()
@@ -687,15 +928,19 @@ pub async fn run(
             .ok_or_else(|| io::Error::other("child stdout missing"))?,
     );
     let provider = Arc::new(provider);
+    let (facts, mut fact_receiver) = FactSink::new();
+    let mut fact_counts = HashMap::new();
     let context = CallContext {
         deadline,
         cancellation: cancellation.clone(),
+        facts: facts.clone(),
     };
     let mut running: JoinSet<(usize, Result<Value, ProviderError>)> = JoinSet::new();
     let mut task_calls = HashMap::new();
     let mut queue: VecDeque<usize> = VecDeque::new();
     let mut guest_ids = HashSet::new();
-    let mut responses = VecDeque::from([initial]);
+    // Frames for the guest, each with the call whose reply it carries.
+    let mut responses: VecDeque<(Option<usize>, Vec<u8>)> = VecDeque::from([(None, initial)]);
     let mut write_offset = 0;
     let mut response_bytes = 0usize;
     let mut guest_done = false;
@@ -705,10 +950,12 @@ pub async fn run(
     loop {
         if cancellation.is_cancelled() {
             report.status = RunStatus::Cancelled;
+            event(&mut report, start, None, "cancellation_observed");
             break;
         }
         if Instant::now() >= deadline {
             report.status = RunStatus::Deadline;
+            event(&mut report, start, None, "deadline_reached");
             break;
         }
         if guest_done {
@@ -717,11 +964,12 @@ pub async fn run(
                 record.outcome = CallOutcome::CancelledBeforeDispatch;
                 record.finished_ms = Some(elapsed(start));
                 let call_id = record.call.id;
-                event(
+                event_because(
                     &mut report,
                     start,
                     Some(call_id),
                     "cancelled_before_dispatch",
+                    Some("guest_finished"),
                 );
             }
         }
@@ -756,21 +1004,29 @@ pub async fn run(
         if guest_done && running.is_empty() && queue.is_empty() {
             break;
         }
-        if let Some(bytes) = responses.front_mut() {
+        if let Some((_, bytes)) = responses.front_mut() {
             if bytes.last() != Some(&b'\n') {
                 bytes.push(b'\n');
             }
         }
         tokio::select! {
             biased;
-            () = cancellation.cancelled() => { report.status = RunStatus::Cancelled; break; }
-            () = time::sleep_until(deadline) => { report.status = RunStatus::Deadline; break; }
-            result = input.write(responses.front().map_or(&[][..], |bytes| &bytes[write_offset..])), if !responses.is_empty() && !guest_done && !input_closed => {
+            () = cancellation.cancelled() => { report.status = RunStatus::Cancelled; event(&mut report, start, None, "cancellation_observed"); break; }
+            () = time::sleep_until(deadline) => { report.status = RunStatus::Deadline; event(&mut report, start, None, "deadline_reached"); break; }
+            result = input.write(responses.front().map_or(&[][..], |(_, bytes)| &bytes[write_offset..])), if !responses.is_empty() && !guest_done && !input_closed => {
                 match result {
                     Ok(0) => { input_closed = true; responses.clear(); write_offset = 0; }
                     Ok(count) => {
+                        report.bytes.to_guest += count as u64;
                         write_offset += count;
-                        if write_offset == responses.front().map_or(0, Vec::len) { responses.pop_front(); write_offset = 0; }
+                        if write_offset == responses.front().map_or(0, |(_, bytes)| bytes.len()) {
+                            if let Some((Some(index), _)) = responses.pop_front() {
+                                report.calls[index].delivered_ms = Some(elapsed(start));
+                                let call_id = report.calls[index].call.id;
+                                event(&mut report, start, Some(call_id), "reply_written");
+                            }
+                            write_offset = 0;
+                        }
                     }
                     Err(error) if error.kind() == io::ErrorKind::BrokenPipe => { input_closed = true; responses.clear(); write_offset = 0; }
                     Err(error) => { io_failure = Some(error); break; }
@@ -778,6 +1034,11 @@ pub async fn run(
             }
             result = running.join_next_with_id(), if !running.is_empty() => {
                 let Some(result) = result else { continue; };
+                // Facts a provider reported before its result belong before it.
+                for _ in 0..FACT_CHANNEL_CAPACITY {
+                    let Ok(fact) = fact_receiver.try_recv() else { break };
+                    record_fact(&mut report, start, &mut fact_counts, fact);
+                }
                 let (index, result) = match result {
                     Ok((task_id, value)) => { task_calls.remove(&task_id); value },
                     Err(error) => {
@@ -800,6 +1061,7 @@ pub async fn run(
                 let limit = (FRAME_BYTES - 1).min(config.max_output_bytes.saturating_sub(response_bytes));
                 let bytes = bounded_json(&response, limit);
                 let call_id = record.call.id;
+                record.result_bytes = Some(match &result { Ok(value) => json_len(value), Err(error) => json_len(error) });
                 if bytes.is_some() {
                     record.outcome = match result {
                         Ok(value) => CallOutcome::Succeeded { value },
@@ -811,14 +1073,18 @@ pub async fn run(
                 event(&mut report, start, Some(call_id), kind);
                 let Some(bytes) = bytes else { report.status = RunStatus::OutputLimit; break; };
                 response_bytes += bytes.len();
-                if !guest_done { responses.push_back(bytes); }
+                if !guest_done {
+                    report.calls[index].reply_bytes = Some(bytes.len() as u64 + 1);
+                    responses.push_back((Some(index), bytes));
+                }
             }
             result = frame(&mut output, &mut partial_frame, FRAME_BYTES), if !guest_done => {
                 let bytes = match result {
-                    Ok(Some(bytes)) => bytes,
+                    Ok(Some(bytes)) => { report.bytes.from_guest += bytes.len() as u64; bytes }
                     Ok(None) => {
                         report.status = RunStatus::GuestError;
                         report.diagnostic = Some("child stdout closed without returning output; stderr discarded".into());
+                        event_because(&mut report, start, None, "guest_finished", Some("exited"));
                         guest_done = true;
                         responses.clear();
                         if let Err(error) = child.start_kill() { io_failure = Some(error); break; }
@@ -846,9 +1112,14 @@ pub async fn run(
                         };
                         let index = report.calls.len();
                         let call_id = call.id;
-                        report.calls.push(CallRecord { call, guest_id:id, outcome: CallOutcome::Queued, started_ms: None, finished_ms: None });
+                        let argument_bytes = json_len(&call.arguments);
+                        report.calls.push(CallRecord {
+                            call, guest_id: id, outcome: CallOutcome::Queued, admitted_ms: Some(elapsed(start)), started_ms: None,
+                            finished_ms: None, delivered_ms: None, argument_bytes, result_bytes: None, reply_bytes: None,
+                        });
                         event(&mut report, start, Some(call_id), "admitted");
                         if let Some(error) = rejection {
+                            report.calls[index].result_bytes = Some(json_len(&error));
                             if over_limit {
                                 report.calls[index].outcome = CallOutcome::Rejected { error };
                                 report.calls[index].finished_ms = Some(elapsed(start));
@@ -862,22 +1133,37 @@ pub async fn run(
                             event(&mut report, start, Some(call_id), "rejected");
                             if bytes.len() > config.max_output_bytes.saturating_sub(response_bytes) { report.status = RunStatus::OutputLimit; break; }
                             response_bytes += bytes.len();
-                            responses.push_back(bytes);
+                            report.calls[index].reply_bytes = Some(bytes.len() as u64 + 1);
+                            responses.push_back((Some(index), bytes));
                         } else { queue.push_back(index); }
                     }
                     GuestFrame::Output { value } => {
-                        let Some(bytes) = bounded_json(&value, config.max_output_bytes.saturating_sub(response_bytes)) else { report.status = RunStatus::OutputLimit; break; };
+                        event_because(&mut report, start, None, "guest_finished", Some("output"));
+                        let Some(bytes) = bounded_json(&value, config.max_output_bytes.saturating_sub(response_bytes)) else {
+                            report.bytes.omitted += json_len(&value);
+                            report.status = RunStatus::OutputLimit;
+                            break;
+                        };
                         response_bytes += bytes.len();
                         report.output = Some(value);
+                        report.bytes.retained += bytes.len() as u64;
                         guest_done = true;
                         responses.clear();
                         if let Err(error) = child.start_kill() { io_failure = Some(error); break; }
                     }
-                    GuestFrame::Error { message } => { report.status = RunStatus::GuestError; report.diagnostic = Some(message); guest_done = true; responses.clear(); if let Err(error) = child.start_kill() { io_failure = Some(error); break; } }
+                    GuestFrame::Error { message } => { report.status = RunStatus::GuestError; report.diagnostic = Some(message); event_because(&mut report, start, None, "guest_finished", Some("error")); guest_done = true; responses.clear(); if let Err(error) = child.start_kill() { io_failure = Some(error); break; } }
                 }
             }
+            // Last, so a provider flooding facts cannot starve guest I/O or results.
+            Some(fact) = fact_receiver.recv() => record_fact(&mut report, start, &mut fact_counts, fact),
         }
     }
+    // Stop producers first, so this drain ends after at most the buffered facts.
+    fact_receiver.close();
+    while let Ok(fact) = fact_receiver.try_recv() {
+        record_fact(&mut report, start, &mut fact_counts, fact);
+    }
+    let stop_reason = report.status.as_str();
     for index in 0..report.calls.len() {
         let record = &mut report.calls[index];
         let kind = match record.outcome {
@@ -894,8 +1180,16 @@ pub async fn run(
         if let Some(kind) = kind {
             record.finished_ms = Some(elapsed(start));
             let call_id = record.call.id;
-            event(&mut report, start, Some(call_id), kind);
+            event_because(&mut report, start, Some(call_id), kind, Some(stop_reason));
         }
+    }
+    for record in &report.calls {
+        let observed = record.result_bytes.unwrap_or(0);
+        match record.outcome {
+            CallOutcome::ResultTooLarge => report.bytes.omitted += observed,
+            _ => report.bytes.retained += observed,
+        }
+        report.bytes.retained += record.argument_bytes;
     }
     if !report.status.is_success() {
         cancellation.cancel();
@@ -907,6 +1201,8 @@ pub async fn run(
         return Err(RunError::Io(error));
     }
     wait_result?;
+    event(&mut report, start, None, "guest_terminated");
+    report.provider_facts_dropped += facts.dropped.load(Ordering::Relaxed);
     report.elapsed_ms = elapsed(start);
     event(&mut report, start, None, "run_finished");
     Ok(report)

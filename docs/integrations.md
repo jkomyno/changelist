@@ -28,20 +28,22 @@ Validate launch, framing, tool scope, failure states, approval behavior, and
 cancellation for each host/version before marking it compatible. Do not install
 configuration or expose additional tools implicitly.
 
-## Bridge protocol (version 1)
+## Bridge protocol (version 2)
 
 `codemode bridge [limit options]` serves one run over stdin and stdout. Frames are
 LF-terminated JSON objects. Host frames are at most 1 MiB; the report frame is
 bounded by the run limits (64 KiB source, 64 KiB arguments per call, and the
 output budget). The library entry point is `codemode::serve_bridge`, which
-accepts any async reader and writer.
+accepts any async reader and writer. Version 1 hosts are still accepted; only
+version 2 hosts may send `fact` frames.
 
 | Direction | Frame | Meaning |
 | --- | --- | --- |
-| host → bridge | `{"type":"start","version":1,"code":"...","tools":["read"]}` | Must be first. `tools` is the host's authorization list. |
+| host → bridge | `{"type":"start","version":2,"code":"...","tools":["read"]}` | Must be first. `tools` is the host's authorization list. |
 | bridge → host | `{"type":"call","id":1,"tool":"read","arguments":{}}` | Rust admitted and dispatched this call; `id` is the trace identity. |
 | host → bridge | `{"type":"result","id":1,"ok":true,"value":...}` | Observed success. Use `"ok":false,"error":{"code","message"}` for failure. |
-| host → bridge | `{"type":"result","id":1,"ok":true,"too_large":true}` | Observed value (or, with `"ok":false`, error) that cannot fit in a frame; recorded as `result_too_large`, ending the run with `output_limit`. |
+| host → bridge | `{"type":"result","id":1,"ok":true,"too_large":true,"bytes":2097152}` | Observed value (or, with `"ok":false`, error) that cannot fit in a frame; recorded as `result_too_large`, ending the run with `output_limit`. The optional `bytes` is the host-measured size; without it the size is recorded as unknown. |
+| host → bridge | `{"type":"fact","id":1,"kind":"executor_started","host_ms":12.5}` | A milestone for a running call: `received`, `permission_requested`, `permission_granted`, `permission_denied`, or `executor_started`. `host_ms` is optional and uses the host's clock. Send it before the call's result. |
 | host → bridge | `{"type":"cancel"}` | Cancel the run. Closing the host's output does the same. |
 | bridge → host | `{"type":"report","report":{...}}` | The execution record; the bridge then exits with the run's exit code. |
 | bridge → host | `{"type":"error","message":"..."}` | The run never started, for example an invalid start frame. |
@@ -53,6 +55,21 @@ Results for unknown or finished calls are ignored, because they can race with a
 deadline. A malformed host frame ends the run with `protocol_error`. Dispatched
 calls without an observed reply become `unknown`. The host should abort its
 outstanding calls when it reads the report.
+
+Facts are host claims, not Rust observations. The report keeps them in
+`provider_facts`, stamped with the Rust time each arrived and the host's own
+`host_ms`, which is never compared with Rust times. Rust keeps at most 8 facts per
+call, ignores facts for calls that are not running, and counts what it drops. A
+missing fact is not evidence that a call did not run: the host may not report
+facts at all, or may have run the tool before its acknowledgment arrived. The
+shared bridge client sends `received` for every call frame; adapters report the
+rest:
+
+| Adapter | Facts |
+| --- | --- |
+| OpenCode | `permission_requested`, then `permission_granted` or `permission_denied` around `context.ask`, and `executor_started` before the host tool runs. |
+| Pi | Only `received`. Pi's permission and approval handlers run inside `ctx.executeTool`, so the adapter cannot tell when the tool itself starts, and Pi permission waits are not separated. |
+| Composio | `executor_started` before the CLI helper or SDK request. |
 
 The bridge does not authenticate the host: whoever owns its stdio is the trusted
 provider. Limits come from command-line options chosen by the host, and

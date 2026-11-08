@@ -118,6 +118,28 @@ fn composio_results_failures_and_denials_keep_their_origin_without_credentials()
             "TELEGRAM_GET_ME rejected tool_denied",
         ]
     );
+    // Calls the host received carry its acknowledgment and executor entry; the
+    // slug Rust rejected never reached the host.
+    let facts: Vec<(u64, &str)> = trace["provider_facts"]
+        .as_array()
+        .expect("provider facts")
+        .iter()
+        .map(|fact| {
+            (
+                fact["call_id"].as_u64().expect("id"),
+                fact["kind"].as_str().expect("kind"),
+            )
+        })
+        .collect();
+    for id in 1..=3 {
+        let kinds: Vec<&str> = facts
+            .iter()
+            .filter(|(call, _)| *call == id)
+            .map(|(_, kind)| *kind)
+            .collect();
+        assert_eq!(kinds, ["received", "executor_started"], "call {id}");
+    }
+    assert!(facts.iter().all(|(call, _)| *call != 4));
     // The fake helper answers neither identity read until both have started, so
     // success already proves they overlapped; the trace must agree.
     let span = |index: usize, field: &str| trace["calls"][index][field].as_u64().expect(field);

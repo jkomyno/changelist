@@ -1,5 +1,5 @@
 /**
- * Host-neutral client for `codemode bridge` (protocol version 1).
+ * Host-neutral client for `codemode bridge` (protocol version 2).
  *
  * A host adapter supplies the authorized tool names and one `execute` function;
  * this module owns the subprocess, framing, cancellation, and report. It uses only
@@ -10,6 +10,9 @@
  *   call identities, and the execution record. The guest runs in restricted Deno.
  * - The bridge starts with an empty environment and explicit executable paths, so
  *   the host's credentials and other environment variables never reach Rust or the guest.
+ * - Each call frame is acknowledged with a `received` fact; `execute` can report
+ *   later milestones (permission decisions, executor entry). Rust records them as
+ *   host claims stamped with the host's `performance.now()` clock.
  * - Aborting `signal` sends `cancel` to Rust and aborts outstanding host calls; the
  *   bridge is killed if it has not exited two seconds later. Calls already
  *   dispatched are recorded as unknown; their effects may remain.
@@ -40,6 +43,9 @@ export interface RunReport {
   [key: string]: unknown;
 }
 
+/** Milestones a host can report for a running call. */
+export type HostFact = "permission_requested" | "permission_granted" | "permission_denied" | "executor_started";
+
 /** One call admitted and dispatched by Rust. `id` is its trace identity. */
 export interface BridgeCall {
   id: number;
@@ -63,8 +69,11 @@ export interface BridgeRun {
   maxOutputBytes?: number;
   /** Aborting it cancels the run. */
   signal?: AbortSignal;
-  /** Run one authorized call. Rejections become `tool_error`. */
-  execute(call: BridgeCall, signal: AbortSignal): Promise<HostReply>;
+  /**
+   * Run one authorized call. Rejections become `tool_error`. Call `report` at
+   * milestones such as `executor_started`, just before effects may begin.
+   */
+  execute(call: BridgeCall, signal: AbortSignal, report: (fact: HostFact) => void): Promise<HostReply>;
 }
 
 /** Resolve an executable name the way a shell would, relative names against `cwd`. */
@@ -164,15 +173,20 @@ export async function runBridge(run: BridgeRun): Promise<RunReport> {
     let frame = JSON.stringify({ type: "result", id, ...result });
     if (Buffer.byteLength(frame) >= HOST_FRAME_BYTES) {
       // Observed but too large to send: Rust records result_too_large and stops the run.
-      frame = JSON.stringify({ type: "result", id, ok: result.ok, too_large: true });
+      const bytes = Buffer.byteLength(JSON.stringify(result.ok ? result.value : result.error));
+      frame = JSON.stringify({ type: "result", id, ok: result.ok, too_large: true, bytes });
     }
     send(frame);
   };
+
+  const fact = (id: number, kind: "received" | HostFact) =>
+    send(JSON.stringify({ type: "fact", id, kind, host_ms: performance.now() }));
 
   const onCall = (frame: BridgeCall) => {
     if (!Number.isSafeInteger(frame.id) || outstanding.has(frame.id)) {
       throw new Error("bridge sent an invalid or duplicate call id");
     }
+    fact(frame.id, "received");
     if (cancelled) {
       // A call frame buffered before the abort must not start a host tool afterwards.
       reply(frame.id, { ok: false, error: { code: "cancelled", message: "host cancelled before execution" } });
@@ -185,8 +199,11 @@ export async function runBridge(run: BridgeRun): Promise<RunReport> {
     const controller = new AbortController();
     outstanding.set(frame.id, controller);
     let pending: Promise<HostReply>;
+    const report = (kind: HostFact) => {
+      if (outstanding.has(frame.id)) fact(frame.id, kind);
+    };
     try {
-      pending = run.execute(frame, controller.signal);
+      pending = run.execute(frame, controller.signal, report);
     } catch (error) {
       pending = Promise.reject(error);
     }
@@ -201,7 +218,7 @@ export async function runBridge(run: BridgeRun): Promise<RunReport> {
       );
   };
 
-  send(JSON.stringify({ type: "start", version: 1, code: run.code, tools: [...authorized] }));
+  send(JSON.stringify({ type: "start", version: 2, code: run.code, tools: [...authorized] }));
   if (run.signal?.aborted) onAbort();
   run.signal?.addEventListener("abort", onAbort, { once: true });
 

@@ -581,3 +581,190 @@ async fn guest_output_stops_dispatching_queued_calls() {
             .all(|call| call.outcome == CallOutcome::CancelledBeforeDispatch)
     );
 }
+
+#[tokio::test]
+async fn trace_separates_admission_dispatch_result_and_delivery_with_byte_accounting() {
+    let mut options = config();
+    options.max_concurrency = 1;
+    let report = run(
+        "const values = await Promise.all([tools.call('mock.echo', {n: 1}), tools.call('mock.echo', {n: 22})]); return values.length;",
+        options,
+        MockProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("run completes");
+    assert_eq!(report.status, RunStatus::Success, "{report:?}");
+    assert_eq!(report.schema_version, 2);
+    for record in &report.calls {
+        let admitted = record.admitted_ms.expect("admitted");
+        let started = record.started_ms.expect("dispatched");
+        let finished = record.finished_ms.expect("finished");
+        let delivered = record.delivered_ms.expect("delivered");
+        assert!(admitted <= started && started <= finished && finished <= delivered);
+        let arguments = serde_json::to_vec(&record.call.arguments)
+            .expect("JSON")
+            .len() as u64;
+        assert_eq!(record.argument_bytes, arguments);
+        // mock.echo returns its arguments.
+        assert_eq!(record.result_bytes, Some(arguments));
+        assert!(record.reply_bytes.expect("reply bytes") > arguments);
+    }
+    let kinds: Vec<&str> = report
+        .events
+        .iter()
+        .filter(|event| event.call_id.is_none())
+        .map(|event| event.kind.as_str())
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "guest_spawned",
+            "guest_finished",
+            "guest_terminated",
+            "run_finished"
+        ]
+    );
+    let finished = report
+        .events
+        .iter()
+        .find(|event| event.kind == "guest_finished")
+        .expect("guest finished");
+    assert_eq!(finished.reason.as_deref(), Some("output"));
+    let replies: u64 = report
+        .calls
+        .iter()
+        .filter_map(|record| record.reply_bytes)
+        .sum();
+    assert!(
+        report.bytes.to_guest > replies,
+        "the source frame is also sent"
+    );
+    assert!(report.bytes.from_guest > 0);
+    let values: u64 = report
+        .calls
+        .iter()
+        .map(|record| record.argument_bytes + record.result_bytes.unwrap_or(0))
+        .sum();
+    assert_eq!(report.bytes.retained, values + 1, "plus the output `2`");
+    assert_eq!(report.bytes.omitted, 0);
+    assert_eq!(report.clock.source, "rust_monotonic");
+    assert!(report.bridge.is_none());
+}
+
+#[tokio::test]
+async fn omitted_results_and_queued_calls_say_why() {
+    let mut options = config();
+    options.max_concurrency = 1;
+    options.max_output_bytes = 200;
+    let report = run(
+        "await Promise.all([tools.call('mock.echo', 'x'.repeat(1000)), tools.call('mock.echo', 1)]);",
+        options,
+        MockProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("run completes");
+    assert_eq!(report.status, RunStatus::OutputLimit, "{report:?}");
+    assert_eq!(report.calls[0].outcome, CallOutcome::ResultTooLarge);
+    assert_eq!(report.calls[0].result_bytes, Some(1_002));
+    assert_eq!(report.calls[0].reply_bytes, None);
+    assert_eq!(report.calls[0].delivered_ms, None);
+    assert_eq!(report.bytes.omitted, 1_002);
+    assert_eq!(
+        report.calls[1].outcome,
+        CallOutcome::CancelledBeforeDispatch
+    );
+    let last = report
+        .events
+        .iter()
+        .rfind(|event| event.call_id == Some(2))
+        .expect("queued call has events");
+    assert_eq!(
+        (last.kind.as_str(), last.reason.as_deref()),
+        ("cancelled_before_dispatch", Some("output_limit"))
+    );
+}
+
+/// Reports facts from another thread until told to stop, for calls that do and do not exist.
+struct FloodingProvider(Arc<std::sync::atomic::AtomicBool>);
+impl ToolProvider for FloodingProvider {
+    async fn execute(&self, call: ToolCall, context: CallContext) -> Result<Value, ProviderError> {
+        let stop = Arc::clone(&self.0);
+        let facts = context.facts.clone();
+        std::thread::spawn(move || {
+            let mut id = call.id;
+            while !stop.load(Ordering::Relaxed) {
+                facts.report(id, codemode::ProviderFactKind::Received, None);
+                id = id.wrapping_add(1);
+            }
+        });
+        std::future::pending().await
+    }
+}
+
+#[tokio::test]
+async fn a_provider_flooding_facts_cannot_hold_the_run_past_its_deadline() {
+    let mut options = config();
+    options.timeout_ms = 400;
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let started = std::time::Instant::now();
+    let report = run(
+        "return await tools.call('mock.echo', 1);",
+        options,
+        FloodingProvider(Arc::clone(&stop)),
+        RunCancellation::default(),
+    )
+    .await
+    .expect("run completes");
+    stop.store(true, Ordering::Relaxed);
+    assert_eq!(report.status, RunStatus::Deadline);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(report.provider_facts.len() <= 8, "per-call limit");
+    assert!(report.provider_facts_dropped > 0);
+    assert_eq!(report.calls[0].outcome, CallOutcome::Unknown);
+}
+
+#[tokio::test]
+async fn results_collected_after_the_guest_finished_are_not_delivered() {
+    let report = run(
+        "tools.call('mock.wait', {ms: 50, value: 'late'}); return 'early';",
+        config(),
+        MockProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("run completes");
+    assert_eq!(report.status, RunStatus::Success, "{report:?}");
+    let record = &report.calls[0];
+    assert!(matches!(record.outcome, CallOutcome::Succeeded { .. }));
+    assert_eq!(record.result_bytes, Some(6));
+    assert_eq!(record.reply_bytes, None, "no reply was queued");
+    assert_eq!(record.delivered_ms, None);
+}
+
+#[tokio::test]
+async fn oversized_output_is_counted_as_omitted_after_the_guest_finished() {
+    let mut options = config();
+    options.max_output_bytes = 200;
+    let report = run(
+        "return 'y'.repeat(1000);",
+        options,
+        MockProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("run completes");
+    assert_eq!(report.status, RunStatus::OutputLimit);
+    assert_eq!(report.output, None);
+    assert_eq!(report.bytes.omitted, 1_002);
+    assert!(
+        report.events.iter().any(
+            |event| event.kind == "guest_finished" && event.reason.as_deref() == Some("output")
+        )
+    );
+}

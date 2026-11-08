@@ -15,7 +15,8 @@ mod runtime;
 
 pub use bridge::{BRIDGE_FRAME_BYTES, BRIDGE_PROTOCOL_VERSION, BridgeError, serve_bridge};
 pub use runtime::{
-    CallContext, CallOutcome, CallRecord, DispatchPolicy, MockProvider, ProviderError,
+    BridgeTotals, ByteTotals, CallContext, CallOutcome, CallRecord, ClockInfo, DispatchPolicy,
+    FactSink, MockProvider, ProviderError, ProviderFact, ProviderFactKind, REPORT_SCHEMA_VERSION,
     RunCancellation, RunConfig, RunError, RunEvent, RunLimits, RunReport, RunStatus, ToolCall,
     ToolProvider, run,
 };

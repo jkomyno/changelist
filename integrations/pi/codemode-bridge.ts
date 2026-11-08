@@ -88,6 +88,8 @@ async function runPi(
     maxCalls: positive("--codemode-max-calls", flag("codemode-max-calls", "32")),
     signal,
     // Pi applies argument validation and every extension's tool_call and tool_result handlers.
+    // No executor_started fact: Pi's permission and approval handlers run inside
+    // executeTool, so this adapter cannot see when the tool itself starts.
     execute: async (call, callSignal) =>
       toReply(await ctx.executeTool(call.tool, call.arguments, { signal: callSignal })),
   });

@@ -231,6 +231,16 @@ fn ideal_makespan(latencies: &[u64], policy: Policy) -> u64 {
 // ---------------------------------------------------------------------------
 // Trace invariants
 
+/// Run-level events, which name no call.
+const RUN_EVENTS: [&str; 6] = [
+    "guest_spawned",
+    "guest_finished",
+    "deadline_reached",
+    "cancellation_observed",
+    "guest_terminated",
+    "run_finished",
+];
+
 /// Events after which a call holds no outcome other than its final one.
 const TERMINAL_EVENTS: [&str; 5] = [
     "succeeded",
@@ -269,7 +279,7 @@ fn check_call_events(report: &RunReport, failures: &mut Vec<String>) {
     for event in &report.events {
         match event.call_id {
             Some(id) => *seen.entry((id, event.kind.as_str())).or_default() += 1,
-            None if event.kind != "run_finished" => {
+            None if !RUN_EVENTS.contains(&event.kind.as_str()) => {
                 failures.push(format!("event {} ({}) has no call", event.id, event.kind));
             }
             None => {}
@@ -361,9 +371,15 @@ fn replay_dispatch(report: &RunReport, policy: Policy, failures: &mut Vec<String
         let kind = event.kind.as_str();
         let id = event.call_id.unwrap_or(0);
         if let Some(previous) = obliged_by.take() {
+            // A run that stops instead of dispatching first records why.
             let allowed = matches!(
                 kind,
-                "dispatched" | "rejected" | "cancelled_before_dispatch" | "unknown"
+                "dispatched"
+                    | "rejected"
+                    | "cancelled_before_dispatch"
+                    | "unknown"
+                    | "deadline_reached"
+                    | "cancellation_observed"
             ) || (batch && kind == "admitted");
             if !allowed {
                 failures.push(format!(

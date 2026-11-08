@@ -30,6 +30,7 @@ import { resolve } from "node:path";
 import {
   type BridgeCall,
   findExecutable,
+  type HostFact,
   type HostReply,
   positive,
   type RunReport,
@@ -133,12 +134,17 @@ export function codemode(options: CodemodeOptions) {
           let rejection: unknown;
 
           /** OpenCode permission, then the host tool. Nothing runs after an abort or a rejection. */
-          const execute = async (call: BridgeCall, signal: AbortSignal): Promise<HostReply> => {
+          const execute = async (
+            call: BridgeCall,
+            signal: AbortSignal,
+            report: (fact: HostFact) => void,
+          ): Promise<HostReply> => {
             const refused = (): HostReply => ({
               ok: false,
               error: { code: "permission_rejected", message: "an earlier approval in this run was rejected" },
             });
             if (rejection !== undefined) return refused();
+            report("permission_requested");
             try {
               await untilAborted(
                 context.ask({
@@ -151,6 +157,7 @@ export function codemode(options: CodemodeOptions) {
                 signal,
               );
             } catch (error) {
+              if (!signal.aborted) report("permission_denied");
               if (isUserRejection(error) && !signal.aborted) {
                 rejection ??= error;
                 return { ok: false, error: { code: "permission_rejected", message: message(error) } };
@@ -162,7 +169,9 @@ export function codemode(options: CodemodeOptions) {
             if (signal.aborted) {
               return { ok: false, error: { code: "cancelled", message: "host cancelled before execution" } };
             }
+            report("permission_granted");
             if (rejection !== undefined) return refused();
+            report("executor_started");
             const result = await tools.get(call.tool)!.execute(call.arguments, {
               ...context,
               abort: signal,

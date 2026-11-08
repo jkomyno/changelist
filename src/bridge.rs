@@ -5,17 +5,24 @@
 //! and writes the trace. Only provider execution moves to the parent host, which
 //! keeps its own registry, permissions, approvals, and credentials.
 //!
-//! Protocol version 1 uses LF-terminated JSON frames. Host frames are at most
+//! Protocol version 2 uses LF-terminated JSON frames. Host frames are at most
 //! [`BRIDGE_FRAME_BYTES`]. The report frame is bounded by the run limits instead:
-//! source, per-call arguments, and the output budget. Host to bridge:
+//! source, per-call arguments, and the output budget. Version 1 hosts are still
+//! accepted; they cannot send `fact` frames. Host to bridge:
 //!
-//! - `{"type":"start","version":1,"code":"...","tools":["read"]}` must be first.
+//! - `{"type":"start","version":2,"code":"...","tools":["read"]}` must be first.
 //!   `tools` is the host's authorization list; the guest never sees this channel.
 //! - `{"type":"result","id":1,"ok":true,"value":...}`,
 //!   `{"type":"result","id":1,"ok":false,"error":{"code":"...","message":"..."}}`, or
 //!   `{"type":"result","id":1,"ok":true,"too_large":true}` (or `"ok":false`) when
 //!   the tool's value or error was observed but cannot fit in a frame. Rust records that as `result_too_large`
-//!   and ends the run with `output_limit`, as for any oversized observed value.
+//!   and ends the run with `output_limit`, as for any oversized observed value. An optional
+//!   `"bytes":n` gives the host-measured serialized size; without it the size is unknown.
+//! - `{"type":"fact","id":1,"kind":"executor_started","host_ms":12.5}` (version 2)
+//!   reports a milestone for a running call: `received`, `permission_requested`,
+//!   `permission_granted`, `permission_denied`, or `executor_started`. `host_ms`
+//!   is optional and uses the host's own clock. Rust records facts as host claims,
+//!   stamped with their arrival time; facts for finished calls are ignored.
 //! - `{"type":"cancel"}` requests run cancellation. Closing the input does too.
 //!
 //! Bridge to host:
@@ -31,6 +38,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -42,12 +50,12 @@ use tokio::time;
 
 use crate::runtime::{FRAME_BYTES, frame};
 use crate::{
-    CallContext, ProviderError, RunCancellation, RunConfig, RunError, RunReport, RunStatus,
-    ToolCall, ToolProvider, run,
+    BridgeTotals, CallContext, CallOutcome, FactSink, ProviderError, ProviderFactKind,
+    RunCancellation, RunConfig, RunError, RunReport, RunStatus, ToolCall, ToolProvider, run,
 };
 
-/// The only bridge protocol version this build accepts.
-pub const BRIDGE_PROTOCOL_VERSION: u32 = 1;
+/// The newest bridge protocol version this build speaks; version 1 is also accepted.
+pub const BRIDGE_PROTOCOL_VERSION: u32 = 2;
 /// Maximum bytes in one bridge frame, including its LF terminator.
 pub const BRIDGE_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_TOOLS: usize = 256;
@@ -112,6 +120,14 @@ enum HostFrame {
         error: Option<ProviderError>,
         #[serde(default)]
         too_large: bool,
+        #[serde(default)]
+        bytes: Option<u64>,
+    },
+    Fact {
+        id: u64,
+        kind: ProviderFactKind,
+        #[serde(default)]
+        host_ms: Option<f64>,
     },
     Cancel,
 }
@@ -133,7 +149,19 @@ enum BridgeFrame<'a> {
 }
 
 type Reply = Result<Value, ProviderError>;
-type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Reply>>>>;
+/// Running calls: where to send the host's reply and its facts.
+type Pending = Arc<Mutex<HashMap<u64, (oneshot::Sender<Reply>, FactSink)>>>;
+
+/// Bytes exchanged with the host, counted as frames are read or queued, and
+/// what routing could not attach to a running call.
+#[derive(Default)]
+struct Counters {
+    from_host: AtomicU64,
+    to_host: AtomicU64,
+    facts_ignored: AtomicU64,
+    /// Calls answered with `too_large`, and the host-reported size when given.
+    too_large: Mutex<HashMap<u64, Option<u64>>>,
+}
 
 enum Outbound {
     Frame(Vec<u8>),
@@ -179,6 +207,7 @@ async fn write_frames<W: AsyncWrite + Unpin>(
 struct HostProvider {
     outbox: mpsc::UnboundedSender<Outbound>,
     pending: Pending,
+    counters: Arc<Counters>,
 }
 
 /// Forget a call whose provider future was dropped, so a late reply is ignored.
@@ -193,12 +222,12 @@ impl Drop for Forget<'_> {
 }
 
 impl ToolProvider for HostProvider {
-    async fn execute(&self, call: ToolCall, _: CallContext) -> Result<Value, ProviderError> {
+    async fn execute(&self, call: ToolCall, context: CallContext) -> Result<Value, ProviderError> {
         let (sender, receiver) = oneshot::channel();
         self.pending
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(call.id, sender);
+            .insert(call.id, (sender, context.facts));
         let _forget = Forget(&self.pending, call.id);
         let frame = encode(&BridgeFrame::Call {
             id: call.id,
@@ -210,10 +239,13 @@ impl ToolProvider for HostProvider {
             message: format!("call was not delivered to the host: {reason}"),
         };
         let frame = frame.map_err(|error| undelivered(error.to_string()))?;
+        let length = frame.len() as u64;
         // Failure here means the writer stopped before this frame was queued.
         self.outbox
             .send(Outbound::Frame(frame))
             .map_err(|_| undelivered("bridge output is closed".into()))?;
+        // Queued frames are written in order before the report.
+        self.counters.to_host.fetch_add(length, Ordering::Relaxed);
         match receiver.await {
             Ok(reply) => reply,
             // No reply can arrive; the run's deadline or cancellation records it as unknown.
@@ -267,14 +299,21 @@ fn reply(
 /// Route host replies and cancellation until the input closes or becomes invalid.
 async fn route<R: AsyncRead + Unpin>(
     mut input: BufReader<R>,
+    version: u32,
     pending: Pending,
+    counters: Arc<Counters>,
     cancellation: RunCancellation,
     failure: Arc<Mutex<Option<(RunStatus, String)>>>,
 ) {
     let mut partial = Vec::new();
     let reason = loop {
         let bytes = match frame(&mut input, &mut partial, BRIDGE_FRAME_BYTES).await {
-            Ok(Some(bytes)) => bytes,
+            Ok(Some(bytes)) => {
+                counters
+                    .from_host
+                    .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                bytes
+            }
             Ok(None) => break (RunStatus::Cancelled, "host closed the bridge input".into()),
             Err(error) => break (RunStatus::ProtocolError, format!("host frame: {error}")),
         };
@@ -289,19 +328,48 @@ async fn route<R: AsyncRead + Unpin>(
                 value,
                 error,
                 too_large,
+                bytes,
             }) => {
-                let Some(reply) = reply(ok, value, error, too_large) else {
+                let reply =
+                    reply(ok, value, error, too_large).filter(|_| too_large || bytes.is_none());
+                let Some(reply) = reply else {
                     break (
                         RunStatus::ProtocolError,
                         "host result needs ok with value or too_large, or not ok with error".into(),
                     );
                 };
-                let sender = pending
+                let entry = pending
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .remove(&id);
-                if let Some(sender) = sender {
+                if let Some((sender, _)) = entry {
+                    if too_large {
+                        counters
+                            .too_large
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .insert(id, bytes);
+                    }
                     let _ = sender.send(reply);
+                }
+            }
+            Ok(HostFrame::Fact { .. }) if version < 2 => {
+                break (
+                    RunStatus::ProtocolError,
+                    "fact frames need protocol version 2".into(),
+                );
+            }
+            Ok(HostFrame::Fact { id, kind, host_ms }) => {
+                // Sent before the result is, so the run loop sees the fact first.
+                match pending
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(&id)
+                {
+                    Some((_, facts)) => facts.report(id, kind, host_ms),
+                    None => {
+                        counters.facts_ignored.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
             Ok(HostFrame::Start { .. }) => {
@@ -394,15 +462,15 @@ where
         }
         Err(error) => return Err(error.into()),
     };
-    let (code, tools) = match serde_json::from_slice::<HostFrame>(&bytes) {
+    let (version, code, tools) = match serde_json::from_slice::<HostFrame>(&bytes) {
         Ok(HostFrame::Start {
-            version: BRIDGE_PROTOCOL_VERSION,
+            version: version @ (1 | BRIDGE_PROTOCOL_VERSION),
             code,
             tools,
-        }) => (code, tools),
+        }) => (version, code, tools),
         Ok(HostFrame::Start { version, .. }) => {
             return Err(BridgeError::Protocol(format!(
-                "unsupported protocol version {version}; expected {BRIDGE_PROTOCOL_VERSION}"
+                "unsupported protocol version {version}; expected 1 or {BRIDGE_PROTOCOL_VERSION}"
             )));
         }
         Ok(_) => return Err(BridgeError::Protocol("first frame must be start".into())),
@@ -416,17 +484,52 @@ where
     config.allowed_tools = tools;
 
     let pending = Pending::default();
+    let counters = Arc::new(Counters::default());
+    counters
+        .from_host
+        .fetch_add(bytes.len() as u64, Ordering::Relaxed);
     let failure = Arc::new(Mutex::new(None));
     let router = tokio::spawn(route(
         input,
+        version,
         Arc::clone(&pending),
+        Arc::clone(&counters),
         cancellation.clone(),
         Arc::clone(&failure),
     ));
-    let provider = HostProvider { outbox, pending };
+    let provider = HostProvider {
+        outbox,
+        pending,
+        counters: Arc::clone(&counters),
+    };
     let result = run(&code, config.clone(), provider, cancellation).await;
     router.abort();
     let mut report = result.map_err(BridgeError::Run)?;
+    report.bridge = Some(BridgeTotals {
+        from_host: counters.from_host.load(Ordering::Relaxed),
+        to_host: counters.to_host.load(Ordering::Relaxed),
+    });
+    report.provider_facts_dropped += counters.facts_ignored.load(Ordering::Relaxed);
+    // A `too_large` reply reached the runtime as a placeholder; report the host's
+    // size instead, or none when the host did not give one.
+    for (id, bytes) in counters
+        .too_large
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .drain()
+    {
+        let record = usize::try_from(id)
+            .ok()
+            .and_then(|id| id.checked_sub(1))
+            .and_then(|index| report.calls.get_mut(index))
+            .filter(|record| record.outcome == CallOutcome::ResultTooLarge);
+        if let Some(record) = record {
+            let placeholder = record.result_bytes.unwrap_or(0);
+            report.bytes.omitted =
+                report.bytes.omitted.saturating_sub(placeholder) + bytes.unwrap_or(0);
+            record.result_bytes = bytes;
+        }
+    }
     // A cancellation caused by the bridge input explains itself in the report.
     if report.status == RunStatus::Cancelled {
         if let Some((status, message)) = failure
@@ -436,6 +539,12 @@ where
         {
             report.status = status;
             report.diagnostic = Some(message);
+            // Calls this ended carry the bridge's cause, not the cancellation it used.
+            for event in &mut report.events {
+                if event.reason.as_deref() == Some(RunStatus::Cancelled.as_str()) {
+                    event.reason = Some(status.as_str().into());
+                }
+            }
         }
     }
     Ok(report)
