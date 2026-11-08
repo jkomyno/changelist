@@ -1,0 +1,899 @@
+{
+  "label": "/Users/jkomyno/work/me/codemode/bench/results/node-spot-check",
+  "environment": {
+    "date": "2026-11-08T15:35:09.006Z",
+    "driver": {
+      "runtime": "node",
+      "version": "26.12.1",
+      "execPath": "/Users/jkomyno/.local/share/mise/installs/node/26.12.1/bin/node"
+    },
+    "runtimes": {
+      "bun": "1.4.4",
+      "node": "v26.12.1",
+      "deno": "deno 2.9.8 (long term support, release, aarch64-apple-darwin)"
+    },
+    "cpu": {
+      "model": "Apple M1 Pro",
+      "logical": 10
+    },
+    "os": {
+      "platform": "darwin",
+      "release": "23.4.0",
+      "arch": "arm64",
+      "product": "14.4.1",
+      "totalMemGiB": 32
+    },
+    "loadavg": [
+      3.27,
+      2.42,
+      2.1
+    ],
+    "git": {
+      "commit": "0e960b1d8e105187027d7320efe824dd7d01a1f8",
+      "dirty": true,
+      "dirtyOutsideBench": false,
+      "changedOutsideBench": []
+    },
+    "codemodeBinary": {
+      "path": "/Users/jkomyno/work/me/codemode/target/release/codemode",
+      "sha256": "ed5c1fe4a8e3a32f31d8a3899a0527a9340fef2687821391c07f72aab2e67d69"
+    },
+    "deno": "/Users/jkomyno/.local/share/mise/installs/deno/2.9.8/bin/deno",
+    "pins": {
+      "runtimes": {
+        "bun": "1.4.4",
+        "node": "26.12.1",
+        "deno": "2.9.8"
+      },
+      "pi": {
+        "package": "@earendil-works/pi-codemode",
+        "version": "1.4.0",
+        "git_tag": "v1.4.0",
+        "git_commit": "4a080252f06caf63a525d7873c5d94d3c23887e0",
+        "tarballs": [
+          {
+            "name": "@earendil-works/pi-codemode",
+            "version": "1.4.0",
+            "url": "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.4.0.tgz",
+            "integrity": "sha512-23CNAXpS9DuLzPMyYuvrXVVio46x4YhffCgCqaWmF7F5H8PooqjrQvX4ucF6M0BhUd+x2tV6r1J0dv8cCME4Cg==",
+            "install_dir": "node_modules/@earendil-works/pi-codemode"
+          },
+          {
+            "name": "quickjs-wasi",
+            "version": "3.6.2",
+            "url": "https://registry.npmjs.org/quickjs-wasi/-/quickjs-wasi-3.6.2.tgz",
+            "integrity": "sha512-FCqGtGOrMgzUiIrMNMA2YnsOxCNwo31dzqXvclXUC6xeT35NJLKXQJsvbeCTjvoFAwZgEAPg8U6+KAPDGXn8Mg==",
+            "install_dir": "node_modules/quickjs-wasi"
+          }
+        ]
+      },
+      "opencode": {
+        "package": "@opencode-ai/codemode",
+        "version": "1.19.5",
+        "repository": "https://github.com/anomalyco/opencode.git",
+        "git_tag": "v1.19.5",
+        "git_commit": "810c0eba1a7348036f8bdf61e6632d0c36c6876c",
+        "sparse_path": "packages/codemode",
+        "dependencies": {
+          "acorn": "8.15.0",
+          "effect": "4.0.0-beta.83",
+          "typescript": "5.8.2"
+        },
+        "lockfile": "bench/engines/opencode-deps/bun.lock"
+      },
+      "codemode": {
+        "binary": "target/release/codemode",
+        "build": "mise exec -- cargo build --release --locked --bin codemode",
+        "client": "integrations/shared/bridge-client.ts",
+        "bridge_protocol": 1
+      }
+    }
+  },
+  "config": {
+    "engines": [
+      "codemode",
+      "pi"
+    ],
+    "scenarios": [
+      "triage"
+    ],
+    "skippedHoldouts": [],
+    "skippedCells": [],
+    "profiles": [
+      "zero",
+      "mixed"
+    ],
+    "reps": 20,
+    "failureReps": 20,
+    "warmup": 3,
+    "cold": 8,
+    "ordering": "engines round-robin within each repetition; the starting engine rotates every repetition",
+    "percentiles": "nearest-rank"
+  },
+  "engines": {
+    "codemode": {
+      "name": "codemode",
+      "version": "bridge protocol 1 (this checkout)",
+      "limits": {
+        "timeoutMs": "enforced by Rust; one absolute deadline that includes bridge and Deno startup",
+        "maxCalls": "enforced by Rust; the first call beyond the allowance is rejected and ends the run",
+        "concurrency": "enforced by Rust's rolling scheduler (8, or 4 for codemode-c4)",
+        "maxOutputBytes": "enforced by Rust; shared budget for tool replies and final output (default 262144, set to 1048576 here); separately, each frame to the Deno guest is capped at 64 KiB"
+      },
+      "shim": "none in the guest; host shim maps bridge calls to tool functions and errors to {code, message}",
+      "appliedOverrides": {}
+    },
+    "pi": {
+      "name": "pi",
+      "version": "@earendil-works/pi-codemode 1.4.0 (quickjs-wasi 3.6.2)",
+      "limits": {
+        "timeoutMs": "enforced by Pi (deadline armed before the worker starts)",
+        "maxCalls": "not supported; not applied",
+        "concurrency": "not supported; every submitted call runs at once (unbounded)",
+        "maxOutputBytes": "not supported for tool replies; Pi caps text()/console output at 16 MiB characters only"
+      },
+      "shim": "guest prelude rebinding tools.call(name, args) to Pi's tools.<jsName>(args), on the program's first line",
+      "appliedOverrides": {}
+    }
+  },
+  "coldBaseline": {
+    "bareWallMs": {
+      "n": 8,
+      "p50": 23.8,
+      "p95": 39.17,
+      "min": 22.56,
+      "max": 39.17,
+      "mean": 25.55
+    },
+    "noopWallMs": {
+      "n": 8,
+      "p50": 76.19,
+      "p95": 80.78,
+      "min": 73.74,
+      "max": 80.78,
+      "mean": 76.68
+    }
+  },
+  "cells": {
+    "triage|zero|codemode": {
+      "scenario": "triage",
+      "profile": "zero",
+      "engine": "codemode",
+      "holdout": false,
+      "limits": {
+        "timeoutMs": 10000,
+        "maxCalls": 64,
+        "concurrency": 8,
+        "maxOutputBytes": 1048576
+      },
+      "modelMs": 0,
+      "n": 20,
+      "correct": 20,
+      "outcomes": {
+        "success": 20
+      },
+      "correctnessProblems": {},
+      "knownLimit": null,
+      "warm": {
+        "taskMs": {
+          "n": 20,
+          "p50": 46.82,
+          "p95": 50.56,
+          "min": 40.08,
+          "max": 51.52,
+          "mean": 46.85
+        },
+        "setupMs": {
+          "n": 20,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "runMs": {
+          "n": 20,
+          "p50": 46.82,
+          "p95": 50.54,
+          "min": 40.07,
+          "max": 51.5,
+          "mean": 46.84
+        },
+        "engineElapsedMs": {
+          "n": 20,
+          "p50": 42,
+          "p95": 46,
+          "min": 37,
+          "max": 46,
+          "mean": 42.5
+        }
+      },
+      "cold": {
+        "n": 8,
+        "correct": 8,
+        "totalMs": {
+          "n": 8,
+          "p50": 44.5,
+          "p95": 46.15,
+          "min": 44.02,
+          "max": 46.15,
+          "mean": 44.83
+        },
+        "importMs": {
+          "n": 8,
+          "p50": 2.58,
+          "p95": 2.73,
+          "min": 2.48,
+          "max": 2.73,
+          "mean": 2.59
+        },
+        "processWallMs": {
+          "n": 8,
+          "p50": 229.47,
+          "p95": 235.46,
+          "min": 225.61,
+          "max": 235.46,
+          "mean": 230.07
+        }
+      },
+      "ledger": {
+        "started": {
+          "n": 20,
+          "p50": 38,
+          "p95": 38,
+          "min": 38,
+          "max": 38,
+          "mean": 38
+        },
+        "completed": {
+          "n": 20,
+          "p50": 38,
+          "p95": 38,
+          "min": 38,
+          "max": 38,
+          "mean": 38
+        },
+        "thrown": {
+          "n": 20,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "aborted": {
+          "n": 20,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "effectApplied": {
+          "n": 20,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "effectAppliedWithoutComplete": {
+          "n": 20,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "maxInFlight": {
+          "n": 20,
+          "p50": 2,
+          "p95": 7,
+          "min": 1,
+          "max": 8,
+          "mean": 2.9
+        },
+        "runsWithLateStarts": 0,
+        "runsWithToolStillRunningAfterReturn": 0,
+        "stillRunningAfterReturnTotals": {
+          "completedLate": 0,
+          "threwLate": 0,
+          "abortedLate": 0,
+          "openAtSettle": 0
+        }
+      },
+      "reconciliation": {
+        "method": "codemode trace vs ledger, matched by (tool, canonical args) multisets",
+        "runsWithViolations": 0,
+        "violations": {},
+        "notes": {},
+        "counts": {
+          "trace_succeeded=38": 20
+        }
+      },
+      "bytes": {
+        "payload": {
+          "n": 20,
+          "p50": 129434,
+          "p95": 129434,
+          "min": 129434,
+          "max": 129434,
+          "mean": 129434
+        },
+        "ledgerResults": {
+          "n": 20,
+          "p50": 128793,
+          "p95": 128793,
+          "min": 128793,
+          "max": 128793,
+          "mean": 128793
+        },
+        "returned": {
+          "n": 20,
+          "p50": 696,
+          "p95": 696,
+          "min": 696,
+          "max": 696,
+          "mean": 696
+        },
+        "report": {
+          "n": 20,
+          "p50": 144459,
+          "p95": 144459,
+          "min": 144459,
+          "max": 144459,
+          "mean": 144459
+        },
+        "engineBoundary": null
+      }
+    },
+    "triage|zero|pi": {
+      "scenario": "triage",
+      "profile": "zero",
+      "engine": "pi",
+      "holdout": false,
+      "limits": {
+        "timeoutMs": 10000,
+        "maxCalls": 64,
+        "concurrency": 8,
+        "maxOutputBytes": 1048576
+      },
+      "modelMs": 0,
+      "n": 20,
+      "correct": 20,
+      "outcomes": {
+        "success": 20
+      },
+      "correctnessProblems": {},
+      "knownLimit": null,
+      "warm": {
+        "taskMs": {
+          "n": 20,
+          "p50": 30.02,
+          "p95": 33.14,
+          "min": 26.52,
+          "max": 33.41,
+          "mean": 29.81
+        },
+        "setupMs": {
+          "n": 20,
+          "p50": 0.28,
+          "p95": 0.36,
+          "min": 0.22,
+          "max": 0.42,
+          "mean": 0.29
+        },
+        "runMs": {
+          "n": 20,
+          "p50": 29.71,
+          "p95": 32.79,
+          "min": 26.28,
+          "max": 33.03,
+          "mean": 29.5
+        },
+        "engineElapsedMs": null
+      },
+      "cold": {
+        "n": 8,
+        "correct": 8,
+        "totalMs": {
+          "n": 8,
+          "p50": 52.75,
+          "p95": 53.25,
+          "min": 52,
+          "max": 53.25,
+          "mean": 52.76
+        },
+        "importMs": {
+          "n": 8,
+          "p50": 5.82,
+          "p95": 6.05,
+          "min": 5.55,
+          "max": 6.05,
+          "mean": 5.83
+        },
+        "processWallMs": {
+          "n": 8,
+          "p50": 238.44,
+          "p95": 240.95,
+          "min": 235.45,
+          "max": 240.95,
+          "mean": 238.61
+        }
+      },
+      "ledger": {
+        "started": {
+          "n": 20,
+          "p50": 38,
+          "p95": 38,
+          "min": 38,
+          "max": 38,
+          "mean": 38
+        },
+        "completed": {
+          "n": 20,
+          "p50": 38,
+          "p95": 38,
+          "min": 38,
+          "max": 38,
+          "mean": 38
+        },
+        "thrown": {
+          "n": 20,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "aborted": {
+          "n": 20,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "effectApplied": {
+          "n": 20,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "effectAppliedWithoutComplete": {
+          "n": 20,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "maxInFlight": {
+          "n": 20,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "runsWithLateStarts": 0,
+        "runsWithToolStillRunningAfterReturn": 0,
+        "stillRunningAfterReturnTotals": {
+          "completedLate": 0,
+          "threwLate": 0,
+          "abortedLate": 0,
+          "openAtSettle": 0
+        }
+      },
+      "reconciliation": {
+        "method": "Pi result.calls vs ledger, matched by tool name in call order (no arguments exposed)",
+        "runsWithViolations": 0,
+        "violations": {},
+        "notes": {},
+        "counts": {
+          "pi_ok=38": 20
+        }
+      },
+      "bytes": {
+        "payload": {
+          "n": 20,
+          "p50": 129434,
+          "p95": 129434,
+          "min": 129434,
+          "max": 129434,
+          "mean": 129434
+        },
+        "ledgerResults": {
+          "n": 20,
+          "p50": 128793,
+          "p95": 128793,
+          "min": 128793,
+          "max": 128793,
+          "mean": 128793
+        },
+        "returned": {
+          "n": 20,
+          "p50": 696,
+          "p95": 696,
+          "min": 696,
+          "max": 696,
+          "mean": 696
+        },
+        "report": null,
+        "engineBoundary": null
+      }
+    },
+    "triage|mixed|codemode": {
+      "scenario": "triage",
+      "profile": "mixed",
+      "engine": "codemode",
+      "holdout": false,
+      "limits": {
+        "timeoutMs": 10000,
+        "maxCalls": 64,
+        "concurrency": 8,
+        "maxOutputBytes": 1048576
+      },
+      "modelMs": 730,
+      "n": 20,
+      "correct": 20,
+      "outcomes": {
+        "success": 20
+      },
+      "correctnessProblems": {},
+      "knownLimit": null,
+      "warm": {
+        "taskMs": {
+          "n": 20,
+          "p50": 825.87,
+          "p95": 833.22,
+          "min": 814.08,
+          "max": 833.48,
+          "mean": 826.19
+        },
+        "setupMs": {
+          "n": 20,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "runMs": {
+          "n": 20,
+          "p50": 825.85,
+          "p95": 833.19,
+          "min": 814.06,
+          "max": 833.45,
+          "mean": 826.16
+        },
+        "engineElapsedMs": {
+          "n": 20,
+          "p50": 818,
+          "p95": 823,
+          "min": 807,
+          "max": 825,
+          "mean": 817.65
+        }
+      },
+      "cold": {
+        "n": 8,
+        "correct": 8,
+        "totalMs": {
+          "n": 8,
+          "p50": 808.98,
+          "p95": 820.46,
+          "min": 801.92,
+          "max": 820.46,
+          "mean": 811.58
+        },
+        "importMs": {
+          "n": 8,
+          "p50": 2.59,
+          "p95": 2.68,
+          "min": 2.51,
+          "max": 2.68,
+          "mean": 2.6
+        },
+        "processWallMs": {
+          "n": 8,
+          "p50": 1009.21,
+          "p95": 1023.92,
+          "min": 1000.68,
+          "max": 1023.92,
+          "mean": 1012.02
+        }
+      },
+      "ledger": {
+        "started": {
+          "n": 20,
+          "p50": 38,
+          "p95": 38,
+          "min": 38,
+          "max": 38,
+          "mean": 38
+        },
+        "completed": {
+          "n": 20,
+          "p50": 38,
+          "p95": 38,
+          "min": 38,
+          "max": 38,
+          "mean": 38
+        },
+        "thrown": {
+          "n": 20,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "aborted": {
+          "n": 20,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "effectApplied": {
+          "n": 20,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "effectAppliedWithoutComplete": {
+          "n": 20,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "maxInFlight": {
+          "n": 20,
+          "p50": 8,
+          "p95": 8,
+          "min": 8,
+          "max": 8,
+          "mean": 8
+        },
+        "runsWithLateStarts": 0,
+        "runsWithToolStillRunningAfterReturn": 0,
+        "stillRunningAfterReturnTotals": {
+          "completedLate": 0,
+          "threwLate": 0,
+          "abortedLate": 0,
+          "openAtSettle": 0
+        }
+      },
+      "reconciliation": {
+        "method": "codemode trace vs ledger, matched by (tool, canonical args) multisets",
+        "runsWithViolations": 0,
+        "violations": {},
+        "notes": {},
+        "counts": {
+          "trace_succeeded=38": 20
+        }
+      },
+      "bytes": {
+        "payload": {
+          "n": 20,
+          "p50": 129434,
+          "p95": 129434,
+          "min": 129434,
+          "max": 129434,
+          "mean": 129434
+        },
+        "ledgerResults": {
+          "n": 20,
+          "p50": 128793,
+          "p95": 128793,
+          "min": 128793,
+          "max": 128793,
+          "mean": 128793
+        },
+        "returned": {
+          "n": 20,
+          "p50": 696,
+          "p95": 696,
+          "min": 696,
+          "max": 696,
+          "mean": 696
+        },
+        "report": {
+          "n": 20,
+          "p50": 144648,
+          "p95": 144648,
+          "min": 144643,
+          "max": 144648,
+          "mean": 144647.75
+        },
+        "engineBoundary": null
+      }
+    },
+    "triage|mixed|pi": {
+      "scenario": "triage",
+      "profile": "mixed",
+      "engine": "pi",
+      "holdout": false,
+      "limits": {
+        "timeoutMs": 10000,
+        "maxCalls": 64,
+        "concurrency": 8,
+        "maxOutputBytes": 1048576
+      },
+      "modelMs": 545,
+      "n": 20,
+      "correct": 20,
+      "outcomes": {
+        "success": 20
+      },
+      "correctnessProblems": {},
+      "knownLimit": null,
+      "warm": {
+        "taskMs": {
+          "n": 20,
+          "p50": 603.47,
+          "p95": 610.56,
+          "min": 587.83,
+          "max": 610.65,
+          "mean": 601.41
+        },
+        "setupMs": {
+          "n": 20,
+          "p50": 0.54,
+          "p95": 1.28,
+          "min": 0.24,
+          "max": 2.3,
+          "mean": 0.71
+        },
+        "runMs": {
+          "n": 20,
+          "p50": 602.52,
+          "p95": 608.08,
+          "min": 587.37,
+          "max": 610.06,
+          "mean": 600.66
+        },
+        "engineElapsedMs": null
+      },
+      "cold": {
+        "n": 8,
+        "correct": 8,
+        "totalMs": {
+          "n": 8,
+          "p50": 621.87,
+          "p95": 626.98,
+          "min": 618.32,
+          "max": 626.98,
+          "mean": 622.88
+        },
+        "importMs": {
+          "n": 8,
+          "p50": 5.88,
+          "p95": 6.05,
+          "min": 5.5,
+          "max": 6.05,
+          "mean": 5.88
+        },
+        "processWallMs": {
+          "n": 8,
+          "p50": 821.17,
+          "p95": 830.75,
+          "min": 817.85,
+          "max": 830.75,
+          "mean": 824.45
+        }
+      },
+      "ledger": {
+        "started": {
+          "n": 20,
+          "p50": 38,
+          "p95": 38,
+          "min": 38,
+          "max": 38,
+          "mean": 38
+        },
+        "completed": {
+          "n": 20,
+          "p50": 38,
+          "p95": 38,
+          "min": 38,
+          "max": 38,
+          "mean": 38
+        },
+        "thrown": {
+          "n": 20,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "aborted": {
+          "n": 20,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "effectApplied": {
+          "n": 20,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "effectAppliedWithoutComplete": {
+          "n": 20,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "maxInFlight": {
+          "n": 20,
+          "p50": 22,
+          "p95": 22,
+          "min": 22,
+          "max": 22,
+          "mean": 22
+        },
+        "runsWithLateStarts": 0,
+        "runsWithToolStillRunningAfterReturn": 0,
+        "stillRunningAfterReturnTotals": {
+          "completedLate": 0,
+          "threwLate": 0,
+          "abortedLate": 0,
+          "openAtSettle": 0
+        }
+      },
+      "reconciliation": {
+        "method": "Pi result.calls vs ledger, matched by tool name in call order (no arguments exposed)",
+        "runsWithViolations": 0,
+        "violations": {},
+        "notes": {},
+        "counts": {
+          "pi_ok=38": 20
+        }
+      },
+      "bytes": {
+        "payload": {
+          "n": 20,
+          "p50": 129434,
+          "p95": 129434,
+          "min": 129434,
+          "max": 129434,
+          "mean": 129434
+        },
+        "ledgerResults": {
+          "n": 20,
+          "p50": 128793,
+          "p95": 128793,
+          "min": 128793,
+          "max": 128793,
+          "mean": 128793
+        },
+        "returned": {
+          "n": 20,
+          "p50": 696,
+          "p95": 696,
+          "min": 696,
+          "max": 696,
+          "mean": 696
+        },
+        "report": null,
+        "engineBoundary": null
+      }
+    }
+  }
+}

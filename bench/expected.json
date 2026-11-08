@@ -1,0 +1,158 @@
+{
+  "triage": {
+    "stale_count": 15,
+    "top": [
+      {
+        "id": 167,
+        "title": "schema mobile rollback rollback spike session checkout memory",
+        "owner": "Jonas Berg",
+        "team": "payments"
+      },
+      {
+        "id": 138,
+        "title": "rollout upload worker config alert latency migration timeout",
+        "owner": "Femi Adeyemi",
+        "team": "payments"
+      },
+      {
+        "id": 170,
+        "title": "facet memory login config rollback memory query query invoice",
+        "owner": "Femi Adeyemi",
+        "team": "payments"
+      },
+      {
+        "id": 33,
+        "title": "webhook index migration replica upload leak leak retry invoice",
+        "owner": "Bruno Silva",
+        "team": "payments"
+      },
+      {
+        "id": 73,
+        "title": "query flag spike spike config render facet facet invoice",
+        "owner": "Femi Adeyemi",
+        "team": "payments"
+      }
+    ],
+    "by_team": {
+      "payments": 7,
+      "platform": 3,
+      "mobile": 3,
+      "search": 2
+    }
+  },
+  "triage-large": {
+    "stale_count": 15,
+    "top": [
+      {
+        "id": 167,
+        "title": "schema mobile rollback rollback spike session checkout memory",
+        "owner": "Jonas Berg",
+        "team": "payments"
+      },
+      {
+        "id": 138,
+        "title": "rollout upload worker config alert latency migration timeout",
+        "owner": "Femi Adeyemi",
+        "team": "payments"
+      },
+      {
+        "id": 170,
+        "title": "facet memory login config rollback memory query query invoice",
+        "owner": "Femi Adeyemi",
+        "team": "payments"
+      },
+      {
+        "id": 33,
+        "title": "webhook index migration replica upload leak leak retry invoice",
+        "owner": "Bruno Silva",
+        "team": "payments"
+      },
+      {
+        "id": 73,
+        "title": "query flag spike spike config render facet facet invoice",
+        "owner": "Femi Adeyemi",
+        "team": "payments"
+      }
+    ],
+    "by_team": {
+      "payments": 7,
+      "platform": 3,
+      "mobile": 3,
+      "search": 2
+    }
+  },
+  "denied": {
+    "stale_count": 14,
+    "top": [
+      {
+        "id": 167,
+        "title": "schema mobile rollback rollback spike session checkout memory",
+        "owner": "Jonas Berg",
+        "team": "payments"
+      },
+      {
+        "id": 138,
+        "title": "rollout upload worker config alert latency migration timeout",
+        "owner": "Femi Adeyemi",
+        "team": "payments"
+      },
+      {
+        "id": 170,
+        "title": "facet memory login config rollback memory query query invoice",
+        "owner": "Femi Adeyemi",
+        "team": "payments"
+      },
+      {
+        "id": 33,
+        "title": "webhook index migration replica upload leak leak retry invoice",
+        "owner": "Bruno Silva",
+        "team": "payments"
+      },
+      {
+        "id": 73,
+        "title": "query flag spike spike config render facet facet invoice",
+        "owner": "Femi Adeyemi",
+        "team": "payments"
+      }
+    ],
+    "by_team": {
+      "payments": 6,
+      "platform": 3,
+      "mobile": 3,
+      "search": 2
+    },
+    "denied": [
+      156,
+      158
+    ]
+  },
+  "release-audit": {
+    "window": {
+      "start": "2026-09-01T00:00:00Z",
+      "end": "2026-09-15T00:00:00Z"
+    },
+    "merged_count": 24,
+    "failing_prs": [
+      19,
+      23,
+      50,
+      75,
+      77,
+      99,
+      104,
+      142
+    ],
+    "failing_by_team": {
+      "search": 1,
+      "mobile": 2,
+      "payments": 5,
+      "platform": 1
+    },
+    "failing_by_check": {
+      "unit": 2,
+      "lint": 4,
+      "build": 2,
+      "integration": 1
+    }
+  }
+}

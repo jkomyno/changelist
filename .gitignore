@@ -1,2 +1,5 @@
 /target
 .DS_Store
+
+# Third-party code fetched by bench/setup.sh
+bench/.cache/
