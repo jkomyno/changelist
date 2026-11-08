@@ -7,6 +7,7 @@ description = "A local Rust execution runtime for bounded agent-written tool wor
 repository = "https://github.com/jkomyno/codemode"
 license = "MIT"
 publish = false
+default-run = "codemode"
 
 [lints.rust]
 unsafe_code = "forbid"
