@@ -102,7 +102,8 @@ export function summarize(report: RunReport): Record<string, unknown> {
  * arguments, values and errors within the output budget, and per-call events.
  */
 function reportLimit(maxCalls: number): number {
-  return 2 * GUEST_FRAME_BYTES + maxCalls * (GUEST_FRAME_BYTES + 4096) + OUTPUT_BYTES + HOST_FRAME_BYTES;
+  // The first call beyond the allowance is also recorded, as rejected.
+  return 2 * GUEST_FRAME_BYTES + (maxCalls + 1) * (GUEST_FRAME_BYTES + 4096) + OUTPUT_BYTES + HOST_FRAME_BYTES;
 }
 
 /** Run one program through `codemode bridge` and resolve with its execution record. */

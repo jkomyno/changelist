@@ -52,6 +52,8 @@ Run `mise exec -- cargo run -- --help` for limits, stdin input, and exit behavio
   stops new dispatch and terminates the child. Remote effects cannot be undone.
 - The host authorizes tool names and validates the mock tool arguments. A rolling
   scheduler limits active provider calls and the total helper-call allowance.
+  The first request beyond the allowance is recorded as rejected (`call_limit`)
+  and ends the run, so a trace holds at most one call more than the allowance.
 - Rust assigns trace identities and records outcomes. Child stdout is untrusted;
   it cannot supply authoritative provider results or trace events.
 - Serialized tool replies and final output share a byte allowance. Frames are

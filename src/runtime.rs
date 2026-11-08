@@ -28,7 +28,9 @@ static LAUNCHER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub struct RunConfig {
     /// Absolute wall-clock budget, including process startup and provider calls.
     pub timeout_ms: u64,
-    /// Maximum total admitted calls, including calls rejected before dispatch.
+    /// Maximum total admitted calls, including calls rejected before dispatch. The
+    /// first request beyond it is recorded as rejected with code `call_limit` and
+    /// ends the run, so a report holds at most `max_calls + 1` calls.
     pub max_calls: usize,
     /// Maximum provider futures executing simultaneously.
     pub max_concurrency: usize,
@@ -221,7 +223,8 @@ pub enum RunStatus {
     GuestError,
     /// A dispatched provider task terminated without returning a result.
     ProviderTaskError,
-    /// Guest attempted more calls than allowed.
+    /// Guest attempted more calls than allowed; the first excess call is recorded
+    /// as rejected with code `call_limit`.
     CallLimit,
     /// Serialized responses or final output exceeded the byte budget.
     OutputLimit,
@@ -832,14 +835,27 @@ pub async fn run(
                     GuestFrame::Call { id, tool, arguments } => {
                         if id > MAX_GUEST_ID { report.status = RunStatus::ProtocolError; report.diagnostic = Some("guest correlation token exceeds the JavaScript safe integer range".into()); break; }
                         if !guest_ids.insert(id) { report.status = RunStatus::ProtocolError; report.diagnostic = Some("duplicate guest correlation token".into()); break; }
-                        if report.calls.len() >= config.max_calls { report.status = RunStatus::CallLimit; break; }
                         let call = ToolCall { id: report.calls.len() as u64 + 1, tool, arguments };
-                        let rejection = validate_call(&call, &config).err();
+                        // Record only the first request beyond the allowance, then stop,
+                        // so a report holds at most max_calls + 1 calls.
+                        let over_limit = report.calls.len() >= config.max_calls;
+                        let rejection = if over_limit {
+                            Some(ProviderError { code: "call_limit".into(), message: "call allowance exhausted".into() })
+                        } else {
+                            validate_call(&call, &config).err()
+                        };
                         let index = report.calls.len();
                         let call_id = call.id;
                         report.calls.push(CallRecord { call, guest_id:id, outcome: CallOutcome::Queued, started_ms: None, finished_ms: None });
                         event(&mut report, start, Some(call_id), "admitted");
                         if let Some(error) = rejection {
+                            if over_limit {
+                                report.calls[index].outcome = CallOutcome::Rejected { error };
+                                report.calls[index].finished_ms = Some(elapsed(start));
+                                event(&mut report, start, Some(call_id), "rejected");
+                                report.status = RunStatus::CallLimit;
+                                break;
+                            }
                             let bytes = serde_json::to_vec(&json!({"type":"result", "id":id, "ok":false, "error":error})).map_err(io::Error::other)?;
                             report.calls[index].outcome = CallOutcome::Rejected { error };
                             report.calls[index].finished_ms = Some(elapsed(start));

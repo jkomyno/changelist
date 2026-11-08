@@ -196,7 +196,7 @@ async fn exhausted_call_budget_distinguishes_queued_and_running_calls() {
     options.max_calls = 2;
     options.max_concurrency = 1;
     let report = run(
-        "return await Promise.all([1,2,3].map(value => tools.call('mock.wait', {ms:1000,value})));",
+        "return await Promise.all([1,2,3,4,5].map(value => tools.call('mock.wait', {ms:1000,value})));",
         options,
         MockProvider,
         RunCancellation::default(),
@@ -204,12 +204,27 @@ async fn exhausted_call_budget_distinguishes_queued_and_running_calls() {
     .await
     .expect("call limit produces a report");
     assert_eq!(report.status, RunStatus::CallLimit, "{report:?}");
-    assert_eq!(report.calls.len(), 2);
+    // The first request beyond the allowance is recorded; later ones are not, so
+    // a report holds at most max_calls + 1 calls.
+    assert_eq!(report.calls.len(), 3, "{report:?}");
     assert_eq!(report.calls[0].outcome, CallOutcome::Unknown);
     assert_eq!(
         report.calls[1].outcome,
         CallOutcome::CancelledBeforeDispatch
     );
+    let CallOutcome::Rejected { error } = &report.calls[2].outcome else {
+        panic!("over-allowance call is rejected: {:?}", report.calls[2]);
+    };
+    assert_eq!(error.code, "call_limit");
+    assert_eq!(report.calls[2].call.arguments, json!({"ms":1000,"value":3}));
+    assert_eq!(report.calls[2].started_ms, None);
+    let kinds: Vec<&str> = report
+        .events
+        .iter()
+        .filter(|event| event.call_id == Some(3))
+        .map(|event| event.kind.as_str())
+        .collect();
+    assert_eq!(kinds, ["admitted", "rejected"]);
 }
 
 #[tokio::test]
