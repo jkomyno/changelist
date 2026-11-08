@@ -99,11 +99,15 @@ runEngine({ code, tools, limits: { timeoutMs, maxCalls, concurrency, maxOutputBy
 
 - **codemode**: no guest shim. Host shim: `execute(call, signal)` calls
   `tools[call.tool](call.arguments, { signal })`; a value becomes `{ok: true, value}`, a
-  rejection `{ok: false, error: {code: error.code ?? "tool_error", message}}`. If runBridge ever
-  passes a third `report` argument it is forwarded as `ctx.report`; it does not today, so the
-  permission `report` calls are no-ops for every engine. `setupMs` is near zero because process
-  spawn and Deno startup happen inside `runBridge`; the report's `elapsed_ms` (Rust clock) is
-  shown separately.
+  rejection `{ok: false, error: {code: error.code ?? "tool_error", message}}`. runBridge's third
+  `report` argument is forwarded as `ctx.report`, so the fixtures' permission and executor facts
+  reach codemode's trace (bridge protocol 2); other engines get no `report`. `setupMs` is near
+  zero because process spawn and Deno startup happen inside `runBridge`; the report's
+  `elapsed_ms` (Rust clock) is shown separately.
+- **codemode-prewarm**: the same adapter, holding one started bridge and Deno guest for the next
+  run with the same limits (`startBridge`). The next bridge starts just after a run returns, so
+  its startup is outside the measured task; the first run in a process, and every cold sample,
+  starts its own. Each bridge serves one run. The cost is one idle bridge and guest between runs.
 - **pi**: Pi exposes `tools.<jsName>(args)` (dots become `_`) and has no `tools.call`. The
   program is wrapped on its first line so line numbers match:
   `const __piTools = tools, __piNames = {...}; return await (async (tools) => {<program>\n})({ call: async (name, args) => __piTools[__piNames[name]](args) });`.

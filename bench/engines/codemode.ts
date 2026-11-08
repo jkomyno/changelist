@@ -6,8 +6,9 @@
  * a function body with `return`. Host side, each bridge call is forwarded to the tool
  * function: `execute(call, signal)` -> `tools[call.tool](call.arguments, { signal })`.
  * A resolved value becomes `{ ok: true, value }`; a rejection becomes
- * `{ ok: false, error: { code: error.code ?? "tool_error", message } }`. If runBridge
- * ever passes a third `report` argument, it is forwarded as `ctx.report`; today it does not.
+ * `{ ok: false, error: { code: error.code ?? "tool_error", message } }`. runBridge's
+ * third `report` argument is forwarded as `ctx.report`, so the fixtures' permission and
+ * executor facts reach the trace; other engines receive no `report`.
  *
  * Limits: all four are enforced by Rust (deadline including Deno startup, call allowance,
  * rolling concurrency cap, shared reply/output byte budget). Each guest frame is capped
@@ -19,7 +20,15 @@
 import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type BridgeCall, type HostReply, type RunReport, runBridge } from "../../integrations/shared/bridge-client.ts";
+import {
+  type BridgeCall,
+  type BridgeLimits,
+  type HostReply,
+  type RunReport,
+  runBridge,
+  type StartedBridge,
+  startBridge,
+} from "../../integrations/shared/bridge-client.ts";
 import type { EngineInfo, EngineInput, EngineResult, ErrorKind } from "./types.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -28,7 +37,7 @@ const DENO = process.env.CODEMODE_DENO ?? execFileSync("mise", ["which", "deno"]
 
 export const info: EngineInfo = {
   name: "codemode",
-  version: "bridge protocol 1 (this checkout)",
+  version: "bridge protocol 2 (this checkout)",
   limits: {
     timeoutMs: "enforced by Rust; one absolute deadline that includes bridge and Deno startup",
     maxCalls: "enforced by Rust; the first call beyond the allowance is rejected and ends the run",
@@ -46,7 +55,60 @@ const KINDS: Record<string, ErrorKind> = {
   cancelled: "cancelled",
 };
 
-export async function runEngine(input: EngineInput): Promise<EngineResult> {
+/**
+ * With `prewarm`, the adapter keeps one started bridge (and its Deno guest) ready
+ * for the next run with the same limits, started just after the previous run
+ * returned. Each bridge serves one run. A run that finds no ready bridge, such as
+ * the first in a process, starts one itself.
+ */
+export function createEngine(options: { prewarm: boolean }): { info: EngineInfo; runEngine: (input: EngineInput) => Promise<EngineResult> } {
+  let ready: { bridge: StartedBridge; key: string } | undefined;
+  const take = (limits: BridgeLimits): StartedBridge | undefined => {
+    const key = JSON.stringify(limits);
+    const found = ready;
+    ready = undefined;
+    if (found && !found.bridge.exited && found.key === key) return found.bridge;
+    found?.bridge.child.kill();
+    return undefined;
+  };
+  const prepareNext = (limits: BridgeLimits) => {
+    // After this run has returned, so starting the next bridge is not part of it.
+    setTimeout(() => {
+      ready?.bridge.child.kill();
+      ready = { bridge: startBridge(limits), key: JSON.stringify(limits) };
+    }, 0);
+  };
+  return {
+    info: options.prewarm
+      ? {
+          ...info,
+          name: "codemode-prewarm",
+          shim: `${info.shim}; one bridge and Deno guest started ahead of each run, outside its measured time`,
+        }
+      : info,
+    runEngine: async (input) => {
+      const limits: BridgeLimits = {
+        bin: BIN,
+        deno: DENO,
+        cwd: ROOT,
+        timeoutMs: input.limits.timeoutMs,
+        concurrency: input.limits.concurrency,
+        maxCalls: input.limits.maxCalls,
+        maxOutputBytes: input.limits.maxOutputBytes,
+      };
+      const started = options.prewarm ? take(limits) : undefined;
+      try {
+        return await runOnce(input, started);
+      } finally {
+        if (options.prewarm) prepareNext(limits);
+      }
+    },
+  };
+}
+
+export const runEngine = createEngine({ prewarm: false }).runEngine;
+
+async function runOnce(input: EngineInput, started: StartedBridge | undefined): Promise<EngineResult> {
   const setupStart = performance.now();
   const execute = async (call: BridgeCall, signal: AbortSignal, report?: (kind: string) => void): Promise<HostReply> => {
     const tool = input.tools[call.tool];
@@ -82,6 +144,7 @@ export async function runEngine(input: EngineInput): Promise<EngineResult> {
       maxOutputBytes: input.limits.maxOutputBytes,
       signal: input.signal,
       execute,
+      started,
     });
   } catch (error) {
     return {
