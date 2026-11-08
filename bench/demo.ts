@@ -25,8 +25,8 @@ const bin = process.env.CODEMODE_BIN ?? join(ROOT, "target/release/codemode");
 async function step(title: string, engine: string, name: string, profile: Profile, inspect: string[], runs = 1) {
   const mod = await loadEngine(engine);
   const s = scenario(name);
-  let record = await runOnce(engine, mod, s, profile, program(s));
   // Later runs of a prewarmed engine use the guest started after the previous one.
+  let record = await runOnce(engine, mod, s, profile, program(s));
   for (let run = 1; run < runs; run++) record = await runOnce(engine, mod, s, profile, program(s));
   const trace = join(dir, `${name}-${engine}.json`);
   writeFileSync(trace, JSON.stringify(record.raw.engineTrace, null, 2) + "\n");

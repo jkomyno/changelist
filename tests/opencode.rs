@@ -163,7 +163,6 @@ fn outcomes(trace: &Value) -> Vec<(Value, Value, Value)> {
         .collect()
 }
 
-/// Run a command to completion, killing it if it outlives `timeout`.
 /// Host-reported facts as (call id, kind), in arrival order.
 fn facts(trace: &Value) -> Vec<(u64, String)> {
     trace["provider_facts"]
@@ -179,6 +178,7 @@ fn facts(trace: &Value) -> Vec<(u64, String)> {
         .collect()
 }
 
+/// Run a command to completion, killing it if it outlives `timeout`.
 fn output_within(command: &mut Command, timeout: Duration) -> Output {
     let mut child = command
         .stdout(Stdio::piped())

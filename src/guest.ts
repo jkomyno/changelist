@@ -111,7 +111,6 @@ const tools = {
 for (const level of ["log", "info", "warn", "error"]) {
   console[level] = (...args) => postMessage({ type: "log", message: args.map(String).join(" ") });
 }
-// The program sees \`tools\` as a global, as it did when it was inlined here.
 Object.defineProperty(globalThis, "tools", { value: tools, writable: true, configurable: true });
 function start(code: string) {
   const program = "export default (async () => {\\n" + code + "\\n})();";

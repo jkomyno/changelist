@@ -606,7 +606,6 @@ async fn trace_separates_admission_dispatch_result_and_delivery_with_byte_accoun
             .expect("JSON")
             .len() as u64;
         assert_eq!(record.argument_bytes, arguments);
-        // mock.echo returns its arguments.
         assert_eq!(record.result_bytes, Some(arguments));
         assert!(record.reply_bytes.expect("reply bytes") > arguments);
     }

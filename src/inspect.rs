@@ -415,33 +415,45 @@ fn run_event(report: &RunReport, kinds: &[&str]) -> Option<u64> {
         .map(|event| event.at_ms)
 }
 
+/// One call's state changes, in Rust milliseconds since run start.
+struct Span {
+    admitted: Option<u64>,
+    left_queue: Option<u64>,
+    started: Option<u64>,
+    finished: Option<u64>,
+}
+
 fn timing(report: &RunReport, options: &InspectOptions) -> Timing {
     let end = report.elapsed_ms;
     let guest_finished = run_event(report, &["guest_finished"]);
     let stopped = run_event(report, &["deadline_reached", "cancellation_observed"]);
-    let first_frame = report
+    let spans: Vec<Span> = report
         .calls
         .iter()
-        .filter_map(|record| admitted(report, record))
+        .map(|r| Span {
+            admitted: admitted(report, r),
+            left_queue: r.started_ms.or(r.finished_ms),
+            started: r.started_ms,
+            finished: r.finished_ms,
+        })
+        .collect();
+    let first_frame = spans
+        .iter()
+        .filter_map(|span| span.admitted)
         .chain(guest_finished)
         .chain(stopped)
         .min()
         .unwrap_or(end)
         .min(end);
     let cap = report.limits.max_concurrency;
-    // Classify each interval between consecutive state changes by its start.
     let mut points: Vec<u64> = vec![0, first_frame, end];
     points.extend(guest_finished);
     points.extend(stopped);
-    for record in &report.calls {
+    for span in &spans {
         points.extend(
-            [
-                admitted(report, record),
-                record.started_ms,
-                record.finished_ms,
-            ]
-            .into_iter()
-            .flatten(),
+            [span.admitted, span.started, span.finished]
+                .into_iter()
+                .flatten(),
         );
     }
     points.retain(|at| *at <= end);
@@ -450,19 +462,17 @@ fn timing(report: &RunReport, options: &InspectOptions) -> Timing {
     let mut ms = [0u64; 7];
     for window in points.windows(2) {
         let (at, next) = (window[0], window[1]);
-        let queued = report
-            .calls
+        let queued = spans
             .iter()
-            .filter(|r| {
-                admitted(report, r).is_some_and(|a| a <= at)
-                    && r.started_ms.or(r.finished_ms).is_none_or(|left| at < left)
+            .filter(|span| {
+                span.admitted.is_some_and(|a| a <= at)
+                    && span.left_queue.is_none_or(|left| at < left)
             })
             .count();
-        let active = report
-            .calls
+        let active = spans
             .iter()
-            .filter(|r| {
-                r.started_ms.is_some_and(|s| s <= at) && r.finished_ms.is_none_or(|f| at < f)
+            .filter(|span| {
+                span.started.is_some_and(|s| s <= at) && span.finished.is_none_or(|f| at < f)
             })
             .count();
         let done = guest_finished.is_some_and(|g| g <= at) || stopped.is_some_and(|s| s <= at);

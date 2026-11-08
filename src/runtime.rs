@@ -698,6 +698,17 @@ fn event_because(
         reason: reason.map(String::from),
     });
 }
+/// Record a cancellation or deadline that stops the run, as Rust observed it.
+fn stop(report: &mut RunReport, start: Instant, status: RunStatus) {
+    report.status = status;
+    let kind = if status == RunStatus::Deadline {
+        "deadline_reached"
+    } else {
+        "cancellation_observed"
+    };
+    event(report, start, None, kind);
+}
+
 /// Keep a provider fact only for a running call and within the per-call limit.
 fn record_fact(
     report: &mut RunReport,
@@ -1054,7 +1065,6 @@ async fn execute(
     let mut task_calls = HashMap::new();
     let mut queue: VecDeque<usize> = VecDeque::new();
     let mut guest_ids = HashSet::new();
-    // Frames for the guest, each with the call whose reply it carries.
     let mut responses: VecDeque<(Option<usize>, Vec<u8>)> = VecDeque::from([(None, initial)]);
     let mut write_offset = 0;
     let mut response_bytes = 0usize;
@@ -1064,13 +1074,11 @@ async fn execute(
     let mut io_failure = None;
     loop {
         if cancellation.is_cancelled() {
-            report.status = RunStatus::Cancelled;
-            event(&mut report, start, None, "cancellation_observed");
+            stop(&mut report, start, RunStatus::Cancelled);
             break;
         }
         if Instant::now() >= deadline {
-            report.status = RunStatus::Deadline;
-            event(&mut report, start, None, "deadline_reached");
+            stop(&mut report, start, RunStatus::Deadline);
             break;
         }
         if guest_done {
@@ -1126,8 +1134,8 @@ async fn execute(
         }
         tokio::select! {
             biased;
-            () = cancellation.cancelled() => { report.status = RunStatus::Cancelled; event(&mut report, start, None, "cancellation_observed"); break; }
-            () = time::sleep_until(deadline) => { report.status = RunStatus::Deadline; event(&mut report, start, None, "deadline_reached"); break; }
+            () = cancellation.cancelled() => { stop(&mut report, start, RunStatus::Cancelled); break; }
+            () = time::sleep_until(deadline) => { stop(&mut report, start, RunStatus::Deadline); break; }
             result = input.write(responses.front().map_or(&[][..], |(_, bytes)| &bytes[write_offset..])), if !responses.is_empty() && !guest_done && !input_closed => {
                 match result {
                     Ok(0) => { input_closed = true; responses.clear(); write_offset = 0; }
@@ -1217,8 +1225,6 @@ async fn execute(
                         if id > MAX_GUEST_ID { report.status = RunStatus::ProtocolError; report.diagnostic = Some("guest correlation token exceeds the JavaScript safe integer range".into()); break; }
                         if !guest_ids.insert(id) { report.status = RunStatus::ProtocolError; report.diagnostic = Some("duplicate guest correlation token".into()); break; }
                         let call = ToolCall { id: report.calls.len() as u64 + 1, tool, arguments };
-                        // Record only the first request beyond the allowance, then stop,
-                        // so a report holds at most max_calls + 1 calls.
                         let over_limit = report.calls.len() >= config.max_calls;
                         let rejection = if over_limit {
                             Some(ProviderError { code: "call_limit".into(), message: "call allowance exhausted".into() })
@@ -1235,17 +1241,14 @@ async fn execute(
                         event(&mut report, start, Some(call_id), "admitted");
                         if let Some(error) = rejection {
                             report.calls[index].result_bytes = Some(json_len(&error));
-                            if over_limit {
-                                report.calls[index].outcome = CallOutcome::Rejected { error };
-                                report.calls[index].finished_ms = Some(elapsed(start));
-                                event(&mut report, start, Some(call_id), "rejected");
-                                report.status = RunStatus::CallLimit;
-                                break;
-                            }
-                            let bytes = serde_json::to_vec(&json!({"type":"result", "id":id, "ok":false, "error":error})).map_err(io::Error::other)?;
+                            // The run stops at the first call over the allowance, so it gets no reply.
+                            let reply = if over_limit { None } else {
+                                Some(serde_json::to_vec(&json!({"type":"result", "id":id, "ok":false, "error":error})).map_err(io::Error::other)?)
+                            };
                             report.calls[index].outcome = CallOutcome::Rejected { error };
                             report.calls[index].finished_ms = Some(elapsed(start));
                             event(&mut report, start, Some(call_id), "rejected");
+                            let Some(bytes) = reply else { report.status = RunStatus::CallLimit; break; };
                             if bytes.len() > config.max_output_bytes.saturating_sub(response_bytes) { report.status = RunStatus::OutputLimit; break; }
                             response_bytes += bytes.len();
                             report.calls[index].reply_bytes = Some(bytes.len() as u64 + 1);

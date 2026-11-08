@@ -158,12 +158,12 @@ export async function runComposio(run: ComposioRun): Promise<ComposioRunResult> 
     const report = await runBridge({
       ...bridge,
       signal: controller.signal,
-      execute: async (call, callSignal, report) => {
+      execute: async (call, callSignal, reportFact) => {
         if (!isRecord(call.arguments)) {
           return { ok: false, error: { code: "invalid_arguments", message: "Composio tool arguments must be a JSON object" } };
         }
         let reply: HostReply | Unobserved;
-        report("executor_started");
+        reportFact("executor_started");
         try {
           reply = await executor(call.tool, call.arguments, callSignal);
         } catch (error) {

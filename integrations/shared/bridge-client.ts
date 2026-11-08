@@ -135,7 +135,6 @@ export function summarize(report: RunReport): Record<string, unknown> {
  * arguments, values and errors within the output budget, and per-call events.
  */
 function reportLimit(maxCalls: number, outputBytes: number): number {
-  // The first call beyond the allowance is also recorded, as rejected.
   return 2 * GUEST_FRAME_BYTES + (maxCalls + 1) * (GUEST_FRAME_BYTES + 4096) + outputBytes + HOST_FRAME_BYTES;
 }
 
@@ -155,7 +154,8 @@ function bridgeArgs(limits: BridgeLimits): string[] {
   ];
 }
 
-const keyOf = (limits: BridgeLimits) => JSON.stringify([limits.bin, limits.cwd, ...bridgeArgs(limits)]);
+/** Identifies a bridge's command line, so a started bridge matches only runs with its limits. */
+export const bridgeKey = (limits: BridgeLimits) => JSON.stringify([limits.bin, limits.cwd, ...bridgeArgs(limits)]);
 
 /**
  * Start a bridge and its guest now, before the program is known. The bridge waits
@@ -164,7 +164,7 @@ const keyOf = (limits: BridgeLimits) => JSON.stringify([limits.bin, limits.cwd, 
  */
 export function startBridge(limits: BridgeLimits): StartedBridge {
   const child = spawn(limits.bin, bridgeArgs(limits), { cwd: limits.cwd, env: {}, stdio: ["pipe", "pipe", "pipe"] });
-  const started: StartedBridge = { child, key: keyOf(limits), exited: false, stderr: "" };
+  const started: StartedBridge = { child, key: bridgeKey(limits), exited: false, stderr: "" };
   child.once("close", () => {
     started.exited = true;
   });
@@ -186,7 +186,7 @@ export function startBridge(limits: BridgeLimits): StartedBridge {
 export async function runBridge(run: BridgeRun): Promise<RunReport> {
   const outputBytes = run.maxOutputBytes ?? OUTPUT_BYTES;
   const frameLimit = reportLimit(run.maxCalls, outputBytes);
-  if (run.started && run.started.key !== keyOf(run)) {
+  if (run.started && run.started.key !== bridgeKey(run)) {
     throw new Error("the started bridge has different limits than this run");
   }
   const bridge = run.started ?? startBridge(run);

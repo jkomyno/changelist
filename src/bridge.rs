@@ -247,7 +247,6 @@ impl ToolProvider for HostProvider {
         self.outbox
             .send(Outbound::Frame(frame))
             .map_err(|_| undelivered("bridge output is closed".into()))?;
-        // Queued frames are written in order before the report.
         self.counters.to_host.fetch_add(length, Ordering::Relaxed);
         match receiver.await {
             Ok(reply) => reply,

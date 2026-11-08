@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 import {
   type BridgeCall,
   type BridgeLimits,
+  bridgeKey,
   type HostReply,
   type RunReport,
   runBridge,
@@ -63,20 +64,19 @@ const KINDS: Record<string, ErrorKind> = {
  * the first in a process, starts one itself.
  */
 export function createEngine(options: { prewarm: boolean }): { info: EngineInfo; runEngine: (input: EngineInput) => Promise<EngineResult> } {
-  let ready: { bridge: StartedBridge; key: string } | undefined;
+  let ready: StartedBridge | undefined;
   const take = (limits: BridgeLimits): StartedBridge | undefined => {
-    const key = JSON.stringify(limits);
     const found = ready;
     ready = undefined;
-    if (found && !found.bridge.exited && found.key === key) return found.bridge;
-    found?.bridge.child.kill();
+    if (found && !found.exited && found.key === bridgeKey(limits)) return found;
+    found?.child.kill();
     return undefined;
   };
   const prepareNext = (limits: BridgeLimits) => {
     // After this run has returned, so starting the next bridge is not part of it.
     setTimeout(() => {
-      ready?.bridge.child.kill();
-      ready = { bridge: startBridge(limits), key: JSON.stringify(limits) };
+      ready?.child.kill();
+      ready = startBridge(limits);
     }, 0);
   };
   return {
@@ -99,7 +99,7 @@ export function createEngine(options: { prewarm: boolean }): { info: EngineInfo;
       };
       const started = options.prewarm ? take(limits) : undefined;
       try {
-        return await runOnce(input, started);
+        return await runOnce(input, limits, started);
       } finally {
         if (options.prewarm) prepareNext(limits);
       }
@@ -109,7 +109,7 @@ export function createEngine(options: { prewarm: boolean }): { info: EngineInfo;
 
 export const runEngine = createEngine({ prewarm: false }).runEngine;
 
-async function runOnce(input: EngineInput, started: StartedBridge | undefined): Promise<EngineResult> {
+async function runOnce(input: EngineInput, limits: BridgeLimits, started: StartedBridge | undefined): Promise<EngineResult> {
   const setupStart = performance.now();
   const execute = async (call: BridgeCall, signal: AbortSignal, report?: (kind: string) => void): Promise<HostReply> => {
     const tool = input.tools[call.tool];
@@ -134,15 +134,9 @@ async function runOnce(input: EngineInput, started: StartedBridge | undefined): 
   let report: RunReport;
   try {
     report = await runBridge({
-      bin: BIN,
-      deno: DENO,
-      cwd: ROOT,
+      ...limits,
       code: input.code,
       tools: Object.keys(input.tools),
-      timeoutMs: input.limits.timeoutMs,
-      concurrency: input.limits.concurrency,
-      maxCalls: input.limits.maxCalls,
-      maxOutputBytes: input.limits.maxOutputBytes,
       signal: input.signal,
       execute,
       started,
