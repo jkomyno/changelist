@@ -44,6 +44,12 @@ mise exec -- cargo run -- run --code examples/failure.ts
 
 That command exits unsuccessfully and records the earlier completed call as well
 as the provider failure. No service account or external tool call is involved.
+To ask a saved record why it was slow, which calls ran, and which outcomes need
+reconciliation:
+
+```sh
+mise exec -- cargo run -- inspect /tmp/codemode-trace.json
+```
 Run `mise exec -- cargo run -- --help` for limits, stdin input, and exit behavior.
 
 ## Execution contract

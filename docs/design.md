@@ -49,11 +49,47 @@ not an inherent Rust speed claim; [the evaluation](evaluation.md) measures it.
 
 ## Execution evidence
 
-A versioned JSON record contains source, host-assigned call identities,
-arguments, observed results or errors, event ordering, timing, final output, and
-run status. Queued, dispatched, completed, rejected, and unknown work remain
-separate. The CLI can keep the full record in a file while returning compact
-status and output to its caller.
+A versioned JSON record (schema version 2) contains source, host-assigned call
+identities, arguments, observed results or errors, event ordering, timing, final
+output, and run status. Queued, dispatched, completed, rejected, and unknown work
+remain separate. The CLI can keep the full record in a file while returning
+compact status and output to its caller.
+
+Every time in the record comes from one clock: Rust's monotonic clock, in whole
+milliseconds since run start. Each call records when it was admitted, dispatched,
+finished, and when its reply was completely written to the guest's input, so
+queue waiting, provider time, and delivery are separate. Run-level events mark the
+guest's spawn, its finish (with output, an error, or by exiting), a deadline or
+cancellation observed by Rust, and guest termination. An `unknown` or
+`cancelled_before_dispatch` event names the run status that caused it. Byte
+counts cover arguments, observed values, reply frames, bytes exchanged with the
+guest and with a bridge host, and observed values omitted as too large.
+
+Provider-reported facts are separate from these observations: a provider such
+as a bridge host may say it received a call, waited for permission, decided, or
+entered its executor. Rust stamps each fact with its arrival time and keeps the
+provider's own timestamp apart. A missing fact never proves a call did not run.
+
+`codemode inspect <trace.json>` and `codemode::inspect` answer three questions
+from a record, within a call limit and with counted omissions:
+
+- **Why was this slow?** Exclusive phases that sum to the elapsed time: startup,
+  guest-only time, tools running, waiting at the concurrency cap, waiting while a
+  slot was free (a batch barrier), draining after the guest finished, and
+  shutdown. Guest-only time is not split further: the record cannot tell guest
+  computation from the gap between dependent steps, and inspection does not infer
+  dependencies from call order.
+- **Which calls ran?** Each call's evidence: result observed, provider error
+  (after executor entry, after a permission denial, or unspecified), rejected or
+  never dispatched, or unknown after executor entry, after receipt only, or
+  without acknowledgment.
+- **Which outcomes require reconciliation?** The unknown calls, with the status
+  that ended them and the last provider fact, to check with the provider before
+  any retry.
+
+Inspection prints tool names, error codes, top-level argument keys, and sizes. It
+leaves out argument values, results, and messages unless `--messages` is given,
+and replaces control characters.
 
 The JSON `output` field is present only when a guest value was observed within
 limits, including an explicit JSON `null`. A provider task panic has its own run

@@ -11,9 +11,14 @@
 //! stdio protocol; the host keeps its permissions, approvals, and credentials.
 
 mod bridge;
+mod inspect;
 mod runtime;
 
 pub use bridge::{BRIDGE_FRAME_BYTES, BRIDGE_PROTOCOL_VERSION, BridgeError, serve_bridge};
+pub use inspect::{
+    CallRow, CallTiming, Calls, Evidence, InspectOptions, Inspection, Phase, Reconcile,
+    ReconcileItem, Sections, Timing, inspect,
+};
 pub use runtime::{
     BridgeTotals, ByteTotals, CallContext, CallOutcome, CallRecord, ClockInfo, DispatchPolicy,
     FactSink, MockProvider, ProviderError, ProviderFact, ProviderFactKind, REPORT_SCHEMA_VERSION,

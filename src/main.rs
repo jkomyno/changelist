@@ -9,16 +9,18 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use codemode::{
-    BridgeError, DispatchPolicy, MockProvider, RunCancellation, RunConfig, RunReport, run,
-    serve_bridge,
+    BridgeError, DispatchPolicy, InspectOptions, MockProvider, RunCancellation, RunConfig,
+    RunReport, Sections, inspect, run, serve_bridge,
 };
 
 const MAX_CODE_BYTES: u64 = 64 * 1024;
+const MAX_TRACE_BYTES: u64 = 64 * 1024 * 1024;
 const HELP: &str = "codemode — bounded agent-written TypeScript/JavaScript workflows
 
 Usage:
   codemode run --code <file.ts|file.js|-> [options]
   codemode bridge [limit options]
+  codemode inspect <trace.json|-> [inspect options]
 
 Options:
   --timeout-ms <n>        Total run deadline, including startup (default: 5000)
@@ -36,8 +38,16 @@ run supplies mock.echo, mock.wait, and mock.fail. stdout contains one JSON
 execution record; diagnostics use stderr. A dash reads source from stdin.
 
 bridge lets a parent host execute tools: stdin and stdout carry protocol
-version 1 frames (start, call, result, cancel, report). The host's start frame
-supplies the source and authorized tool names. Credentials stay with the host.
+version 2 frames (start, call, result, fact, cancel, report). The host's start
+frame supplies the source and authorized tool names. Credentials stay with the host.
+
+inspect reads a saved execution record and answers: why was this slow, which
+calls ran, and which outcomes require reconciliation. It prints tool names,
+error codes, argument keys, and sizes, never argument or result values.
+  --why-slow, --calls, --reconcile   Print only these sections (default: all)
+  --limit <n>             Calls listed per section (default: 10)
+  --messages              Also print error messages and the diagnostic
+  --json                  Print the answers as one JSON object
 ";
 
 #[derive(Debug)]
@@ -59,11 +69,62 @@ struct Options {
 }
 
 #[derive(Debug)]
+struct InspectArgs {
+    trace: PathBuf,
+    options: InspectOptions,
+    sections: Sections,
+    json: bool,
+}
+
+#[derive(Debug)]
 enum Command {
     Help,
     Version,
     Run(Options),
     Bridge(RunConfig),
+    Inspect(InspectArgs),
+}
+
+fn parse_inspect(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<Command, CliError> {
+    let mut trace = None;
+    let mut options = InspectOptions::default();
+    let mut chosen = Sections {
+        timing: false,
+        calls: false,
+        reconcile: false,
+    };
+    let mut json = false;
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("-h" | "--help") => return Ok(Command::Help),
+            Some("--why-slow") => chosen.timing = true,
+            Some("--calls") => chosen.calls = true,
+            Some("--reconcile") => chosen.reconcile = true,
+            Some("--messages") => options.messages = true,
+            Some("--json") => json = true,
+            Some("--limit") => {
+                options.limit = args
+                    .next()
+                    .and_then(|value| value.to_str()?.parse().ok())
+                    .ok_or_else(|| CliError("--limit requires a nonnegative integer".into()))?;
+            }
+            Some(flag) if flag.starts_with("--") => {
+                return Err(CliError(format!("unknown option '{flag}'")));
+            }
+            _ => {
+                if trace.replace(PathBuf::from(arg)).is_some() {
+                    return Err(CliError("inspect takes one trace file".into()));
+                }
+            }
+        }
+    }
+    let none = !(chosen.timing || chosen.calls || chosen.reconcile);
+    Ok(Command::Inspect(InspectArgs {
+        trace: trace.ok_or_else(|| CliError("inspect requires a trace file or -".into()))?,
+        options,
+        sections: if none { Sections::ALL } else { chosen },
+        json,
+    }))
 }
 
 fn parse_arguments() -> Result<Command, CliError> {
@@ -73,9 +134,10 @@ fn parse_arguments() -> Result<Command, CliError> {
         Some("-V" | "--version") => return Ok(Command::Version),
         Some("run") => false,
         Some("bridge") => true,
+        Some("inspect") => return parse_inspect(args),
         _ => {
             return Err(CliError(
-                "expected 'run' or 'bridge'; use --help for usage".into(),
+                "expected 'run', 'bridge', or 'inspect'; use --help for usage".into(),
             ));
         }
     };
@@ -156,18 +218,19 @@ fn parse_arguments() -> Result<Command, CliError> {
     }))
 }
 
-fn read_source(path: &PathBuf) -> Result<String, Box<dyn Error>> {
+/// Read a file or stdin (`-`), refusing more than `limit` bytes.
+fn read_input(path: &PathBuf, limit: u64, what: &str) -> Result<String, Box<dyn Error>> {
     let input: Box<dyn Read> = if path.as_os_str() == "-" {
         Box::new(io::stdin())
     } else {
         Box::new(File::open(path)?)
     };
-    let mut source = String::new();
-    input.take(MAX_CODE_BYTES + 1).read_to_string(&mut source)?;
-    if source.len() as u64 > MAX_CODE_BYTES {
-        return Err(CliError("source exceeds the 64 KiB limit".into()).into());
+    let mut text = String::new();
+    input.take(limit + 1).read_to_string(&mut text)?;
+    if text.len() as u64 > limit {
+        return Err(CliError(format!("{what} exceeds the {} KiB limit", limit / 1024)).into());
     }
-    Ok(source)
+    Ok(text)
 }
 
 /// Cancel on Ctrl-C and, on Unix, on SIGTERM, so a host that signals its whole
@@ -204,6 +267,20 @@ async fn execute() -> Result<u8, Box<dyn Error>> {
             println!("codemode {}", env!("CARGO_PKG_VERSION"));
             Ok(0)
         }
+        Command::Inspect(args) => {
+            let text = read_input(&args.trace, MAX_TRACE_BYTES, "trace")?;
+            let report: RunReport = serde_json::from_str(&text)
+                .map_err(|error| CliError(format!("not an execution record: {error}")))?;
+            let inspection = inspect(&report, &args.options);
+            let mut stdout = io::stdout().lock();
+            if args.json {
+                serde_json::to_writer(&mut stdout, &inspection)?;
+                writeln!(stdout)?;
+            } else {
+                stdout.write_all(inspection.render(args.sections).as_bytes())?;
+            }
+            Ok(0)
+        }
         Command::Bridge(config) => {
             let cancellation = RunCancellation::default();
             let signal_task = cancel_on_interrupt(&cancellation);
@@ -218,7 +295,7 @@ async fn execute() -> Result<u8, Box<dyn Error>> {
             Ok(result?.status.exit_code())
         }
         Command::Run(options) => {
-            let source = read_source(&options.code)?;
+            let source = read_input(&options.code, MAX_CODE_BYTES, "source")?;
             let cancellation = RunCancellation::default();
             let signal_task = cancel_on_interrupt(&cancellation);
             let result = run(&source, options.config, MockProvider, cancellation).await;
