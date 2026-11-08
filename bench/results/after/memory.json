@@ -1,0 +1,1652 @@
+{
+  "baselineMaxRssKiB": {
+    "n": 5,
+    "p50": 18353,
+    "p95": 18497,
+    "min": 18225,
+    "max": 18497,
+    "mean": 18337
+  },
+  "baselinePsPeakSelfKiB": {
+    "n": 5,
+    "p50": 33456,
+    "p95": 33584,
+    "min": 33344,
+    "max": 33584,
+    "mean": 33440
+  },
+  "cells": {
+    "triage|mixed|codemode": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 3136,
+        "p95": 3376,
+        "min": 3008,
+        "max": 3376,
+        "mean": 3139.2
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 6880,
+        "p95": 6912,
+        "min": 6528,
+        "max": 6912,
+        "mean": 6787.2
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 87,
+        "p95": 88,
+        "min": 87,
+        "max": 88,
+        "mean": 87.2
+      },
+      "bridgePeakKiB": {
+        "n": 5,
+        "p50": 4864,
+        "p95": 5120,
+        "min": 4816,
+        "max": 5120,
+        "mean": 4912
+      },
+      "denoPeakKiB": {
+        "n": 5,
+        "p50": 40960,
+        "p95": 41344,
+        "min": 40704,
+        "max": 41344,
+        "mean": 40963.2
+      },
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 45776,
+        "p95": 46432,
+        "min": 45552,
+        "max": 46432,
+        "mean": 45868.8
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.15,
+        "p95": 10.16,
+        "min": 10.12,
+        "max": 10.16,
+        "mean": 10.14
+      },
+      "okCount": 5,
+      "n": 5
+    },
+    "triage|mixed|codemode-c4": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 3648,
+        "p95": 4096,
+        "min": 3104,
+        "max": 4096,
+        "mean": 3580.8
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 6784,
+        "p95": 7104,
+        "min": 6272,
+        "max": 7104,
+        "mean": 6739.2
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 107,
+        "p95": 107,
+        "min": 106,
+        "max": 107,
+        "mean": 106.6
+      },
+      "bridgePeakKiB": {
+        "n": 5,
+        "p50": 4832,
+        "p95": 4928,
+        "min": 4768,
+        "max": 4928,
+        "mean": 4844.8
+      },
+      "denoPeakKiB": {
+        "n": 5,
+        "p50": 40864,
+        "p95": 41152,
+        "min": 40720,
+        "max": 41152,
+        "mean": 40934.4
+      },
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 45792,
+        "p95": 46048,
+        "min": 45488,
+        "max": 46048,
+        "mean": 45779.2
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.13,
+        "p95": 10.15,
+        "min": 10.1,
+        "max": 10.15,
+        "mean": 10.13
+      },
+      "okCount": 5,
+      "n": 5
+    },
+    "triage|mixed|codemode-prewarm": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 3312,
+        "p95": 3696,
+        "min": 3008,
+        "max": 3696,
+        "mean": 3382.4
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 6592,
+        "p95": 7712,
+        "min": 6208,
+        "max": 7712,
+        "mean": 6892.8
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 87,
+        "p95": 88,
+        "min": 87,
+        "max": 88,
+        "mean": 87.2
+      },
+      "bridgePeakKiB": {
+        "n": 5,
+        "p50": 4800,
+        "p95": 4864,
+        "min": 4768,
+        "max": 4864,
+        "mean": 4809.6
+      },
+      "denoPeakKiB": {
+        "n": 5,
+        "p50": 40656,
+        "p95": 41808,
+        "min": 40352,
+        "max": 41808,
+        "mean": 40860.8
+      },
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 45520,
+        "p95": 46656,
+        "min": 45120,
+        "max": 46656,
+        "mean": 45670.4
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.13,
+        "p95": 10.17,
+        "min": 10.12,
+        "max": 10.17,
+        "mean": 10.14
+      },
+      "okCount": 5,
+      "n": 5
+    },
+    "triage|mixed|pi": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 56784,
+        "p95": 58977,
+        "min": 55120,
+        "max": 58977,
+        "mean": 56886.6
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 67568,
+        "p95": 69904,
+        "min": 65616,
+        "max": 69904,
+        "mean": 67804.8
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 70,
+        "p95": 71,
+        "min": 70,
+        "max": 71,
+        "mean": 70.2
+      },
+      "bridgePeakKiB": null,
+      "denoPeakKiB": null,
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.16,
+        "p95": 10.18,
+        "min": 10.14,
+        "max": 10.18,
+        "mean": 10.16
+      },
+      "okCount": 5,
+      "n": 5
+    },
+    "triage|mixed|opencode": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 85185,
+        "p95": 86977,
+        "min": 84209,
+        "max": 86977,
+        "mean": 85335.2
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 111680,
+        "p95": 114736,
+        "min": 106448,
+        "max": 114736,
+        "mean": 110953.6
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 104,
+        "p95": 104,
+        "min": 103,
+        "max": 104,
+        "mean": 103.6
+      },
+      "bridgePeakKiB": null,
+      "denoPeakKiB": null,
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.18,
+        "p95": 10.21,
+        "min": 10.13,
+        "max": 10.21,
+        "mean": 10.18
+      },
+      "okCount": 5,
+      "n": 5
+    },
+    "triage-large|mixed|codemode": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 4784,
+        "p95": 5408,
+        "min": 4464,
+        "max": 5408,
+        "mean": 4848
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 8192,
+        "p95": 8528,
+        "min": 7792,
+        "max": 8528,
+        "mean": 8185.6
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 63,
+        "p95": 64,
+        "min": 62,
+        "max": 64,
+        "mean": 63.2
+      },
+      "bridgePeakKiB": {
+        "n": 5,
+        "p50": 7200,
+        "p95": 7888,
+        "min": 7072,
+        "max": 7888,
+        "mean": 7385.6
+      },
+      "denoPeakKiB": {
+        "n": 5,
+        "p50": 42896,
+        "p95": 43216,
+        "min": 42624,
+        "max": 43216,
+        "mean": 42937.6
+      },
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 49968,
+        "p95": 50496,
+        "min": 49632,
+        "max": 50496,
+        "mean": 50067.2
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.18,
+        "p95": 10.24,
+        "min": 10.11,
+        "max": 10.24,
+        "mean": 10.17
+      },
+      "okCount": 5,
+      "n": 5
+    },
+    "triage-large|mixed|codemode-c4": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 3952,
+        "p95": 4640,
+        "min": 2976,
+        "max": 4640,
+        "mean": 3961.6
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 8080,
+        "p95": 8896,
+        "min": 7856,
+        "max": 8896,
+        "mean": 8256
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 83,
+        "p95": 83,
+        "min": 82,
+        "max": 83,
+        "mean": 82.8
+      },
+      "bridgePeakKiB": {
+        "n": 5,
+        "p50": 7136,
+        "p95": 8000,
+        "min": 6864,
+        "max": 8000,
+        "mean": 7404.8
+      },
+      "denoPeakKiB": {
+        "n": 5,
+        "p50": 43232,
+        "p95": 43536,
+        "min": 42944,
+        "max": 43536,
+        "mean": 43254.4
+      },
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 50352,
+        "p95": 50656,
+        "min": 49904,
+        "max": 50656,
+        "mean": 50310.4
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.12,
+        "p95": 10.16,
+        "min": 10.11,
+        "max": 10.16,
+        "mean": 10.13
+      },
+      "okCount": 5,
+      "n": 5
+    },
+    "triage-large|mixed|codemode-prewarm": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 4816,
+        "p95": 4960,
+        "min": 4336,
+        "max": 4960,
+        "mean": 4694.4
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 8160,
+        "p95": 8496,
+        "min": 7984,
+        "max": 8496,
+        "mean": 8224
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 63,
+        "p95": 63,
+        "min": 61,
+        "max": 63,
+        "mean": 62.6
+      },
+      "bridgePeakKiB": {
+        "n": 5,
+        "p50": 7056,
+        "p95": 7168,
+        "min": 6928,
+        "max": 7168,
+        "mean": 7043.2
+      },
+      "denoPeakKiB": {
+        "n": 5,
+        "p50": 42976,
+        "p95": 43280,
+        "min": 42400,
+        "max": 43280,
+        "mean": 42892.8
+      },
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 50064,
+        "p95": 50384,
+        "min": 49456,
+        "max": 50384,
+        "mean": 49936
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.17,
+        "p95": 10.58,
+        "min": 10.15,
+        "max": 10.58,
+        "mean": 10.26
+      },
+      "okCount": 5,
+      "n": 5
+    },
+    "triage-large|mixed|pi": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 56497,
+        "p95": 58304,
+        "min": 56433,
+        "max": 58304,
+        "mean": 57184.8
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 66576,
+        "p95": 68912,
+        "min": 66208,
+        "max": 68912,
+        "mean": 67155.2
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 47,
+        "p95": 47,
+        "min": 46,
+        "max": 47,
+        "mean": 46.6
+      },
+      "bridgePeakKiB": null,
+      "denoPeakKiB": null,
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.15,
+        "p95": 10.25,
+        "min": 10.09,
+        "max": 10.25,
+        "mean": 10.16
+      },
+      "okCount": 5,
+      "n": 5
+    },
+    "triage-large|mixed|opencode": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 84209,
+        "p95": 85217,
+        "min": 83329,
+        "max": 85217,
+        "mean": 84177
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 108784,
+        "p95": 114592,
+        "min": 107472,
+        "max": 114592,
+        "mean": 109865.6
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 79,
+        "p95": 79,
+        "min": 79,
+        "max": 79,
+        "mean": 79
+      },
+      "bridgePeakKiB": null,
+      "denoPeakKiB": null,
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.16,
+        "p95": 10.18,
+        "min": 10.11,
+        "max": 10.18,
+        "mean": 10.15
+      },
+      "okCount": 5,
+      "n": 5
+    },
+    "denied|mixed|codemode": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 3232,
+        "p95": 3328,
+        "min": 3136,
+        "max": 3328,
+        "mean": 3232
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 6720,
+        "p95": 7024,
+        "min": 6480,
+        "max": 7024,
+        "mean": 6736
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 92,
+        "p95": 92,
+        "min": 91,
+        "max": 92,
+        "mean": 91.6
+      },
+      "bridgePeakKiB": {
+        "n": 5,
+        "p50": 4848,
+        "p95": 4912,
+        "min": 4784,
+        "max": 4912,
+        "mean": 4844.8
+      },
+      "denoPeakKiB": {
+        "n": 5,
+        "p50": 41136,
+        "p95": 41280,
+        "min": 40736,
+        "max": 41280,
+        "mean": 41049.6
+      },
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 46000,
+        "p95": 46096,
+        "min": 45584,
+        "max": 46096,
+        "mean": 45894.4
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.12,
+        "p95": 10.2,
+        "min": 10.11,
+        "max": 10.2,
+        "mean": 10.13
+      },
+      "okCount": 5,
+      "n": 5
+    },
+    "denied|mixed|codemode-c4": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 2528,
+        "p95": 3232,
+        "min": 2176,
+        "max": 3232,
+        "mean": 2636.8
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 6864,
+        "p95": 6912,
+        "min": 6640,
+        "max": 6912,
+        "mean": 6796.8
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 117,
+        "p95": 118,
+        "min": 115,
+        "max": 118,
+        "mean": 116.8
+      },
+      "bridgePeakKiB": {
+        "n": 5,
+        "p50": 4832,
+        "p95": 5008,
+        "min": 4800,
+        "max": 5008,
+        "mean": 4867.2
+      },
+      "denoPeakKiB": {
+        "n": 5,
+        "p50": 40720,
+        "p95": 41280,
+        "min": 40640,
+        "max": 41280,
+        "mean": 40870.4
+      },
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 45728,
+        "p95": 46176,
+        "min": 45472,
+        "max": 46176,
+        "mean": 45737.6
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.12,
+        "p95": 10.18,
+        "min": 10.09,
+        "max": 10.18,
+        "mean": 10.13
+      },
+      "okCount": 5,
+      "n": 5
+    },
+    "denied|mixed|codemode-prewarm": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 3536,
+        "p95": 3696,
+        "min": 3360,
+        "max": 3696,
+        "mean": 3510.4
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 6960,
+        "p95": 7264,
+        "min": 6624,
+        "max": 7264,
+        "mean": 6979.2
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 92,
+        "p95": 92,
+        "min": 91,
+        "max": 92,
+        "mean": 91.8
+      },
+      "bridgePeakKiB": {
+        "n": 5,
+        "p50": 4896,
+        "p95": 4928,
+        "min": 4736,
+        "max": 4928,
+        "mean": 4848
+      },
+      "denoPeakKiB": {
+        "n": 5,
+        "p50": 40752,
+        "p95": 40864,
+        "min": 40512,
+        "max": 40864,
+        "mean": 40713.6
+      },
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 45600,
+        "p95": 45744,
+        "min": 45280,
+        "max": 45744,
+        "mean": 45561.6
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.12,
+        "p95": 10.2,
+        "min": 10.11,
+        "max": 10.2,
+        "mean": 10.14
+      },
+      "okCount": 5,
+      "n": 5
+    },
+    "denied|mixed|pi": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 55936,
+        "p95": 59361,
+        "min": 54608,
+        "max": 59361,
+        "mean": 56537.8
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 67168,
+        "p95": 70288,
+        "min": 65200,
+        "max": 70288,
+        "mean": 67516.8
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 72,
+        "p95": 72,
+        "min": 71,
+        "max": 72,
+        "mean": 71.8
+      },
+      "bridgePeakKiB": null,
+      "denoPeakKiB": null,
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.15,
+        "p95": 10.16,
+        "min": 10.11,
+        "max": 10.16,
+        "mean": 10.14
+      },
+      "okCount": 5,
+      "n": 5
+    },
+    "denied|mixed|opencode": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 84161,
+        "p95": 86001,
+        "min": 81281,
+        "max": 86001,
+        "mean": 83728.8
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 107760,
+        "p95": 114928,
+        "min": 104624,
+        "max": 114928,
+        "mean": 109193.6
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 108,
+        "p95": 109,
+        "min": 103,
+        "max": 109,
+        "mean": 107.2
+      },
+      "bridgePeakKiB": null,
+      "denoPeakKiB": null,
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.18,
+        "p95": 11,
+        "min": 10.13,
+        "max": 11,
+        "mean": 10.33
+      },
+      "okCount": 5,
+      "n": 5
+    },
+    "deadline|mixed|codemode": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 1888,
+        "p95": 2512,
+        "min": 1440,
+        "max": 2512,
+        "mean": 2019.2
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 4160,
+        "p95": 4752,
+        "min": 3376,
+        "max": 4752,
+        "mean": 4057.6
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 36,
+        "p95": 36,
+        "min": 36,
+        "max": 36,
+        "mean": 36
+      },
+      "bridgePeakKiB": {
+        "n": 5,
+        "p50": 4112,
+        "p95": 4208,
+        "min": 3936,
+        "max": 4208,
+        "mean": 4096
+      },
+      "denoPeakKiB": {
+        "n": 5,
+        "p50": 37376,
+        "p95": 37952,
+        "min": 36896,
+        "max": 37952,
+        "mean": 37372.8
+      },
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 41584,
+        "p95": 42064,
+        "min": 40912,
+        "max": 42064,
+        "mean": 41468.8
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.18,
+        "p95": 10.21,
+        "min": 10.11,
+        "max": 10.21,
+        "mean": 10.17
+      },
+      "okCount": 0,
+      "n": 5
+    },
+    "deadline|mixed|codemode-c4": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 1872,
+        "p95": 2160,
+        "min": 1824,
+        "max": 2160,
+        "mean": 1936
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 3728,
+        "p95": 4208,
+        "min": 3648,
+        "max": 4208,
+        "mean": 3888
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 36,
+        "p95": 36,
+        "min": 36,
+        "max": 36,
+        "mean": 36
+      },
+      "bridgePeakKiB": {
+        "n": 5,
+        "p50": 4096,
+        "p95": 4208,
+        "min": 3984,
+        "max": 4208,
+        "mean": 4096
+      },
+      "denoPeakKiB": {
+        "n": 5,
+        "p50": 37200,
+        "p95": 37792,
+        "min": 36336,
+        "max": 37792,
+        "mean": 37110.4
+      },
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 41184,
+        "p95": 41888,
+        "min": 40544,
+        "max": 41888,
+        "mean": 41206.4
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.12,
+        "p95": 10.23,
+        "min": 10.07,
+        "max": 10.23,
+        "mean": 10.13
+      },
+      "okCount": 0,
+      "n": 5
+    },
+    "deadline|mixed|codemode-prewarm": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 2096,
+        "p95": 2288,
+        "min": 1920,
+        "max": 2288,
+        "mean": 2076.8
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 4480,
+        "p95": 4800,
+        "min": 4176,
+        "max": 4800,
+        "mean": 4448
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 36,
+        "p95": 36,
+        "min": 36,
+        "max": 36,
+        "mean": 36
+      },
+      "bridgePeakKiB": {
+        "n": 5,
+        "p50": 4112,
+        "p95": 4352,
+        "min": 4016,
+        "max": 4352,
+        "mean": 4147.2
+      },
+      "denoPeakKiB": {
+        "n": 5,
+        "p50": 37024,
+        "p95": 37456,
+        "min": 35856,
+        "max": 37456,
+        "mean": 36832
+      },
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 41312,
+        "p95": 41536,
+        "min": 39696,
+        "max": 41536,
+        "mean": 40944
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.2,
+        "p95": 10.34,
+        "min": 10.15,
+        "max": 10.34,
+        "mean": 10.22
+      },
+      "okCount": 0,
+      "n": 5
+    },
+    "deadline|mixed|pi": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 56721,
+        "p95": 57585,
+        "min": 54721,
+        "max": 57585,
+        "mean": 56221.8
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 65440,
+        "p95": 66352,
+        "min": 63424,
+        "max": 66352,
+        "mean": 65043.2
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 36,
+        "p95": 36,
+        "min": 35,
+        "max": 36,
+        "mean": 35.6
+      },
+      "bridgePeakKiB": null,
+      "denoPeakKiB": null,
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.23,
+        "p95": 10.32,
+        "min": 10.11,
+        "max": 10.32,
+        "mean": 10.22
+      },
+      "okCount": 0,
+      "n": 5
+    },
+    "deadline|mixed|opencode": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 75553,
+        "p95": 82433,
+        "min": 74945,
+        "max": 82433,
+        "mean": 76970.2
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 90672,
+        "p95": 97824,
+        "min": 89952,
+        "max": 97824,
+        "mean": 91894.4
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 53,
+        "p95": 54,
+        "min": 53,
+        "max": 54,
+        "mean": 53.2
+      },
+      "bridgePeakKiB": null,
+      "denoPeakKiB": null,
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.23,
+        "p95": 10.34,
+        "min": 10.16,
+        "max": 10.34,
+        "mean": 10.23
+      },
+      "okCount": 0,
+      "n": 5
+    },
+    "guest-exception|zero|codemode": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 4672,
+        "p95": 5168,
+        "min": 4528,
+        "max": 5168,
+        "mean": 4764.8
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 6608,
+        "p95": 7088,
+        "min": 6336,
+        "max": 7088,
+        "mean": 6668.8
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 14,
+        "p95": 15,
+        "min": 14,
+        "max": 15,
+        "mean": 14.4
+      },
+      "bridgePeakKiB": {
+        "n": 5,
+        "p50": 3840,
+        "p95": 4480,
+        "min": 3456,
+        "max": 4480,
+        "mean": 3836.8
+      },
+      "denoPeakKiB": {
+        "n": 5,
+        "p50": 36816,
+        "p95": 38400,
+        "min": 36400,
+        "max": 38400,
+        "mean": 37113.6
+      },
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 40320,
+        "p95": 42880,
+        "min": 40000,
+        "max": 42880,
+        "mean": 40950.4
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.39,
+        "p95": 10.93,
+        "min": 10.16,
+        "max": 10.93,
+        "mean": 10.43
+      },
+      "okCount": 0,
+      "n": 5
+    },
+    "guest-exception|zero|codemode-c4": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 4752,
+        "p95": 5056,
+        "min": 4544,
+        "max": 5056,
+        "mean": 4787.2
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 6512,
+        "p95": 6880,
+        "min": 6176,
+        "max": 6880,
+        "mean": 6521.6
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 14,
+        "p95": 15,
+        "min": 14,
+        "max": 15,
+        "mean": 14.4
+      },
+      "bridgePeakKiB": {
+        "n": 5,
+        "p50": 4128,
+        "p95": 4992,
+        "min": 3696,
+        "max": 4992,
+        "mean": 4176
+      },
+      "denoPeakKiB": {
+        "n": 5,
+        "p50": 36640,
+        "p95": 37360,
+        "min": 36224,
+        "max": 37360,
+        "mean": 36825.6
+      },
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 40736,
+        "p95": 41488,
+        "min": 39696,
+        "max": 41488,
+        "mean": 40697.6
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.16,
+        "p95": 10.34,
+        "min": 10.1,
+        "max": 10.34,
+        "mean": 10.2
+      },
+      "okCount": 0,
+      "n": 5
+    },
+    "guest-exception|zero|codemode-prewarm": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 5136,
+        "p95": 5520,
+        "min": 4640,
+        "max": 5520,
+        "mean": 5040
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 6896,
+        "p95": 7024,
+        "min": 6464,
+        "max": 7024,
+        "mean": 6774.4
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 14,
+        "p95": 14,
+        "min": 14,
+        "max": 14,
+        "mean": 14
+      },
+      "bridgePeakKiB": {
+        "n": 5,
+        "p50": 4000,
+        "p95": 4176,
+        "min": 3712,
+        "max": 4176,
+        "mean": 3939.2
+      },
+      "denoPeakKiB": {
+        "n": 5,
+        "p50": 37072,
+        "p95": 37856,
+        "min": 36272,
+        "max": 37856,
+        "mean": 37004.8
+      },
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 41184,
+        "p95": 41952,
+        "min": 39984,
+        "max": 41952,
+        "mean": 40944
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.34,
+        "p95": 10.64,
+        "min": 10.19,
+        "max": 10.64,
+        "mean": 10.37
+      },
+      "okCount": 0,
+      "n": 5
+    },
+    "guest-exception|zero|pi": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 60336,
+        "p95": 61505,
+        "min": 58241,
+        "max": 61505,
+        "mean": 59882.4
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 68576,
+        "p95": 70192,
+        "min": 66352,
+        "max": 70192,
+        "mean": 68182.4
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 16,
+        "p95": 16,
+        "min": 16,
+        "max": 16,
+        "mean": 16
+      },
+      "bridgePeakKiB": null,
+      "denoPeakKiB": null,
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.45,
+        "p95": 10.5,
+        "min": 10.06,
+        "max": 10.5,
+        "mean": 10.35
+      },
+      "okCount": 0,
+      "n": 5
+    },
+    "guest-exception|zero|opencode": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 90561,
+        "p95": 91281,
+        "min": 90481,
+        "max": 91281,
+        "mean": 90727.4
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 100448,
+        "p95": 103936,
+        "min": 99888,
+        "max": 103936,
+        "mean": 101017.6
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 30,
+        "p95": 30,
+        "min": 29,
+        "max": 30,
+        "mean": 29.6
+      },
+      "bridgePeakKiB": null,
+      "denoPeakKiB": null,
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.57,
+        "p95": 10.97,
+        "min": 10.47,
+        "max": 10.97,
+        "mean": 10.66
+      },
+      "okCount": 0,
+      "n": 5
+    },
+    "lost-response|mixed|codemode": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 2160,
+        "p95": 2736,
+        "min": 1984,
+        "max": 2736,
+        "mean": 2217.6
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 3888,
+        "p95": 4448,
+        "min": 3664,
+        "max": 4448,
+        "mean": 4009.6
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 41,
+        "p95": 41,
+        "min": 41,
+        "max": 41,
+        "mean": 41
+      },
+      "bridgePeakKiB": {
+        "n": 5,
+        "p50": 3776,
+        "p95": 4160,
+        "min": 3632,
+        "max": 4160,
+        "mean": 3827.2
+      },
+      "denoPeakKiB": {
+        "n": 5,
+        "p50": 37120,
+        "p95": 37280,
+        "min": 36592,
+        "max": 37280,
+        "mean": 36979.2
+      },
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 40896,
+        "p95": 41360,
+        "min": 40224,
+        "max": 41360,
+        "mean": 40806.4
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.14,
+        "p95": 10.16,
+        "min": 10.08,
+        "max": 10.16,
+        "mean": 10.13
+      },
+      "okCount": 0,
+      "n": 5
+    },
+    "lost-response|mixed|codemode-c4": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 2288,
+        "p95": 2480,
+        "min": 2112,
+        "max": 2480,
+        "mean": 2284.8
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 4000,
+        "p95": 4400,
+        "min": 3872,
+        "max": 4400,
+        "mean": 4057.6
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 41,
+        "p95": 42,
+        "min": 41,
+        "max": 42,
+        "mean": 41.2
+      },
+      "bridgePeakKiB": {
+        "n": 5,
+        "p50": 3856,
+        "p95": 3952,
+        "min": 3568,
+        "max": 3952,
+        "mean": 3804.8
+      },
+      "denoPeakKiB": {
+        "n": 5,
+        "p50": 36608,
+        "p95": 36960,
+        "min": 36560,
+        "max": 36960,
+        "mean": 36675.2
+      },
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 40496,
+        "p95": 40688,
+        "min": 40128,
+        "max": 40688,
+        "mean": 40480
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.1,
+        "p95": 10.13,
+        "min": 10.06,
+        "max": 10.13,
+        "mean": 10.1
+      },
+      "okCount": 0,
+      "n": 5
+    },
+    "lost-response|mixed|codemode-prewarm": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 2576,
+        "p95": 2672,
+        "min": 2064,
+        "max": 2672,
+        "mean": 2444.8
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 4480,
+        "p95": 4752,
+        "min": 4016,
+        "max": 4752,
+        "mean": 4409.6
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 41,
+        "p95": 41,
+        "min": 41,
+        "max": 41,
+        "mean": 41
+      },
+      "bridgePeakKiB": {
+        "n": 5,
+        "p50": 3760,
+        "p95": 3952,
+        "min": 3568,
+        "max": 3952,
+        "mean": 3756.8
+      },
+      "denoPeakKiB": {
+        "n": 5,
+        "p50": 36976,
+        "p95": 37280,
+        "min": 36496,
+        "max": 37280,
+        "mean": 36915.2
+      },
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 40736,
+        "p95": 41232,
+        "min": 40064,
+        "max": 41232,
+        "mean": 40672
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.17,
+        "p95": 10.22,
+        "min": 10.1,
+        "max": 10.22,
+        "mean": 10.16
+      },
+      "okCount": 0,
+      "n": 5
+    },
+    "lost-response|mixed|pi": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 57280,
+        "p95": 58912,
+        "min": 55792,
+        "max": 58912,
+        "mean": 57203.6
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 65696,
+        "p95": 67760,
+        "min": 64256,
+        "max": 67760,
+        "mean": 65686.4
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 41,
+        "p95": 41,
+        "min": 39,
+        "max": 41,
+        "mean": 40.6
+      },
+      "bridgePeakKiB": null,
+      "denoPeakKiB": null,
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.17,
+        "p95": 10.6,
+        "min": 10.1,
+        "max": 10.6,
+        "mean": 10.24
+      },
+      "okCount": 0,
+      "n": 5
+    },
+    "lost-response|mixed|opencode": {
+      "driverMaxRssOverBaselineKiB": {
+        "n": 5,
+        "p50": 70369,
+        "p95": 77233,
+        "min": 67985,
+        "max": 77233,
+        "mean": 71562.4
+      },
+      "driverPsPeakOverBaselineKiB": {
+        "n": 5,
+        "p50": 79088,
+        "p95": 84608,
+        "min": 78384,
+        "max": 84608,
+        "mean": 80035.2
+      },
+      "psSamples": {
+        "n": 5,
+        "p50": 57,
+        "p95": 58,
+        "min": 57,
+        "max": 58,
+        "mean": 57.2
+      },
+      "bridgePeakKiB": null,
+      "denoPeakKiB": null,
+      "descendantsPeakKiB": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0,
+        "mean": 0
+      },
+      "psIntervalMs": {
+        "n": 5,
+        "p50": 10.19,
+        "p95": 10.42,
+        "min": 10.13,
+        "max": 10.42,
+        "mean": 10.22
+      },
+      "okCount": 0,
+      "n": 5
+    }
+  }
+}

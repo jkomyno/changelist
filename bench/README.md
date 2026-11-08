@@ -65,6 +65,12 @@ The driver refuses OpenCode under Node. Holdout scenarios are skipped unless
 | `run.ts`, `child.ts` | driver; fresh-process samples for cold and memory passes |
 | `results/<label>/` | `runs.jsonl`, `cold.jsonl`, `summary.json`, `summary.md`, `environment.json`, and from `--memory` `memory.{jsonl,json,md}` |
 
+Committed results: `baseline` (commit `8cb7a63`, before any optimization), `variants`
+(three codemode builds interleaved; see its README), `after` and `holdout` (commit
+`3f7e5ab`, with `codemode-prewarm`), and `holdout-check` and `node-spot-check` (at
+`8cb7a63`). [docs/benchmark.md](../docs/benchmark.md) summarizes them. The largest raw
+files are gzip-compressed (`runs.jsonl.gz`); `gunzip -k` restores them.
+
 `.cache/` holds downloaded third-party code and must not be committed.
 
 ## Pins

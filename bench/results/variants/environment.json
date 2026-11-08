@@ -1,0 +1,89 @@
+{
+  "date": "2026-11-08T15:47:42.542Z",
+  "driver": {
+    "runtime": "bun",
+    "version": "1.4.4",
+    "execPath": "/Users/jkomyno/.local/share/mise/installs/bun/1.4.4/bin/bun"
+  },
+  "runtimes": {
+    "bun": "1.4.4",
+    "node": "v26.12.1",
+    "deno": "deno 2.9.8 (long term support, release, aarch64-apple-darwin)"
+  },
+  "cpu": {
+    "model": "Apple M1 Pro",
+    "logical": 10
+  },
+  "os": {
+    "platform": "darwin",
+    "release": "23.4.0",
+    "arch": "arm64",
+    "product": "14.4.1",
+    "totalMemGiB": 32
+  },
+  "loadavg": [
+    2.13,
+    1.7,
+    1.78
+  ],
+  "git": {
+    "commit": null,
+    "dirty": false,
+    "dirtyOutsideBench": false,
+    "changedOutsideBench": []
+  },
+  "codemodeBinary": {
+    "path": "/private/tmp/claude-501/-Users-jkomyno-work-me-codemode/e8463097-99cd-4e4b-8988-910007881f0d/scratchpad/target/release/codemode",
+    "sha256": null
+  },
+  "deno": "/Users/jkomyno/.local/share/mise/installs/deno/2.9.8/bin/deno",
+  "pins": {
+    "runtimes": {
+      "bun": "1.4.4",
+      "node": "26.12.1",
+      "deno": "2.9.8"
+    },
+    "pi": {
+      "package": "@earendil-works/pi-codemode",
+      "version": "1.4.0",
+      "git_tag": "v1.4.0",
+      "git_commit": "4a080252f06caf63a525d7873c5d94d3c23887e0",
+      "tarballs": [
+        {
+          "name": "@earendil-works/pi-codemode",
+          "version": "1.4.0",
+          "url": "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.4.0.tgz",
+          "integrity": "sha512-23CNAXpS9DuLzPMyYuvrXVVio46x4YhffCgCqaWmF7F5H8PooqjrQvX4ucF6M0BhUd+x2tV6r1J0dv8cCME4Cg==",
+          "install_dir": "node_modules/@earendil-works/pi-codemode"
+        },
+        {
+          "name": "quickjs-wasi",
+          "version": "3.6.2",
+          "url": "https://registry.npmjs.org/quickjs-wasi/-/quickjs-wasi-3.6.2.tgz",
+          "integrity": "sha512-FCqGtGOrMgzUiIrMNMA2YnsOxCNwo31dzqXvclXUC6xeT35NJLKXQJsvbeCTjvoFAwZgEAPg8U6+KAPDGXn8Mg==",
+          "install_dir": "node_modules/quickjs-wasi"
+        }
+      ]
+    },
+    "opencode": {
+      "package": "@opencode-ai/codemode",
+      "version": "1.19.5",
+      "repository": "https://github.com/anomalyco/opencode.git",
+      "git_tag": "v1.19.5",
+      "git_commit": "810c0eba1a7348036f8bdf61e6632d0c36c6876c",
+      "sparse_path": "packages/codemode",
+      "dependencies": {
+        "acorn": "8.15.0",
+        "effect": "4.0.0-beta.83",
+        "typescript": "5.8.2"
+      },
+      "lockfile": "bench/engines/opencode-deps/bun.lock"
+    },
+    "codemode": {
+      "binary": "target/release/codemode",
+      "build": "mise exec -- cargo build --release --locked --bin codemode",
+      "client": "integrations/shared/bridge-client.ts",
+      "bridge_protocol": 1
+    }
+  }
+}
