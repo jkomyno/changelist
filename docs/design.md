@@ -44,8 +44,9 @@ at 64 KiB, so a workflow could not filter a large listing inside the guest at
 all: in the shared benchmark, two 148 KiB issue pages stopped `triage-large` with
 `output_limit` on every run, while Pi and OpenCode completed it. A host-side
 projection or a result-reference mechanism was considered and not built. After
-the frame-copy fix, moving a 150 KiB page through the guest costs well under a
-millisecond, the budget keeps memory and trace growth bounded, and either
+the frame-copy fix, `triage-large` took about 6 ms longer than `triage` at zero
+latency for 250 KiB more results, including the larger trace; the budget keeps
+memory and trace growth bounded; and either
 mechanism would add helper surface and evidence semantics that no measured
 workflow needed. Results above 1 MiB, or budgets the host will not raise, still
 need smaller pages or a host-side filter in the adapter.

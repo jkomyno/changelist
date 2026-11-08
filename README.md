@@ -129,6 +129,16 @@ build profiles are retained. `target/` belongs to Mr Boxington; use
 
 ## Evaluation
 
+`mise run bench` runs one realistic workflow, its large-result variant, a
+permission denial, a deadline, a guest exception, a lost response, and a holdout
+through codemode, Pi's codemode engine, and OpenCode's, on shared tools whose
+results are checked twice and whose calls are recorded by an independent
+ledger. With a guest started ahead of the run, codemode finished the
+zero-latency workflow in 14.0 ms (from 44.4 ms), within 4 percent of OpenCode at
+the same concurrency; Pi was faster under latency because it never queues a
+call. See [the benchmark](docs/benchmark.md), [the comparison](docs/comparison.md),
+and `mise run demo`.
+
 `mise run eval` compares sequential, fixed-batch (`--dispatch batch`), and rolling
 dispatch on identical offline fixtures with the same budget, and checks every
 run's outputs, outcomes, and policy behavior from its trace. On the measured

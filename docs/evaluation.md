@@ -1,5 +1,9 @@
 # Dispatch evaluation
 
+The [engine benchmark](benchmark.md) compares codemode with Pi and OpenCode on a
+realistic workflow and records what this work changed. This document covers the
+earlier dispatch-policy study, measured at `d16dbc7`.
+
 An offline, reproducible comparison of three dispatch policies on identical
 fixtures. It measures one algorithmic question: when does refilling a free slot
 (rolling) finish sooner than waiting for a whole batch, and what does it cost
@@ -124,6 +128,11 @@ All 315 runs passed every check.
 | Claim | Kind | Evidence |
 | --- | --- | --- |
 | Policy timing, outcome splits, and invariants above | Offline | `mise run eval`, mock provider, 315 runs |
+| Engine benchmark: correctness of codemode, Pi 1.4.0, and OpenCode 1.19.5 on six scenarios and a holdout, ledger reconciliation, latency, cold start, memory | Offline, synthetic tools | `mise run bench`, [`bench/results`](../bench/results), [benchmark](benchmark.md) |
+| Trace schema 2: admission, dispatch, result, delivery, bytes, run-level events, host facts kept apart, bounded fact intake | Offline | `tests/runtime.rs`, `tests/bridge.rs` |
+| Inspection: phases sum to elapsed time, evidence classes, reconciliation list, bounded output, no values or messages by default, control characters replaced, schema 1 traces | Offline | `tests/inspect.rs` |
+| Prewarmed guests: deadline from hand-over, idle bridges stop on SIGTERM or guest exit | Offline | `tests/runtime.rs`, `tests/bridge.rs`, `tests/cli.rs` |
+| Pi, OpenCode, and Composio adapters after protocol 2 and prewarming; OpenCode permission facts; Composio executor facts | Offline, scripted models and fake helper | `mise run pi-check`, `mise run opencode-check`, `tests/composio.rs` |
 | Rust runtime, bridge, and CLI contracts, including batch dispatch and SIGTERM | Offline | `mise run check` |
 | Pi 1.4.0 and OpenCode 1.19.5 adapters unchanged | Offline, scripted models | `mise run pi-check`, `mise run opencode-check` |
 | Composio result mapping, concurrent dispatch (a rendezvous that fails unless both identity reads overlap), unknown outcomes on cancellation and unobserved executions, credential absence, SDK executor | Offline, fake helper and stand-in SDK | `tests/composio.rs`, `mise run composio-demo` |
