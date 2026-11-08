@@ -224,7 +224,10 @@ export async function runBridge(run: BridgeRun): Promise<RunReport> {
 
   try {
     return await new Promise<RunReport>((resolvePromise, reject) => {
-      let buffered = Buffer.alloc(0);
+      // Pieces of an incomplete frame; joined once its newline arrives, so a large
+      // report is copied and scanned once rather than once per chunk.
+      let pieces: Buffer[] = [];
+      let pending = 0;
       let bridgeError: string | undefined;
       const fail = (error: Error) => {
         // Start nothing further, even if more frames are already buffered.
@@ -235,11 +238,14 @@ export async function runBridge(run: BridgeRun): Promise<RunReport> {
         reject(error);
       };
       child.stdout.on("data", (chunk: Buffer) => {
-        buffered = Buffer.concat([buffered, chunk]);
+        let start = 0;
         let newline: number;
-        while ((newline = buffered.indexOf(10)) !== -1) {
-          const line = buffered.subarray(0, newline).toString("utf8");
-          buffered = buffered.subarray(newline + 1);
+        while ((newline = chunk.indexOf(10, start)) !== -1) {
+          pieces.push(chunk.subarray(start, newline));
+          const line = Buffer.concat(pieces).toString("utf8");
+          pieces = [];
+          pending = 0;
+          start = newline + 1;
           try {
             const frame = JSON.parse(line);
             if (frame.type === "call") onCall(frame);
@@ -256,7 +262,11 @@ export async function runBridge(run: BridgeRun): Promise<RunReport> {
             return;
           }
         }
-        if (buffered.length > frameLimit) fail(new Error(`bridge frame exceeds ${frameLimit} bytes`));
+        if (start < chunk.length) {
+          pieces.push(chunk.subarray(start));
+          pending += chunk.length - start;
+        }
+        if (pending > frameLimit) fail(new Error(`bridge frame exceeds ${frameLimit} bytes`));
       });
       child.on("error", (error) => fail(error));
       child.on("close", (code, killSignal) => {

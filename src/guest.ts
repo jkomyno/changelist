@@ -36,19 +36,25 @@ async function* inputFrames(): AsyncGenerator<unknown> {
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
-      for (const byte of value) {
-        if (byte === 10) {
-          if (length === 0) throw new Error("Empty input frame");
-          try {
-            yield JSON.parse(decoder.decode(buffer.subarray(0, length)));
-          } catch (error) {
-            throw new Error(`Malformed input frame: ${error instanceof Error ? error.message : error}`);
-          }
-          length = 0;
-        } else {
-          if (length === MAX_INPUT_FRAME) throw new Error("Input frame exceeds 1 MiB");
-          buffer[length++] = byte;
+      // Copy whole runs between newlines; a per-byte loop dominated large replies.
+      let offset = 0;
+      while (offset < value.length) {
+        const newline = value.indexOf(10, offset);
+        const end = newline === -1 ? value.length : newline;
+        if (length + end - offset > MAX_INPUT_FRAME) throw new Error("Input frame exceeds 1 MiB");
+        buffer.set(value.subarray(offset, end), length);
+        length += end - offset;
+        if (newline === -1) break;
+        if (length === 0) throw new Error("Empty input frame");
+        let frame: unknown;
+        try {
+          frame = JSON.parse(decoder.decode(buffer.subarray(0, length)));
+        } catch (error) {
+          throw new Error(`Malformed input frame: ${error instanceof Error ? error.message : error}`);
         }
+        length = 0;
+        offset = newline + 1;
+        yield frame;
       }
     }
     if (length !== 0) throw new Error("Unterminated input frame");
