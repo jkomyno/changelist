@@ -14,7 +14,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::{self, Instant};
@@ -503,6 +503,10 @@ pub struct RunReport {
     /// Bytes moved, retained, and omitted, as Rust observed them.
     #[serde(default)]
     pub bytes: ByteTotals,
+    /// How long the guest had been running before the run started, when it was
+    /// started ahead of time with [`PreparedGuest`]; absent when the run started it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prewarmed_ms: Option<u64>,
     /// Bridge stdio accounting, present when the run was served over the bridge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge: Option<BridgeTotals>,
@@ -817,6 +821,86 @@ pub(crate) async fn frame(
     }
 }
 
+/// A restricted guest process started ahead of a run, waiting for its program.
+///
+/// It serves exactly one run and is killed when dropped. Starting it early takes
+/// Deno and worker startup off a run's critical path; the run's deadline then
+/// starts when [`run_prepared`] is called, and the report records how long the
+/// guest had been waiting.
+pub struct PreparedGuest {
+    launcher: Launcher,
+    child: Child,
+    input: ChildStdin,
+    output: BufReader<ChildStdout>,
+    spawned: Instant,
+}
+
+impl fmt::Debug for PreparedGuest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedGuest")
+            .field("launcher", &self.launcher.0)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PreparedGuest {
+    /// Start the guest with `deno`, before its program is known.
+    ///
+    /// Requires a Tokio runtime with I/O enabled.
+    ///
+    /// # Errors
+    /// Returns [`RunError::Io`] if the launcher cannot be written or Deno cannot start.
+    pub fn start(deno: &Path) -> Result<Self, RunError> {
+        let launcher = Launcher::create()?;
+        let deno = resolve_executable(deno)?;
+        let spawned = Instant::now();
+        let mut child = Command::new(deno)
+            .args([
+                "run",
+                "--no-config",
+                "--no-lock",
+                "--no-npm",
+                "--no-remote",
+                "--cached-only",
+                "--no-prompt",
+                "--deny-read",
+                "--deny-write",
+                "--deny-net",
+                "--deny-env",
+                "--deny-run",
+                "--deny-sys",
+                "--deny-ffi",
+                "--deny-import",
+                "--unstable-worker-options",
+            ])
+            .arg(&launcher.0)
+            .env_clear()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()?;
+        let input = child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("child stdin missing"))?;
+        let output = BufReader::new(
+            child
+                .stdout
+                .take()
+                .ok_or_else(|| io::Error::other("child stdout missing"))?,
+        );
+        Ok(Self {
+            launcher,
+            child,
+            input,
+            output,
+            spawned,
+        })
+    }
+}
+
 /// Execute TypeScript with a bounded Deno subprocess and host-side tool scheduler.
 ///
 /// Provider failures can be caught by guest code and remain visible in the trace.
@@ -845,6 +929,43 @@ pub async fn run(
     provider: impl ToolProvider,
     cancellation: RunCancellation,
 ) -> Result<RunReport, RunError> {
+    let initial = validate(code, &config)?;
+    // The deadline includes guest startup.
+    let start = Instant::now();
+    let guest = PreparedGuest::start(&config.deno)?;
+    execute(guest, start, initial, code, config, provider, cancellation).await
+}
+
+/// Execute TypeScript in a guest started earlier with [`PreparedGuest::start`].
+///
+/// Behaves like [`run`], except that the deadline starts now rather than when the
+/// guest was started, and the report's `prewarmed_ms` says how long the guest had
+/// been waiting. The guest's `deno` is the one it was started with.
+///
+/// # Errors
+/// Returns [`RunError`] for invalid configuration or pipe I/O, as [`run`] does.
+pub async fn run_prepared(
+    guest: PreparedGuest,
+    code: &str,
+    config: RunConfig,
+    provider: impl ToolProvider,
+    cancellation: RunCancellation,
+) -> Result<RunReport, RunError> {
+    let initial = validate(code, &config)?;
+    execute(
+        guest,
+        Instant::now(),
+        initial,
+        code,
+        config,
+        provider,
+        cancellation,
+    )
+    .await
+}
+
+/// Check limits and source size, returning the initial guest frame.
+fn validate(code: &str, config: &RunConfig) -> Result<Vec<u8>, RunError> {
     if config.timeout_ms == 0 || config.max_concurrency == 0 || config.max_output_bytes == 0 {
         return Err(RunError::Config(
             "timeout, concurrency, and output budget must be positive".into(),
@@ -862,7 +983,18 @@ pub async fn run(
             "serialized source exceeds the 64 KiB frame limit".into(),
         ));
     }
-    let start = Instant::now();
+    Ok(initial)
+}
+
+async fn execute(
+    guest: PreparedGuest,
+    start: Instant,
+    initial: Vec<u8>,
+    code: &str,
+    config: RunConfig,
+    provider: impl ToolProvider,
+    cancellation: RunCancellation,
+) -> Result<RunReport, RunError> {
     let deadline = start
         .checked_add(Duration::from_millis(config.timeout_ms))
         .ok_or_else(|| RunError::Config("timeout is too large".into()))?;
@@ -885,48 +1017,23 @@ pub async fn run(
         elapsed_ms: 0,
         clock: ClockInfo::default(),
         bytes: ByteTotals::default(),
+        prewarmed_ms: None,
         bridge: None,
         diagnostic: None,
     };
-    let launcher = Launcher::create()?;
-    let deno = resolve_executable(&config.deno)?;
-    let mut child = Command::new(deno)
-        .args([
-            "run",
-            "--no-config",
-            "--no-lock",
-            "--no-npm",
-            "--no-remote",
-            "--cached-only",
-            "--no-prompt",
-            "--deny-read",
-            "--deny-write",
-            "--deny-net",
-            "--deny-env",
-            "--deny-run",
-            "--deny-sys",
-            "--deny-ffi",
-            "--deny-import",
-            "--unstable-worker-options",
-        ])
-        .arg(&launcher.0)
-        .env_clear()
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()?;
-    event(&mut report, start, None, "guest_spawned");
-    let mut input = child
-        .stdin
-        .take()
-        .ok_or_else(|| io::Error::other("child stdin missing"))?;
-    let mut output = BufReader::new(
-        child
-            .stdout
-            .take()
-            .ok_or_else(|| io::Error::other("child stdout missing"))?,
-    );
+    let PreparedGuest {
+        launcher: _launcher,
+        mut child,
+        mut input,
+        mut output,
+        spawned,
+    } = guest;
+    if spawned < start {
+        let waited = start.duration_since(spawned).as_millis();
+        report.prewarmed_ms = Some(u64::try_from(waited).unwrap_or(u64::MAX));
+    } else {
+        event(&mut report, start, None, "guest_spawned");
+    }
     let provider = Arc::new(provider);
     let (facts, mut fact_receiver) = FactSink::new();
     let mut fact_counts = HashMap::new();

@@ -768,3 +768,48 @@ async fn oversized_output_is_counted_as_omitted_after_the_guest_finished() {
         )
     );
 }
+
+#[tokio::test]
+async fn a_guest_started_ahead_of_time_runs_with_its_own_deadline_and_says_so() {
+    let mut options = config();
+    options.timeout_ms = 400;
+    let guest = codemode::PreparedGuest::start(&options.deno).expect("guest starts");
+    // Longer than the run's whole deadline: startup must not count against it.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let report = codemode::run_prepared(
+        guest,
+        "const x: number = await tools.call('mock.wait', {ms: 100, value: 41}); return x + 1;",
+        options,
+        MockProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("run completes");
+    assert_eq!(report.status, RunStatus::Success, "{report:?}");
+    assert_eq!(report.output, Some(json!(42)));
+    assert!(
+        report.prewarmed_ms.is_some_and(|ms| ms >= 450),
+        "{report:?}"
+    );
+    assert!(
+        report
+            .events
+            .iter()
+            .all(|event| event.kind != "guest_spawned")
+    );
+}
+
+#[tokio::test]
+async fn a_program_that_does_not_compile_is_a_guest_error() {
+    let report = run(
+        "const = ;",
+        config(),
+        MockProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("run completes");
+    assert_eq!(report.status, RunStatus::GuestError, "{report:?}");
+    assert!(report.diagnostic.is_some());
+    assert!(report.calls.is_empty());
+}

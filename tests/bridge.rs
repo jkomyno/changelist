@@ -428,3 +428,23 @@ async fn version_one_hosts_cannot_send_facts() {
         .expect("unknown event");
     assert_eq!(unknown.reason.as_deref(), Some("protocol_error"));
 }
+
+#[tokio::test]
+async fn a_bridge_started_ahead_of_its_program_waits_and_times_the_run_from_start() {
+    let mut options = config();
+    options.timeout_ms = 300;
+    let mut host = Host::start(options, RunCancellation::default());
+    // Idle for longer than the run's deadline before sending the program.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    host.send(json!({"type":"start","version":2,"code":"return await tools.call('host.read', {});","tools":["host.read"]}))
+        .await;
+    let call = host.next().await;
+    host.reply(&call, json!("ready")).await;
+    let (_, report) = host.report().await;
+    assert_eq!(report.status, RunStatus::Success, "{report:?}");
+    assert_eq!(report.output, Some(json!("ready")));
+    assert!(
+        report.prewarmed_ms.is_some_and(|ms| ms >= 350),
+        "{report:?}"
+    );
+}

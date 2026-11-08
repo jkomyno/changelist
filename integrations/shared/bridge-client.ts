@@ -13,11 +13,14 @@
  * - Each call frame is acknowledged with a `received` fact; `execute` can report
  *   later milestones (permission decisions, executor entry). Rust records them as
  *   host claims stamped with the host's `performance.now()` clock.
+ * - `startBridge` starts a bridge, and its guest, before the program is known; pass
+ *   it to `runBridge` as `started` to take that startup off the run's critical path.
+ *   A started bridge serves one run; close its stdin, or kill it, to discard it.
  * - Aborting `signal` sends `cancel` to Rust and aborts outstanding host calls; the
  *   bridge is killed if it has not exited two seconds later. Calls already
  *   dispatched are recorded as unknown; their effects may remain.
  */
-import { spawn } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 
@@ -53,20 +56,37 @@ export interface BridgeCall {
   arguments: unknown;
 }
 
-export interface BridgeRun {
+/** The process and limits of a bridge; fixed when it starts. */
+export interface BridgeLimits {
   /** Absolute path of the `codemode` executable. */
   bin: string;
   /** Absolute path of the Deno executable for the guest. */
   deno: string;
   cwd: string;
-  code: string;
-  /** The host's authorization list, sent in the start frame. */
-  tools: readonly string[];
   timeoutMs: number;
   concurrency: number;
   maxCalls: number;
   /** Shared reply and output byte budget; defaults to 262144. */
   maxOutputBytes?: number;
+}
+
+/** A bridge started ahead of a run by `startBridge`. */
+export interface StartedBridge {
+  readonly child: ChildProcessWithoutNullStreams;
+  /** The bridge's command line, compared with the run's limits. */
+  readonly key: string;
+  /** Set once the process has exited; it can no longer serve a run. */
+  exited: boolean;
+  /** The end of the bridge's stderr. */
+  stderr: string;
+}
+
+export interface BridgeRun extends BridgeLimits {
+  code: string;
+  /** The host's authorization list, sent in the start frame. */
+  tools: readonly string[];
+  /** A bridge from `startBridge` with the same limits; one is started otherwise. */
+  started?: StartedBridge;
   /** Aborting it cancels the run. */
   signal?: AbortSignal;
   /**
@@ -117,28 +137,56 @@ function reportLimit(maxCalls: number, outputBytes: number): number {
   return 2 * GUEST_FRAME_BYTES + (maxCalls + 1) * (GUEST_FRAME_BYTES + 4096) + outputBytes + HOST_FRAME_BYTES;
 }
 
+function bridgeArgs(limits: BridgeLimits): string[] {
+  return [
+    "bridge",
+    "--timeout-ms",
+    String(limits.timeoutMs),
+    "--concurrency",
+    String(limits.concurrency),
+    "--max-calls",
+    String(limits.maxCalls),
+    "--max-output-bytes",
+    String(limits.maxOutputBytes ?? OUTPUT_BYTES),
+    "--deno",
+    limits.deno,
+  ];
+}
+
+const keyOf = (limits: BridgeLimits) => JSON.stringify([limits.bin, limits.cwd, ...bridgeArgs(limits)]);
+
+/**
+ * Start a bridge and its guest now, before the program is known. The bridge waits
+ * for its program until its stdin closes; the run's deadline starts when
+ * `runBridge` sends it.
+ */
+export function startBridge(limits: BridgeLimits): StartedBridge {
+  const child = spawn(limits.bin, bridgeArgs(limits), { cwd: limits.cwd, env: {}, stdio: ["pipe", "pipe", "pipe"] });
+  const started: StartedBridge = { child, key: keyOf(limits), exited: false, stderr: "" };
+  child.once("close", () => {
+    started.exited = true;
+  });
+  child.stdin.on("error", () => {
+    // The bridge exited; its report or exit status explains why.
+  });
+  child.stderr.on("data", (chunk: Buffer) => {
+    started.stderr = (started.stderr + chunk.toString("utf8")).slice(-STDERR_TAIL);
+  });
+  return started;
+}
+
 /** Run one program through `codemode bridge` and resolve with its execution record. */
 export async function runBridge(run: BridgeRun): Promise<RunReport> {
   const outputBytes = run.maxOutputBytes ?? OUTPUT_BYTES;
   const frameLimit = reportLimit(run.maxCalls, outputBytes);
-  const args = [
-    "bridge",
-    "--timeout-ms",
-    String(run.timeoutMs),
-    "--concurrency",
-    String(run.concurrency),
-    "--max-calls",
-    String(run.maxCalls),
-    "--max-output-bytes",
-    String(outputBytes),
-    "--deno",
-    run.deno,
-  ];
-  const child = spawn(run.bin, args, { cwd: run.cwd, env: {}, stdio: ["pipe", "pipe", "pipe"] });
+  if (run.started && run.started.key !== keyOf(run)) {
+    throw new Error("the started bridge has different limits than this run");
+  }
+  const bridge = run.started ?? startBridge(run);
+  const child = bridge.child;
 
   const authorized = new Set(run.tools);
   const outstanding = new Map<number, AbortController>();
-  let stderr = "";
   let finished = false;
   let cancelled = false;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -162,12 +210,6 @@ export async function runBridge(run: BridgeRun): Promise<RunReport> {
     abortOutstanding();
     terminate();
   };
-  child.stdin.on("error", () => {
-    // The bridge exited; its report or exit status explains why.
-  });
-  child.stderr.on("data", (chunk: Buffer) => {
-    stderr = (stderr + chunk.toString("utf8")).slice(-STDERR_TAIL);
-  });
 
   const reply = (id: number, result: HostReply) => {
     let frame = JSON.stringify({ type: "result", id, ...result });
@@ -269,12 +311,15 @@ export async function runBridge(run: BridgeRun): Promise<RunReport> {
         if (pending > frameLimit) fail(new Error(`bridge frame exceeds ${frameLimit} bytes`));
       });
       child.on("error", (error) => fail(error));
-      child.on("close", (code, killSignal) => {
+      const ended = (code: number | null, killSignal: NodeJS.Signals | null) => {
         if (finished) return;
         abortOutstanding();
-        const reason = bridgeError ?? (stderr.trim() || `exit ${code ?? killSignal}`);
+        const reason = bridgeError ?? (bridge.stderr.trim() || `exit ${code ?? killSignal}`);
         reject(new Error(`codemode bridge ended without a report: ${reason}`));
-      });
+      };
+      child.on("close", ended);
+      // A started bridge may have exited while it waited.
+      if (bridge.exited) ended(child.exitCode, child.signalCode);
     });
   } finally {
     run.signal?.removeEventListener("abort", onAbort);

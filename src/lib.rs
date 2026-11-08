@@ -21,7 +21,7 @@ pub use inspect::{
 };
 pub use runtime::{
     BridgeTotals, ByteTotals, CallContext, CallOutcome, CallRecord, ClockInfo, DispatchPolicy,
-    FactSink, MockProvider, ProviderError, ProviderFact, ProviderFactKind, REPORT_SCHEMA_VERSION,
-    RunCancellation, RunConfig, RunError, RunEvent, RunLimits, RunReport, RunStatus, ToolCall,
-    ToolProvider, run,
+    FactSink, MockProvider, PreparedGuest, ProviderError, ProviderFact, ProviderFactKind,
+    REPORT_SCHEMA_VERSION, RunCancellation, RunConfig, RunError, RunEvent, RunLimits, RunReport,
+    RunStatus, ToolCall, ToolProvider, run, run_prepared,
 };

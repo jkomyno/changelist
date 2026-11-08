@@ -21,6 +21,13 @@ One host-owned deadline, call allowance, concurrency cap, cancellation signal,
 and serialized-output allowance govern the run. Guest code cannot enlarge them.
 Provider calls receive the shared deadline and cancellation context.
 
+A host may start a guest before it knows the program (`PreparedGuest`, or a
+bridge started ahead of time), so Deno and worker startup leave the run's
+critical path. Each started guest serves exactly one run and is killed with it;
+nothing is reused between runs. The deadline then starts when the program is
+handed over, and the report's `prewarmed_ms` says how long the guest had waited.
+Without prewarming, the deadline includes guest startup.
+
 A stop request cannot reverse an external side effect. Guest termination also
 does not automatically make a still-observable provider result unknown. Collect
 already-dispatched results while the run budget allows; prevent queued work from

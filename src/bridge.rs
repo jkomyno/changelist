@@ -31,6 +31,10 @@
 //! - `{"type":"report","report":{...}}` once, after which the bridge exits.
 //! - `{"type":"error","message":"..."}` instead of a report when no run started.
 //!
+//! The bridge starts its guest immediately and waits for the start frame until its
+//! input closes, so a host can start a bridge ahead of a run to take guest startup
+//! off the critical path. The run's deadline starts when the start frame arrives.
+//!
 //! The host should abort every outstanding call when it reads the report. A
 //! result for an unknown or already finished call is ignored, because a deadline
 //! or cancellation may legitimately race with a late host reply.
@@ -40,18 +44,17 @@ use std::fmt;
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
-use tokio::time;
 
-use crate::runtime::{FRAME_BYTES, frame};
+use crate::runtime::{FRAME_BYTES, PreparedGuest, frame};
 use crate::{
     BridgeTotals, CallContext, CallOutcome, FactSink, ProviderError, ProviderFactKind,
-    RunCancellation, RunConfig, RunError, RunReport, RunStatus, ToolCall, ToolProvider, run,
+    RunCancellation, RunConfig, RunError, RunReport, RunStatus, ToolCall, ToolProvider,
+    run_prepared,
 };
 
 /// The newest bridge protocol version this build speaks; version 1 is also accepted.
@@ -446,15 +449,11 @@ async fn start_and_run<R>(
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
+    // Start the guest while waiting for the program.
+    let guest = PreparedGuest::start(&config.deno).map_err(BridgeError::Run)?;
     let mut input = BufReader::new(input);
     let mut partial = Vec::new();
-    let first = time::timeout(
-        Duration::from_millis(config.timeout_ms),
-        frame(&mut input, &mut partial, BRIDGE_FRAME_BYTES),
-    )
-    .await
-    .map_err(|_| BridgeError::Protocol("no start frame before the run deadline".into()))?;
-    let bytes = match first {
+    let bytes = match frame(&mut input, &mut partial, BRIDGE_FRAME_BYTES).await {
         Ok(Some(bytes)) => bytes,
         Ok(None) => return Err(BridgeError::Protocol("input closed before start".into())),
         Err(error) if error.kind() == io::ErrorKind::InvalidData => {
@@ -502,7 +501,7 @@ where
         pending,
         counters: Arc::clone(&counters),
     };
-    let result = run(&code, config.clone(), provider, cancellation).await;
+    let result = run_prepared(guest, &code, config.clone(), provider, cancellation).await;
     router.abort();
     let mut report = result.map_err(BridgeError::Run)?;
     report.bridge = Some(BridgeTotals {

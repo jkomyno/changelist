@@ -30,7 +30,10 @@ configuration or expose additional tools implicitly.
 
 ## Bridge protocol (version 2)
 
-`codemode bridge [limit options]` serves one run over stdin and stdout. Frames are
+`codemode bridge [limit options]` serves one run over stdin and stdout. It starts
+its guest at once and waits for the start frame until its input closes, so a host
+can start a bridge before it has a program; the run's deadline starts when the
+start frame arrives. Frames are
 LF-terminated JSON objects. Host frames are at most 1 MiB; the report frame is
 bounded by the run limits (64 KiB source, 64 KiB arguments per call, and the
 output budget). The library entry point is `codemode::serve_bridge`, which
@@ -81,7 +84,9 @@ The adapters use [`integrations/shared/bridge-client.ts`](../integrations/shared
 a host-neutral client built on Node built-ins. It spawns the bridge with an empty
 environment, frames calls and results, refuses calls that arrive after an abort,
 replaces oversized replies with `too_large`, sends `cancel` on abort, and kills the
-bridge two seconds later if it has not exited. An adapter supplies the authorized
+bridge two seconds later if it has not exited. `startBridge` starts a bridge with
+fixed limits before the program is known; passing it to `runBridge` as `started`
+takes bridge and guest startup off that run's critical path. An adapter supplies the authorized
 tool names and one function that runs a call; host registration, permissions, and
 result conversion stay in the adapter.
 

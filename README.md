@@ -56,6 +56,9 @@ Run `mise exec -- cargo run -- --help` for limits, stdin input, and exit behavio
 
 - One absolute deadline includes child startup and provider work. Cancellation
   stops new dispatch and terminates the child. Remote effects cannot be undone.
+  A host can start a guest ahead of a run (`PreparedGuest`, or `startBridge` in
+  the bridge client); the deadline then starts at the hand-over, and the guest
+  still serves only that run.
 - The host authorizes tool names and validates the mock tool arguments. A rolling
   scheduler limits active provider calls and the total helper-call allowance.
   The first request beyond the allowance is recorded as rejected (`call_limit`)

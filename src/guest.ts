@@ -1,7 +1,10 @@
 // Fixed launcher. All stdout, including worker writes, is untrusted host input.
+// The worker starts at once, before the program arrives, so a host can start the
+// guest ahead of a run; the program is then loaded with a dynamic `data:` import.
 const MAX_INPUT_FRAME = 1024 * 1024;
 const encoder = new TextEncoder();
 let worker: Worker | undefined;
+let started = false;
 
 function write(stream: { writeSync(bytes: Uint8Array): number }, text: string): void {
   const bytes = encoder.encode(text);
@@ -63,7 +66,7 @@ async function* inputFrames(): AsyncGenerator<unknown> {
   }
 }
 
-function launch(code: string): Worker {
+function launch(): Worker {
   const source = `
 let nextId = 0;
 const pending = new Map();
@@ -76,6 +79,10 @@ const flush = () => {
   postMessage({ type: "calls", calls });
 };
 globalThis.onmessage = ({ data }) => {
+  if (data.type === "run") {
+    start(data.code);
+    return;
+  }
   const call = pending.get(data.id);
   if (!call) return;
   pending.delete(data.id);
@@ -104,13 +111,16 @@ const tools = {
 for (const level of ["log", "info", "warn", "error"]) {
   console[level] = (...args) => postMessage({ type: "log", message: args.map(String).join(" ") });
 }
-(async () => {
-${code}
-})().then(
-  // Calls submitted before the program settled reach the host before its result.
-  value => { flush(); postMessage({ type: "output", value: value ?? null }); },
-  error => { flush(); postMessage({ type: "error", message: error instanceof Error ? error.message : String(error) }); },
-);
+// The program sees \`tools\` as a global, as it did when it was inlined here.
+Object.defineProperty(globalThis, "tools", { value: tools, writable: true, configurable: true });
+function start(code: string) {
+  const program = "export default (async () => {\\n" + code + "\\n})();";
+  import("data:application/typescript," + encodeURIComponent(program)).then((module) => module.default).then(
+    // Calls submitted before the program settled reach the host before its result.
+    value => { flush(); postMessage({ type: "output", value: value ?? null }); },
+    error => { flush(); postMessage({ type: "error", message: error instanceof Error ? error.message : String(error) }); },
+  );
+}
 `;
   const child = new Worker("data:application/typescript," + encodeURIComponent(source), {
     type: "module",
@@ -142,11 +152,13 @@ ${code}
 }
 
 try {
+  worker = launch();
   for await (const frame of inputFrames()) {
     if (!record(frame)) throw new Error("Input frame must be an object");
-    if (!worker) {
+    if (!started) {
       if (frame.type !== "run" || typeof frame.code !== "string") throw new Error("Expected run frame with string code");
-      worker = launch(frame.code);
+      started = true;
+      worker.postMessage({ type: "run", code: frame.code });
     } else {
       if (frame.type !== "result" || !validId(frame.id) ||
         !((frame.ok === true && "value" in frame) ||
@@ -156,5 +168,5 @@ try {
       worker.postMessage(frame);
     }
   }
-  if (!worker) throw new Error("Missing run frame");
+  if (!started) throw new Error("Missing run frame");
 } catch (error) { fail(error); }
