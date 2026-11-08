@@ -19,7 +19,10 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::{self, Instant};
 
+/// Largest frame from the guest (source and call frames), including its LF.
 pub(crate) const FRAME_BYTES: usize = 64 * 1024;
+/// Largest reply frame to the guest, including its LF; the launcher accepts up to 1 MiB.
+pub(crate) const REPLY_FRAME_BYTES: usize = 1024 * 1024;
 /// Version of the serialized [`RunReport`] format written by this build.
 pub const REPORT_SCHEMA_VERSION: u32 = 2;
 /// Provider facts kept per call; later facts for that call are counted as dropped.
@@ -1165,7 +1168,7 @@ async fn execute(
                     frame_type: "result", id: record.guest_id, ok: result.is_ok(),
                     value: result.as_ref().ok(), error: result.as_ref().err(),
                 };
-                let limit = (FRAME_BYTES - 1).min(config.max_output_bytes.saturating_sub(response_bytes));
+                let limit = (REPLY_FRAME_BYTES - 1).min(config.max_output_bytes.saturating_sub(response_bytes));
                 let bytes = bounded_json(&response, limit);
                 let call_id = record.call.id;
                 record.result_bytes = Some(match &result { Ok(value) => json_len(value), Err(error) => json_len(error) });

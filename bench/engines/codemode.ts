@@ -11,8 +11,9 @@
  * executor facts reach the trace; other engines receive no `report`.
  *
  * Limits: all four are enforced by Rust (deadline including Deno startup, call allowance,
- * rolling concurrency cap, shared reply/output byte budget). Each guest frame is capped
- * at 64 KiB independently of maxOutputBytes.
+ * rolling concurrency cap, shared reply/output byte budget). Independently of
+ * maxOutputBytes, each reply to the guest is capped at 1 MiB and each call frame from
+ * it at 64 KiB.
  *
  * Paths: CODEMODE_BIN (default target/release/codemode) and CODEMODE_DENO (default
  * `mise which deno`).
@@ -42,7 +43,7 @@ export const info: EngineInfo = {
     timeoutMs: "enforced by Rust; one absolute deadline that includes bridge and Deno startup",
     maxCalls: "enforced by Rust; the first call beyond the allowance is rejected and ends the run",
     concurrency: "enforced by Rust's rolling scheduler (8, or 4 for codemode-c4)",
-    maxOutputBytes: "enforced by Rust; shared budget for tool replies and final output (default 262144, set to 1048576 here); separately, each frame to the Deno guest is capped at 64 KiB",
+    maxOutputBytes: "enforced by Rust; shared budget for tool replies and final output (default 262144, set to 1048576 here); separately, each reply to the Deno guest is capped at 1 MiB",
   },
   shim: "none in the guest; host shim maps bridge calls to tool functions and errors to {code, message}",
 };

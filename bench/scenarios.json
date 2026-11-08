@@ -20,7 +20,7 @@
       "profiles": ["zero", "equal", "mixed"],
       "expect": { "kind": "success", "output": "triage-large" },
       "known_limits": {
-        "codemode": "Each listing page (~148 KiB) exceeds the 64 KiB per-frame limit between Rust and the Deno guest; failure is a measured limitation, not a harness error."
+        "codemode": "Before replies to the guest could reach 1 MiB, each listing page (~148 KiB) exceeded the 64 KiB reply frame and the run stopped with output_limit; results/baseline records that."
       },
       "holdout": false
     },

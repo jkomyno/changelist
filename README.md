@@ -65,8 +65,9 @@ Run `mise exec -- cargo run -- --help` for limits, stdin input, and exit behavio
   and ends the run, so a trace holds at most one call more than the allowance.
 - Rust assigns trace identities and records outcomes. Child stdout is untrusted;
   it cannot supply authoritative provider results or trace events.
-- Serialized tool replies and final output share a byte allowance. Frames are
-  capped at 64 KiB. This is an output/transport limit, not a process-memory limit.
+- Serialized tool replies and final output share a byte allowance. Each reply
+  to the guest is capped at 1 MiB, and source and call frames from the guest at
+  64 KiB. These are output/transport limits, not process-memory limits.
 - A returned guest value, a provider result, and a run's terminal status are
   distinct. Unobserved dispatched calls remain unknown; queued calls never sent
   to a provider are identified separately. There are no automatic retries.

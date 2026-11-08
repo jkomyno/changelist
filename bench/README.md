@@ -129,7 +129,7 @@ Limits requested for success scenarios: `timeoutMs` 10000, `maxCalls` 64, `concu
 | Deadline | Rust, absolute; includes bridge spawn and Deno startup (~35-40 ms) | `timeoutMs`, armed before the worker starts | `limits.timeoutMs`, cooperative (`Effect.timeoutOrElse`) from `execute()` |
 | Call allowance | enforced (64) | **none** | enforced (`maxToolCalls` 64) |
 | Concurrency | rolling cap, 8 (`codemode-c4`: 4) | **unbounded**: every submitted call runs at once | **fixed at 8**, not configurable |
-| Byte limits | shared reply/output budget (1 MiB here) **and a 64 KiB cap on every frame to the guest** | none for tool replies | `maxOutputBytes` truncates final output only; not passed |
+| Byte limits | shared reply/output budget (1 MiB here), a 1 MiB cap on each reply to the guest (64 KiB before `results/after`), and 64 KiB on each call frame from it | none for tool replies | `maxOutputBytes` truncates final output only; not passed |
 | Process model | subprocesses (bridge + Deno) per run | worker thread + wasm VM per run, in process | in process |
 | Boundary encoding | JSON frames over stdio (host <-> Rust <-> Deno) | JSON strings across the VM boundary | `copyIn`/`copyOut` plain-data copies |
 | Language | full TS/JS in Deno | plain JS (TS annotations are syntax errors) | restricted subset (no classes, `new Promise`, `.then`, generators, timers) |
@@ -180,7 +180,7 @@ are second-precision ISO strings, so lexical order is time order.
 | Scenario | Program | Profiles | Limits | Expected |
 | --- | --- | --- | --- | --- |
 | `triage` | page 6x, filter, `Promise.all` 22 details, 10 owners, summarize (696 B) | zero, equal, mixed | defaults | output = `expected.json` |
-| `triage-large` | same over `list_issues_large`, 2 pages of 120 items (151,771 and 152,060 B) | zero, equal, mixed | defaults | output = `expected.json` (codemode is expected to hit its 64 KiB frame cap) |
+| `triage-large` | same over `list_issues_large`, 2 pages of 120 items (151,771 and 152,060 B) | zero, equal, mixed | defaults | output = `expected.json` (codemode hit its former 64 KiB reply cap in `results/baseline`) |
 | `denied` | triage with the policy; `Promise.allSettled`; returns `denied: [156, 158]` | zero, equal, mixed | defaults | output = `expected.json` |
 | `deadline` | `triage.js` | mixed | timeoutMs 250 | `timeout` |
 | `guest-exception` | triage, then reads `details[0].reviewer.name` | zero | defaults | `guest_error` |

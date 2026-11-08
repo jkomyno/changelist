@@ -50,7 +50,7 @@ use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::runtime::{FRAME_BYTES, PreparedGuest, frame};
+use crate::runtime::{PreparedGuest, REPLY_FRAME_BYTES, frame};
 use crate::{
     BridgeTotals, CallContext, CallOutcome, FactSink, ProviderError, ProviderFactKind,
     RunCancellation, RunConfig, RunError, RunReport, RunStatus, ToolCall, ToolProvider,
@@ -290,10 +290,10 @@ fn reply(
         (false, None, Some(error), false) => Some(Err(error)),
         // Larger than any guest reply frame, so the runtime's own limit path records
         // `result_too_large` and stops the run, instead of a catchable failure.
-        (true, None, None, true) => Some(Ok(Value::String(" ".repeat(FRAME_BYTES)))),
+        (true, None, None, true) => Some(Ok(Value::String(" ".repeat(REPLY_FRAME_BYTES)))),
         (false, None, None, true) => Some(Err(ProviderError {
             code: "result_too_large".into(),
-            message: " ".repeat(FRAME_BYTES),
+            message: " ".repeat(REPLY_FRAME_BYTES),
         })),
         _ => None,
     }

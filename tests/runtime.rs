@@ -813,3 +813,56 @@ async fn a_program_that_does_not_compile_is_a_guest_error() {
     assert!(report.diagnostic.is_some());
     assert!(report.calls.is_empty());
 }
+
+/// Returns a string of the requested length, as a large tool result would.
+struct LargeResultProvider;
+impl ToolProvider for LargeResultProvider {
+    async fn execute(&self, call: ToolCall, _: CallContext) -> Result<Value, ProviderError> {
+        let length = call.arguments["length"].as_u64().unwrap_or(0);
+        Ok(Value::String(
+            "x".repeat(usize::try_from(length).unwrap_or(0)),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn replies_up_to_one_mebibyte_reach_the_guest_within_the_byte_budget() {
+    let mut options = config();
+    options.max_output_bytes = 4 * 1024 * 1024;
+    options.allowed_tools = vec!["large".into()];
+    let report = run(
+        "const value = await tools.call('large', {length: 1_000_000}); return value.length;",
+        options.clone(),
+        LargeResultProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("run completes");
+    assert_eq!(report.status, RunStatus::Success, "{report:?}");
+    assert_eq!(report.output, Some(json!(1_000_000)));
+
+    // Larger than one reply frame: observed, omitted, and the run stops.
+    let report = run(
+        "return (await tools.call('large', {length: 1_100_000})).length;",
+        options.clone(),
+        LargeResultProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("run completes");
+    assert_eq!(report.status, RunStatus::OutputLimit);
+    assert_eq!(report.calls[0].outcome, CallOutcome::ResultTooLarge);
+    assert_eq!(report.calls[0].result_bytes, Some(1_100_002));
+
+    // The shared budget still governs below the frame cap.
+    options.max_output_bytes = 100_000;
+    let report = run(
+        "return (await tools.call('large', {length: 200_000})).length;",
+        options,
+        LargeResultProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("run completes");
+    assert_eq!(report.status, RunStatus::OutputLimit);
+}
