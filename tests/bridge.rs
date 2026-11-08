@@ -403,6 +403,22 @@ async fn facts_beyond_the_per_call_limit_are_counted_not_kept() {
 }
 
 #[tokio::test]
+async fn a_size_without_too_large_is_a_protocol_error() {
+    let mut host = Host::begin(
+        config(),
+        "return await tools.call('host.read', {});",
+        &["host.read"],
+    )
+    .await;
+    let call = host.next().await;
+    host.send(json!({"type":"result","id":call["id"],"ok":true,"value":1,"bytes":1}))
+        .await;
+    let (_, report) = host.report().await;
+    assert_eq!(report.status, RunStatus::ProtocolError, "{report:?}");
+    assert_eq!(report.calls[0].outcome, CallOutcome::Unknown);
+}
+
+#[tokio::test]
 async fn version_one_hosts_cannot_send_facts() {
     let mut host = Host::begin(
         config(),

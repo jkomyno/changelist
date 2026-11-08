@@ -132,7 +132,7 @@ All 315 runs passed every check.
 | Trace schema 2: admission, dispatch, result, delivery, bytes, run-level events, host facts kept apart, bounded fact intake | Offline | `tests/runtime.rs`, `tests/bridge.rs` |
 | Inspection: phases sum to elapsed time, evidence classes, reconciliation list, bounded output, no values or messages by default, control characters replaced, schema 1 traces | Offline | `tests/inspect.rs` |
 | Prewarmed guests: deadline from hand-over, idle bridges stop on SIGTERM or guest exit | Offline | `tests/runtime.rs`, `tests/bridge.rs`, `tests/cli.rs` |
-| Pi, OpenCode, and Composio adapters after protocol 2 and prewarming; OpenCode permission facts; Composio executor facts | Offline, scripted models and fake helper | `mise run pi-check`, `mise run opencode-check`, `tests/composio.rs` |
+| Pi, OpenCode, and Composio adapters after protocol 2 and prewarming; OpenCode permission facts; Composio and Pi report only receipt | Offline, scripted models and fake helper | `mise run pi-check`, `mise run opencode-check`, `tests/composio.rs` |
 | Rust runtime, bridge, and CLI contracts, including batch dispatch and SIGTERM | Offline | `mise run check` |
 | Pi 1.4.0 and OpenCode 1.19.5 adapters unchanged | Offline, scripted models | `mise run pi-check`, `mise run opencode-check` |
 | Composio result mapping, concurrent dispatch (a rendezvous that fails unless both identity reads overlap), unknown outcomes on cancellation and unobserved executions, credential absence, SDK executor | Offline, fake helper and stand-in SDK | `tests/composio.rs`, `mise run composio-demo` |

@@ -72,7 +72,7 @@ rest:
 | --- | --- |
 | OpenCode | `permission_requested`, then `permission_granted` or `permission_denied` around `context.ask`, and `executor_started` before the host tool runs. |
 | Pi | Only `received`. Pi's permission and approval handlers run inside `ctx.executeTool`, so the adapter cannot tell when the tool itself starts, and Pi permission waits are not separated. |
-| Composio | `executor_started` before the CLI helper or SDK request. |
+| Composio | Only `received`. The CLI helper and the SDK can both refuse a call before the tool runs (local input validation, a missing account, a rate limit), so the adapter cannot tell when the tool itself starts. |
 
 The bridge does not authenticate the host: whoever owns its stdio is the trusted
 provider. Limits come from command-line options chosen by the host, and

@@ -118,8 +118,8 @@ fn composio_results_failures_and_denials_keep_their_origin_without_credentials()
             "TELEGRAM_GET_ME rejected tool_denied",
         ]
     );
-    // Calls the host received carry its acknowledgment and executor entry; the
-    // slug Rust rejected never reached the host.
+    // Calls the host received carry its acknowledgment; the slug Rust rejected
+    // never reached the host. The adapter cannot attest executor entry.
     let facts: Vec<(u64, &str)> = trace["provider_facts"]
         .as_array()
         .expect("provider facts")
@@ -137,7 +137,7 @@ fn composio_results_failures_and_denials_keep_their_origin_without_credentials()
             .filter(|(call, _)| *call == id)
             .map(|(_, kind)| *kind)
             .collect();
-        assert_eq!(kinds, ["received", "executor_started"], "call {id}");
+        assert_eq!(kinds, ["received"], "call {id}");
     }
     assert!(facts.iter().all(|(call, _)| *call != 4));
     // The fake helper answers neither identity read until both have started, so

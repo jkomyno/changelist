@@ -44,6 +44,6 @@
     "binary": "target/release/codemode",
     "build": "mise exec -- cargo build --release --locked --bin codemode",
     "client": "integrations/shared/bridge-client.ts",
-    "bridge_protocol": 1
+    "bridge_protocol": 2
   }
 }
