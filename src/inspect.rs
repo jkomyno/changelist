@@ -844,11 +844,11 @@ impl Inspection {
                 let reason = item
                     .reason
                     .as_deref()
-                    .map(|r| format!(" after {r}"))
+                    .map(|r| format!("; ended by {r}"))
                     .unwrap_or_default();
                 let dispatched = item
                     .dispatched_ms
-                    .map_or_else(String::new, |at| format!(", dispatched at {at} ms"));
+                    .map_or_else(String::new, |at| format!("; dispatched at {at} ms"));
                 let _ = writeln!(
                     out,
                     "  #{} {} {} — {}{reason}{dispatched}{fact}",
