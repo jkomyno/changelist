@@ -118,8 +118,31 @@ fn composio_results_failures_and_denials_keep_their_origin_without_credentials()
             "TELEGRAM_GET_ME rejected tool_denied",
         ]
     );
-    // Both identity checks were in flight together under the Rust scheduler.
-    assert!(trace["calls"][1]["started_ms"].as_u64() < trace["calls"][0]["finished_ms"].as_u64());
+    // The fake helper answers neither identity read until both have started, so
+    // success already proves they overlapped; the trace must agree.
+    let span = |index: usize, field: &str| trace["calls"][index][field].as_u64().expect(field);
+    assert!(span(0, "started_ms") <= span(1, "finished_ms"));
+    assert!(span(1, "started_ms") <= span(0, "finished_ms"));
+}
+
+/// Without concurrency the rendezvous cannot complete, so the proof above is not vacuous.
+#[test]
+fn sequential_identity_reads_fail_the_concurrency_rendezvous() {
+    let trace_path = scratch("sequential");
+    let output = host("integrations/composio/demo/workflow.ts", &trace_path)
+        .args(["--concurrency", "1"])
+        .output()
+        .expect("Deno runs the host");
+    let _ = std::fs::remove_file(&trace_path);
+    assert_eq!(output.status.code(), Some(1));
+    let summary = summary(&output);
+    assert_eq!(summary["status"], "guest_error", "{summary}");
+    assert!(
+        summary["diagnostic"]
+            .as_str()
+            .is_some_and(|text| text.contains("without its partner")),
+        "{summary}"
+    );
 }
 
 /// Write a one-call program to a scratch file.

@@ -44,8 +44,8 @@ fails. `tests/eval.rs` runs one repetition in `mise run check`.
 - **Model.** An ideal zero-overhead makespan computed from the fixture latencies:
   the sum for sequential, the sum of batch maxima for batch, and greedy list
   scheduling for rolling. It is a model, not a measurement.
-- **Correctness.** Every run must match its expected status, output, and outcome
-  counts. The harness also replays trace events to check each policy's behavior:
+- **Correctness.** Every run must match its expected status, output, and the
+  outcome counts that timing cannot change. The harness also replays trace events to check each policy's behavior:
   rolling never leaves a slot idle while a call is queued, batch starts
   min(cap, queued) calls only when nothing runs and never refills mid-batch, every
   call has one admission and one terminal event that matches its record, and the
@@ -70,7 +70,8 @@ Tool span in ms (p50, with min–max):
 Elapsed p50, including startup: mixed-latency 635 / 465 / 294 ms; equal-latency
 474 / 156 / 152 ms (sequential / batch / rolling).
 
-Outcomes, identical in all 21 runs of each cell:
+Observed outcomes, identical in all 21 runs of each cell. These splits depend on
+timing, so they are reported, not asserted:
 
 | Fixture | Sequential | Batch | Rolling |
 | --- | --- | --- | --- |
@@ -92,10 +93,16 @@ All 315 runs passed every check.
 - **Measured overhead is small but not zero.** The parallel policies ran 2–5 ms
   above the model and sequential 12–20 ms above it over 6–8 calls. That gap
   includes timer rounding and sleep overshoot, not only host work.
-- **Rolling starts more work before a failure.** In fail-fast every policy ended at
-  the same time, but rolling had started 4 calls that succeeded, against 3 for
-  batch and 2 for sequential. For side-effecting tools, that is extra work after
-  the program has already failed, not a gain.
+- **Rolling starts more work before a failure.** In fail-fast the host sees the
+  failure before the guest does. Rolling and sequential dispatch refill the freed
+  slot in the same step that forwards the failure, so one more call starts before
+  the guest can report its error; batch waits for its whole batch. After the error,
+  the host cancels queued calls but keeps collecting dispatched ones, so each run
+  ends when its last dispatched call finishes: about 120 ms for batch and rolling,
+  and about 245 ms for sequential, whose refill started a third 120 ms call.
+  Rolling had started 4 calls that succeeded, against 3 for batch and 2 for
+  sequential. For side-effecting tools, that is extra work after the program has
+  already failed, not a gain.
 - **Rolling completes more and leaves more uncertain at a deadline.** Rolling
   finished 6 calls before the deadline, against 3 for batch and none for
   sequential. It also left 4 dispatched calls `unknown`, against 1.
@@ -109,7 +116,8 @@ All 315 runs passed every check.
   awaits and submissions may form smaller batches.
 - The deadline split depends on startup. It holds for 0 to about 130 ms from run
   start to first dispatch (observed maximum 98 ms), so it is reported, not asserted.
-  The fail-fast split assumes the guest reports its error within 120 ms.
+  The fail-fast split assumes the guest reports its error before a running 120 ms
+  call finishes; a slower report would let more calls start.
 
 ## Verification claims
 
@@ -118,7 +126,7 @@ All 315 runs passed every check.
 | Policy timing, outcome splits, and invariants above | Offline | `mise run eval`, mock provider, 315 runs |
 | Rust runtime, bridge, and CLI contracts, including batch dispatch and SIGTERM | Offline | `mise run check` |
 | Pi 1.4.0 and OpenCode 1.19.5 adapters unchanged | Offline, scripted models | `mise run pi-check`, `mise run opencode-check` |
-| Composio result mapping, unknown outcomes on cancellation and unobserved executions, credential absence, SDK executor | Offline, fake helper and stand-in SDK | `tests/composio.rs`, `mise run composio-demo` |
+| Composio result mapping, concurrent dispatch (a rendezvous that fails unless both identity reads overlap), unknown outcomes on cancellation and unobserved executions, credential absence, SDK executor | Offline, fake helper and stand-in SDK | `tests/composio.rs`, `mise run composio-demo` |
 | Composio CLI 0.6.0: two read-only identity tools ran concurrently and succeeded, a CLI-rejected input became `composio_tool_failed`, an unauthorized slug was refused by Rust, and the CLI credential was absent from trace, summary, and stderr | **Live**, read-only, GitHub and Slack accounts | `mise run composio-live-check`, last run after the final adapter change |
 | `@composio/core` against the live API | Not verified | Needs a project API key; only a CLI user key was available |
 | Dispatch policies with a live provider | Not measured | The live check is a contract check, not a benchmark |

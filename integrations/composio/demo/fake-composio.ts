@@ -13,13 +13,40 @@ function failure(message: string, detail: Record<string, unknown>): Error {
   return Object.assign(new Error(message), detail);
 }
 
+/**
+ * The two identity reads finish only after both have started, so a successful
+ * workflow proves they overlapped regardless of timing. A read that waits 5 s for
+ * its partner fails, which is what sequential execution would produce.
+ */
+const IDENTITY_READS = ["GITHUB_GET_THE_AUTHENTICATED_USER", "SLACK_TEST_AUTH"];
+const arrived = new Set<string>();
+let bothArrived: () => void = () => {};
+const rendezvous = new Promise<void>((resolve) => (bothArrived = resolve));
+
+async function meetPartner(slug: string): Promise<void> {
+  arrived.add(slug);
+  if (IDENTITY_READS.every((read) => arrived.has(read))) bothArrived();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const result = { successful: false, error: `${slug} ran without its partner identity read`, slug };
+      reject(failure(result.error, { result, slug }));
+    }, 5_000);
+  });
+  try {
+    await Promise.race([rendezvous, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function fakeExecute(slug: string, data: Record<string, unknown> = {}): Promise<ComposioResult> {
   switch (slug) {
     case "GITHUB_GET_THE_AUTHENTICATED_USER":
-      await sleep(120);
+      await meetPartner(slug);
       return { successful: true, data: { login: "codemode-demo", public_repos: 3 }, error: null };
     case "SLACK_TEST_AUTH":
-      await sleep(40);
+      await meetPartner(slug);
       return { successful: true, data: { ok: true, team: "codemode-demo" }, error: null };
     case "GITHUB_GET_A_REPOSITORY":
       await sleep(10);

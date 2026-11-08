@@ -78,28 +78,16 @@
       "name": "fail-fast",
       "file": "fixtures/fail-fast.ts",
       "description": "Promise.all over 8 calls; the second fails immediately",
-      "note": "per-policy counts follow from call order: the failure frees a slot that rolling refills at once, while batch waits for its whole batch; they assume the guest reports its error within the 120 ms that the other dispatched calls take.",
+      "note": "per-policy succeeded and cancelled_before_dispatch counts are reported, not asserted, because they depend on when the guest's error reaches the host. The host learns of the failure first, replies to the guest, and, under rolling and sequential dispatch, refills the freed slot in the same step, before the guest can react; batch waits for its whole batch. The guest reports its error after one reply round trip, the host cancels queued calls, and it keeps collecting calls already dispatched, so a run ends when its last dispatched call finishes: about 120 ms after the first dispatch for batch and rolling, and about 240 ms for sequential, whose refill started a third 120 ms call. A guest error that took longer than a running call to arrive would let more calls start.",
       "latencies_ms": [120, 0, 120, 120, 120, 120, 120, 120],
       "ideal_model": false,
       "expect": {
         "status": "guest_error",
         "output": "absent",
         "outcomes": {
-          "provider_failed": 1
-        },
-        "outcomes_by_policy": {
-          "sequential": {
-            "succeeded": 2,
-            "cancelled_before_dispatch": 5
-          },
-          "batch": {
-            "succeeded": 3,
-            "cancelled_before_dispatch": 4
-          },
-          "rolling": {
-            "succeeded": 4,
-            "cancelled_before_dispatch": 3
-          }
+          "provider_failed": 1,
+          "rejected": 0,
+          "unknown": 0
         }
       }
     },

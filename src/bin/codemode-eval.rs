@@ -100,12 +100,9 @@ struct Expect {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     output: Option<OutputExpectation>,
     /// Exact count for each listed call outcome under every policy; unlisted
-    /// outcomes are unchecked.
+    /// outcomes are unchecked. List only counts that timing cannot change.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     outcomes: BTreeMap<String, usize>,
-    /// Exact per-policy counts, only where call order (not timing) fixes them.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    outcomes_by_policy: BTreeMap<Policy, BTreeMap<String, usize>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -155,7 +152,7 @@ fn load_manifest(path: &Path) -> Result<(Vec<Fixture>, Vec<String>), Box<dyn Err
 // ---------------------------------------------------------------------------
 // Policies
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Policy {
     Sequential,
@@ -585,13 +582,7 @@ fn measure(
         }
         _ => {}
     }
-    let by_policy = fixture.expect.outcomes_by_policy.get(&policy);
-    for (name, count) in fixture
-        .expect
-        .outcomes
-        .iter()
-        .chain(by_policy.into_iter().flatten())
-    {
+    for (name, count) in &fixture.expect.outcomes {
         let actual = outcomes.get(name).copied().unwrap_or(0);
         if actual != *count {
             failures.push(format!("{actual} {name} calls, expected {count}"));
