@@ -1,5 +1,7 @@
 # Dispatch evaluation
 
+> Historical record, measured at `d16dbc7`. Its commands refer to the `mise run eval` task, the `codemode-eval` binary, and the `--dispatch batch` policy, which no longer exist; its schema 1 traces under `eval/results/` remain as files but are no longer inspectable.
+
 The [engine benchmark](benchmark.md) compares codemode with Pi and OpenCode on a
 realistic workflow and records what this work changed. This document covers the
 earlier dispatch-policy study, measured at `d16dbc7`.

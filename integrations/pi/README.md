@@ -134,7 +134,8 @@ tool result's `details`.
 [`tests/pi_plan.rs`](../../tests/pi_plan.rs), run by `mise run pi-check`, uses Pi
 1.4.0 with a [scripted model](demo/plan-host.ts), the
 [fixture tools](demo/fixture-tools.ts) (`issues_add_label`, `issues_remove_label`,
-`issues_add_comment`, each running `codemode-fixture call` with its attempt key),
+`issues_add_comment`, each running `codemode-fixture call` with its attempt key;
+that offline tracker is a development-only binary and is not installed),
 and the [approval gate](demo/approval-gate.ts). It approves five operations with
 concurrency 1 and a lost response on `label-103`, then:
 

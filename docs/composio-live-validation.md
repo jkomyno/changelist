@@ -4,6 +4,12 @@ Verified on 2026-11-09 with Composio CLI 0.6.0 and the Rust binary built from
 `e1f8a35`. The provider was the real GitHub connection; all external calls used
 the local Composio CLI with explicit connected-account selection.
 
+This is a record of that run at `e1f8a35`. Since then, `--drop-reply` has moved
+from the production plan host to the test-only
+[`integrations/composio/testing/plan-host.ts`](../integrations/composio/testing/plan-host.ts),
+which repeats this step under `composio run`, and the `--durability` option has
+been removed; journal commits always use storage durability.
+
 The target was the dedicated [validation issue #2](https://github.com/jkomyno/codemode/issues/2)
 in `jkomyno/codemode`. It started open with no labels. The `documentation` label
 already existed in the repository. No repository or label was created.
@@ -20,7 +26,8 @@ confirmed the issue did not have the label.
 ## Interruption and recovery
 
 1. The adapter received a successful live mutation response. Its explicit
-   `--drop-reply live-label` option withheld that response from Rust.
+   `--drop-reply live-label` option (now in
+   `integrations/composio/testing/plan-host.ts`) withheld that response from Rust.
 2. The validation harness sent SIGKILL to the Rust executor owning this journal.
    The stopped journal contained one attempt and zero observations: unknown.
 3. A fresh host resumed the same journal. A live read found the label, producing

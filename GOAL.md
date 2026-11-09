@@ -84,7 +84,7 @@ Concrete deliverables:
 2. Sandbox runner that can execute a .ts/.js file (or inline code) with the helper surface injected.
 3. Trace schema + emitter (JSON file or stdout).
 4. Minimal TypeScript types for the helper API.
-5. CLI interface: `codemode run --code path/to/file.ts` and a way to print/export the trace.
+5. CLI interface: `codemode run --code path/to/file.ts` and a way to print/export the trace. (`codemode run` has since been removed; programs run through `codemode bridge`, and `codemode inspect` reads traces.)
 6. A short README explaining the architecture, how to add a tool provider (with Composio as the worked example), and how the traces are meant to be used for evals.
 7. At least one example: a small TypeScript snippet that calls tools (via the mock provider or Composio) and the resulting trace.
 8. AGENTS.md (and a minimal skills layout) so the repo is ready for further agent work.

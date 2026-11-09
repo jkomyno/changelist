@@ -89,7 +89,7 @@ mise exec -- scripts/install-check.sh /tmp/codemode-install/current
 ```
 
 See [installation and compatibility](docs/installation.md) for upgrade, rollback,
-engine selection, format versions, and deprecation rules.
+engine selection, and compatibility (there is none to preserve before a release).
 CI currently runs on Linux. Check platform-specific changes
 on the affected platform and report what you tested.
 

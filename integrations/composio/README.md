@@ -119,7 +119,7 @@ codemode plan check plan.json --provider declaration.json
 codemode plan approve plan.json --journal j.db --provider declaration.json --digest <sha256:...> --approver <name>
 composio run --file integrations/composio/plan-host.ts -- preflight --config config.json --plan plan.json --bin /absolute/path/to/codemode  # read-only
 composio run --file integrations/composio/plan-host.ts -- run --config config.json --journal j.db \
-  --bin target/debug/codemode --deno "$(mise which deno)"
+  --bin target/debug/codemode
 composio run --file integrations/composio/plan-host.ts -- resume ...   # after an interruption
 ```
 
@@ -152,10 +152,11 @@ already started. Label membership says nothing about repeated webhooks or
 automations; that is why the contract is `repeat: unsafe`. The tool version
 observed when approving is not an execution pin: the helper sends none.
 
-`--drop-reply <operation>` is fault injection for recovery demonstrations: after
-the helper reports a successful mutation, the host withholds the reply. It is
-off unless given, and it simulates a lost local observation, not a network
-failure.
+The production `plan-host.ts` has no fault injection. The test-only
+[`testing/plan-host.ts`](testing/plan-host.ts), which is not installed, adds
+`--drop-reply <operation>` for recovery checks: after the helper reports a
+successful mutation, it withholds the reply. That simulates a lost local
+observation, not a network failure.
 
 Verification status:
 
@@ -197,13 +198,16 @@ machine has only a CLI user key, which `@composio/core` 0.28.0 does not accept.
 
 - [`composio-provider.ts`](composio-provider.ts): result mapping, the CLI helper and
   SDK executors, and `runComposio`, built on the shared [bridge client](../shared/bridge-client.ts).
-- [`host.ts`](host.ts): the host script for `composio run`, or `--offline` under Deno or Node.
+- [`host.ts`](host.ts): the host script for `composio run`.
 - [`composio-plan.ts`](composio-plan.ts) and [`plan-host.ts`](plan-host.ts): the plan
   provider for GitHub issue labels, and its host script; [`run-plan-preflight.sh`](run-plan-preflight.sh)
   runs the live read-only preflight.
 - [`composio-tools.d.ts`](composio-tools.d.ts): guest declarations for the example slugs.
-- [`demo/`](demo): the example program, the offline fake helpers (`fake-labels.ts` for
-  plans), the SDK and plan-handler checks, and the credential check.
+- [`demo/`](demo): the example program, the SDK check, and the credential check.
+- [`testing/`](testing), not installed: the offline stand-ins for the CLI helper
+  (`fake-composio.ts`, and `fake-labels.ts` for plans), the offline program host
+  used by `mise run composio-demo`, the plan-handler checks, and the test plan
+  host with `--offline` and `--drop-reply`.
 
 Preflight first runs `codemode plan check --json` through the configured binary
 on a private snapshot of the bounded plan input. Malformed plans fail before any

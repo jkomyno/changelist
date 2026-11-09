@@ -1,5 +1,7 @@
 # Engine benchmark
 
+> Historical record, measured at `8cb7a63` (baseline) and `3f7e5ab` (after and holdout). codemode has changed since; options and binaries it names may no longer exist, and rerunning its commands measures the current code, not those commits.
+
 One set of host tools, seeded datasets, and guest programs, run through
 codemode, Pi's codemode engine 1.4.0, and OpenCode's codemode engine 1.19.5,
 with each engine's results checked against expected outputs computed

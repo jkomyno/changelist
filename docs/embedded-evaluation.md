@@ -1,5 +1,7 @@
 # Native plans and embedded program execution
 
+> Historical record, measured at `6d26458` (see the environment fingerprints under `bench/results/embedded*/`). Its commands refer to options and binaries that may no longer exist; `codemode run --code` has been removed.
+
 Approved plans submit operation identities directly to Rust's existing scheduler.
 They need no JavaScript engine. Arbitrary programs can select an optional V8
 embedding instead of the default external Deno executable. The embedded engine

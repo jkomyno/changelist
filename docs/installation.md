@@ -1,9 +1,9 @@
 # Versioned source installation
 
-Install a reviewed Git commit as one bundle: `codemode`, the offline
-`codemode-fixture`, matching TypeScript adapters, declarations, examples, docs,
-dependency locks, and license notices. No registry package or release binary is
-published by this workflow. The default build uses Deno for programs; native
+Install a reviewed Git commit as one bundle: `codemode`, matching TypeScript
+adapters, declarations, user docs, the installed-workflow check, and license
+notices. Fixtures, mock tools, test harnesses, and demos are not installed. No
+registry package or release binary is published by this workflow. The default build uses Deno for programs; native
 approved plans need no JavaScript engine.
 
 ## Prerequisites and install
@@ -28,7 +28,7 @@ mise install rust mr-boxington deno
 scripts/install.sh --revision "$REVISION" --prefix "$HOME/.local/share/codemode"
 ```
 
-The script builds both executables with `mise exec -- cargo build --release
+The script builds `codemode` with `mise exec -- cargo build --release
 --locked`, through the snapshot's mise configuration and Mr Boxington. It trusts
 that snapshot only for the build process; it does not change persistent mise
 trust settings. Rust's stable tool selection can advance, so the installation
@@ -43,16 +43,15 @@ The bundle is staged before activation:
 ```text
 <prefix>/versions/<commit>-deno/
   bin/codemode
-  bin/codemode-fixture
   integrations/{shared,pi,opencode,composio}/
-  types/  examples/  docs/  scripts/
+  types/  docs/  scripts/
   REVISION  BUILD_BACKEND  BUILD_COMPILER
-  Cargo.lock  package-lock.json  LICENSE  THIRD-PARTY-NOTICES.md
+  README.md  LICENSE  THIRD-PARTY-NOTICES.md
 <prefix>/current -> versions/<commit>-deno
 ```
 
 `current` changes atomically after a successful build and copy. Required binary,
-adapter, declaration, example, documentation, and license files are checked
+adapter, declaration, documentation, and license files are checked
 before activation, including when reusing an existing version. Failed builds or
 incomplete bundles leave the previous activation intact. Existing versions are preserved; concurrent
 installations under one prefix are refused. After an abrupt kill, confirm the
@@ -73,9 +72,7 @@ the same revision even if another installation activates an upgrade:
 ```sh
 INSTALL=$(cd "$HOME/.local/share/codemode/current" && pwd -P)
 cd /tmp
-"$INSTALL/bin/codemode" run --code "$INSTALL/examples/compose.ts" \
-  --deno "$(command -v deno)" --trace "$PWD/codemode-trace.json"
-"$INSTALL/bin/codemode" inspect "$PWD/codemode-trace.json"
+"$INSTALL/bin/codemode" --help
 
 pi --extension "$INSTALL/integrations/pi/codemode-bridge.ts" \
   --codemode-bin "$INSTALL/bin/codemode" --codemode-tools read,grep,find,ls
@@ -122,10 +119,10 @@ mise exec -- scripts/install-check.sh "$INSTALL" embedded-v8
 The check creates an empty working directory and uses only the installed bundle.
 It imports the delivered shared adapter, runs a real bridge tool, saves and
 inspects its trace, and executes the installed OpenCode adapter with a synthetic
-permission context. It then initializes the installed offline fixture, checks
-and approves a plan digest, runs and resumes it with a nonexistent engine path,
-and checks the fixture ledger for exactly one effect. The printed directory
-retains traces, journal, and provider evidence. Pass a third argument to select
+permission context. It then checks and approves a plan digest, runs and resumes
+it through the installed plan bridge with the check itself as host and provider,
+confirms the host executed exactly one effect, and inspects the journal and the
+session's trace. The printed directory retains traces, journal, and plan evidence. Pass a third argument to select
 an empty work directory. The installed `scripts/install-check.sh` can also be
 called directly with Deno on PATH; no source checkout is required for the check.
 Deno runs the host harness even when the guest engine is embedded V8.
@@ -144,29 +141,9 @@ you name the local source repository from another directory. Existing running
 hosts should keep their resolved version path; restart them to adopt an upgrade.
 Keep the prior version available until its journals and integrations are checked.
 
-## Compatibility and deprecation
+## Compatibility
 
-The supported distribution unit is the matching binary-plus-adapter commit.
-The Rust crate remains unpublished and its public API is not stabilized. Do not
-assume arbitrary revisions or adapters from different commits are compatible.
-
-| Surface | Current format and policy |
-| --- | --- |
-| Saved execution traces | Schema 3 records the execution backend, including native calls. Older records can omit backend fields and are interpreted as historical Deno execution. Preserve original traces; consumers must inspect `schema_version` before interpreting unfamiliar fields. |
-| Program stdio bridge | Protocol 2; Rust also accepts protocol 1 starts for legacy hosts. Provider milestone facts require protocol 2. The delivered shared adapter sends version 2. |
-| Plan stdio bridge | Protocol 3; other start versions are refused. Scope, authorization, reconciliation, and journal evidence belong to this separate contract. |
-| Plan JSON | Format 1. Approval binds the canonical digest, provider contracts, and budgets. A presentation change must not change that digest. |
-| SQLite journal | Format 1. Opening another format fails closed; there is no automatic migration or downgrade. Preserve the journal and its matching binary before upgrading. |
-| Host API checks | Pi 1.4.0 and OpenCode 1.19.5, pinned independently of the bundle revision. Offline checks and TypeScript checking establish distinct evidence. |
-
-Additive fields must retain conservative defaults for historical evidence;
-breaking serialized changes require a format/protocol version change and a
-documented migration or explicit refusal. Never reinterpret an unknown external
-effect as success during an upgrade. A future journal migration must preserve
-approval bindings and recorded evidence and operate on a backup first.
-
-Before removing a documented CLI option, TypeScript export, or accepted protocol,
-announce the deprecation and replacement in the docs, retain it for at least one
-tagged minor version, and add a migration note with the removal. This source
-installation does not itself declare a stable public Rust API or publish a
-release. Review exported helpers against actual consumers before stabilization.
+The project is unreleased and makes no compatibility promises: removed options,
+formats, and protocols are deleted outright, and a binary refuses journal,
+approval, and bridge-protocol versions other than its own. Use the binary and
+adapters from one installed commit together.

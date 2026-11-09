@@ -11,8 +11,7 @@ a trusted provider executes explicitly authorized tools outside it.
 The default program backend uses Deno 2.9.8. An optional Rust embedding of V8
 runs JavaScript/TypeScript in a dedicated worker without an external Deno
 executable. Approved plans run directly through Rust and need neither engine.
-`codemode run` uses an
-offline mock provider; `codemode bridge` lets a parent host execute the tools.
+`codemode bridge` lets a parent host execute the tools.
 A native [Pi 1.4.0 integration](integrations/pi/README.md) uses the bridge to run
 Pi's own tools with Pi's permission gates. An [OpenCode 1.19.5 plugin](integrations/opencode/README.md)
 gates every call through OpenCode's permission service and abort, but runs only
@@ -37,35 +36,21 @@ Install Git, mise, and your platform's Rust compiler/linker prerequisites, then:
 ```sh
 mise trust
 mise install rust mr-boxington deno
-mise exec -- cargo run -- run --code examples/compose.ts --concurrency 2 --trace /tmp/codemode-trace.json
+mise run recovery-demo   # offline: approve a plan, kill the executor, resume, review
+mise run pi-demo         # offline: a scripted Pi model runs a program over the bridge
 ```
 
-With `--trace`, stdout contains a compact JSON object with `status`, the trace
-path, and `output` when a guest value was observed (including JSON `null`). The file contains the full execution record. Without
-`--trace`, stdout contains that record directly. Diagnostics use stderr.
+The binary has no built-in tools: programs run through `codemode bridge`, whose
+parent host supplies and executes the authorized tools, and approved plans run
+through `codemode plan run|resume --bridge`. Neither demo uses a service account
+or an external tool call. `codemode inspect <trace.json>` asks a saved execution
+record why it was slow, which calls ran, and which outcomes need reconciliation;
+`codemode plan trace --journal <file> --session <n>` prints that record for a plan
+session. Run `mise exec -- cargo run -- --help` for limits and exit behavior.
 
-The example calls four mock tools concurrently, preserves input ordering in its
-returned array, and returns only two selected values. Rust starts queued calls as
-provider slots become free. To inspect a controlled failure:
-
-```sh
-mise exec -- cargo run -- run --code examples/failure.ts
-```
-
-That command exits unsuccessfully and records the earlier completed call as well
-as the provider failure. No service account or external tool call is involved.
-To ask a saved record why it was slow, which calls ran, and which outcomes need
-reconciliation:
+To check the optional embedded program backend:
 
 ```sh
-mise exec -- cargo run -- inspect /tmp/codemode-trace.json
-```
-Run `mise exec -- cargo run -- --help` for limits, stdin input, and exit behavior.
-
-To try the optional embedded program backend:
-
-```sh
-mise exec -- cargo run --features embedded-v8 -- run --backend embedded-v8 --code examples/compose.ts
 mise run embedded-check
 ```
 
@@ -81,7 +66,7 @@ supported globals, deployment costs, and comparison with Deno and prewarming.
   A host can start a guest ahead of a run (`PreparedGuest`, or `startBridge` in
   the bridge client); the deadline then starts at the hand-over, and the guest
   still serves only that run.
-- The host authorizes tool names and validates the mock tool arguments. A rolling
+- The host authorizes tool names and validates their arguments. A rolling
   scheduler limits active provider calls and the total helper-call allowance.
   The first request beyond the allowance is recorded as rejected (`call_limit`)
   and ends the run, so a trace holds at most one call more than the allowance.
@@ -110,7 +95,7 @@ approval to that digest, the provider's contracts, and the budgets.
 `codemode plan run` executes it through the same scheduler, journaling each
 operation in SQLite before it can reach the provider and after its result.
 It submits the approved operation identities natively, with no generated program
-or guest process. Legacy plan `--deno` options are accepted and unused.
+or guest process.
 After a crash, `codemode plan resume` asks the provider what happened, by
 receipt or by current state, as the provider's own contract allows, continues
 only what is safe, and leaves the rest for a person (`codemode plan review`).
@@ -129,8 +114,8 @@ limits. There is no exactly-once claim.
 
 Reusable Rust APIs live in [src/lib.rs](src/lib.rs). The CLI owns argument parsing,
 source input, signals, trace files, stdout, and exit codes in [src/main.rs](src/main.rs).
-The [TypeScript declarations](types/codemode.d.ts) describe `tools.call` for the
-mock tools through an augmentable `CodemodeTools` interface;
+The [TypeScript declarations](types/codemode.d.ts) describe `tools.call` through
+an augmentable `CodemodeTools` interface;
 [`integrations/pi/pi-tools.d.ts`](integrations/pi/pi-tools.d.ts) adds Pi's built-ins.
 
 A Rust `ToolProvider` receives an authorized `ToolCall` and a `CallContext`
@@ -202,13 +187,10 @@ the same concurrency; Pi was faster under latency because it never queues a
 call. See [the benchmark](docs/benchmark.md), [the comparison](docs/comparison.md),
 and `mise run demo`.
 
-`mise run eval` compares sequential, fixed-batch (`--dispatch batch`), and rolling
-dispatch on identical offline fixtures with the same budget, and checks every
-run's outputs, outcomes, and policy behavior from its trace. On the measured
-machine, rolling finished mixed-latency tool work in 230 ms against 404 ms for
-batch, matched batch on equal latencies, and started more work before a failure.
-See [the evaluation](docs/evaluation.md) for method, distributions, limits, and
-which claims are offline or live.
+A historical [dispatch evaluation](docs/evaluation.md), run before the
+fixed-batch policy and its evaluation binary were removed, found rolling dispatch
+finished mixed-latency tool work in 230 ms against 404 ms for fixed batches on
+identical offline fixtures with the same budget.
 
 See [GOAL.md](GOAL.md), [STRATEGY.md](STRATEGY.md), the [design](docs/design.md),
 and [CONTRIBUTING.md](CONTRIBUTING.md). Performance and stronger isolation claims

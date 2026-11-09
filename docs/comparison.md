@@ -1,5 +1,7 @@
 # Comparison with other code-mode engines
 
+> Historical record: codemode's cells describe the engine pinned and measured at `3f7e5ab` (the [benchmark](benchmark.md)'s `after` results). codemode has changed since; options and binaries it names may no longer exist.
+
 This compares execution engines, not host adapters: how each runs a model-written
 program that calls tools, what it limits, what it records, and what it reports
 when a run fails. Every claim below was checked against pinned source and, where

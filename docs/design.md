@@ -12,7 +12,7 @@ flowchart LR
     CLI --> Native[Approved operation identities]
     Native --> Control
     Guest -->|untrusted call request| Control[Rust admission and scheduler]
-    Control --> Provider[Trusted provider: mock, or a parent host via codemode bridge]
+    Control --> Provider[Trusted provider: a parent host via codemode bridge, or a library provider]
     Provider -->|observed result| Control
     Control -->|bounded reply| Guest
     Control --> Trace[Host-written execution record]
@@ -68,18 +68,14 @@ The guest program expresses dependencies with ordinary awaits and independent
 work with promises. Rust starts a queued call when an active slot becomes free.
 There is no separate dependency-graph planner.
 
-`RunConfig::dispatch` (`--dispatch rolling|batch`) selects the policy; rolling
-is the default. The batch policy is a baseline: it starts up to the cap only when
-no call is active and waits for the whole batch, as chunked parallel execution
-does. Calls the guest submits in one synchronous turn reach Rust in one write, so
-they share a batch. A sequential baseline is either policy with a cap of 1. The
-report records the policy and limits it ran under.
-
-Compare the same workload and concurrency cap under batch and rolling policies
-before claiming an improvement. Mixed-latency calls can expose idle slots at a
-batch barrier. Equal-duration calls, provider rate limits, startup cost, or very
-small workflows can remove the advantage. That is an algorithmic hypothesis,
-not an inherent Rust speed claim; [the evaluation](evaluation.md) measures it.
+Rolling dispatch is the only policy; the report records the limits it ran under.
+A fixed-batch baseline, which started up to the cap only when no call was active
+and waited for the whole batch as chunked parallel execution does, has been
+removed. While it existed, [the evaluation](evaluation.md) compared both on the
+same workload and concurrency cap: mixed-latency calls exposed idle slots at a
+batch barrier, while equal-duration calls, provider rate limits, startup cost, or
+very small workflows can remove the advantage. That is an algorithmic result,
+not an inherent Rust speed claim.
 
 ## Execution evidence
 
@@ -110,7 +106,7 @@ from a record, within a call limit and with counted omissions:
 
 - **Why was this slow?** Exclusive phases that sum to the elapsed time: startup,
   guest-only time, tools running, waiting at the concurrency cap, waiting while a
-  slot was free (a batch barrier), draining after the guest finished, and
+  slot was free (dispatch latency), draining after the guest finished, and
   shutdown. Guest-only time is not split further: the record cannot tell guest
   computation from the gap between dependent steps, and inspection does not infer
   dependencies from call order.
@@ -148,8 +144,8 @@ rolling scheduler, deadline, cancellation, and result-accounting loop. Native
 input exhaustion drains queued work; a guest returning still prevents its
 queued calls from starting. Native reports have backend `native`, empty source,
 no final guest output, and no invented guest IDs, lifecycle events, transport
-bytes, or delivery times. Report schema 3 also reads historical schema 1/2
-records, whose absent backend defaults to Deno. This is not a workflow engine:
+bytes, or delivery times. Records of earlier report schemas are not read. This
+is not a workflow engine:
 no dependencies, no control flow, and no
 replay of the agent's program.
 

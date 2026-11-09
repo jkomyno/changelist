@@ -4,16 +4,13 @@ The target hosts are **Pi, OpenCode, Codex, and the Composio CLI**. The Rust
 library and CLI share one execution contract. Host registration and tool access
 are adapter responsibilities.
 
-## Two distinct capabilities
+## Native tool callbacks
 
-**CLI invocation:** a host launches `codemode run --code ...`, receives JSON and
-an exit status, and can request a separate trace file. That command uses the
-built-in mock provider.
-
-**Native tool callbacks:** a host adapter supplies selected registered tools to
-the runtime and keeps the host's authorization, approvals, cancellation, and
-result semantics. A child process does not inherit its parent's tool registry,
-so this needs `codemode bridge` plus a host-specific adapter.
+The binary has no built-in tools. A host adapter supplies selected registered
+tools to the runtime and keeps the host's authorization, approvals,
+cancellation, and result semantics. A child process does not inherit its
+parent's tool registry, so this needs `codemode bridge` (or, for an approved
+plan, `codemode plan run|resume --bridge`) plus a host-specific adapter.
 
 ## Status
 
@@ -21,19 +18,17 @@ so this needs `codemode bridge` plus a host-specific adapter.
 | --- | --- | --- |
 | Pi 1.4.0 | Native callbacks through [`integrations/pi`](../integrations/pi/README.md): nested calls, Pi permission gates, Rust-side authorization, cancellation, and environment containment. Checked offline with a scripted model. **Plan mode** (`rust_codemode_plan`, protocol 3): an approved plan runs with every attempt passing Pi's gates through `ctx.executeTool()`; after Pi is killed with SIGKILL following a lost response, resume reconciles through a host-registered reconciler with no duplicate effect; a gate-blocked operation stays `unknown` and needs review. Fixture tools and a scripted model only. | A live model session; interactive approval prompts (`ctx.ui.confirm`) were not exercised; other Pi versions. |
 | OpenCode 1.19.5 | Plugin tool through [`integrations/opencode`](../integrations/opencode/README.md): each guest call passes OpenCode's permission service (`allow`, `deny`, `ask`; approvals granted over OpenCode's HTTP API and refused by `opencode run`, handled as a native rejection), Rust-side authorization, session abort (including during an approval wait), and environment containment. Checked offline with a scripted model. | Plan mode (recoverable plans) not checked. **Blocker:** plugins cannot call OpenCode's registered tools (built-in, plugin, or MCP), and nested calls do not reach other plugins' `tool.execute` hooks; guest calls reach only host tools passed to the adapter. A live model session; the TUI approval dialog; other OpenCode versions. |
-| Codex | Not checked, for runs or plans. | CLI invocation with an explicitly configured provider. Native callbacks need a demonstrated interface for calling Codex tools back; MCP exposes our tool to Codex, not Codex's tools to us. |
+| Codex | Not checked, for runs or plans. | Native callbacks need a demonstrated interface for calling Codex tools back; MCP exposes our tool to Codex, not Codex's tools to us. |
 | Composio CLI 0.6.0 | Provider through [`integrations/composio`](../integrations/composio/README.md): `composio run` hosts the bridge, and guest calls execute as Composio tools through the CLI's authenticated `execute` helper. **Live, read-only:** two identity reads in parallel, a CLI-rejected invalid input, a Rust-side denial, and the CLI credential absent from the trace. **Offline:** result mapping, cancellation and unobserved executions (`unknown`), and environment containment with a fake helper; the `@composio/core` executor against a stand-in client. **Plan mode, live:** an approved single issue-label addition, a deliberately lost successful host reply, SIGKILL, and a fresh host resuming to `satisfied` through a state probe, with one journaled attempt and one GitHub label-add event; cleanup verified. See [live validation](composio-live-validation.md). | Other mutation families and receipt-based reconciliation are unverified; the CLI helper provides no receipts. **Blocker:** a live SDK run needs a project API key; the checked machine has only a CLI user key, which `@composio/core` 0.28.0 rejects. The CLI's approval flow (off for the checked account); other CLI versions. |
 
 Validate launch, framing, tool scope, failure states, approval behavior, and
 cancellation for each host/version before marking it compatible. Do not install
 configuration or expose additional tools implicitly.
 
-Approved plans now submit operation identities natively; the CLI, Pi plan
-adapter, and Composio plan adapter are checked with a nonexistent inner Deno
-path. Plan `--deno` and the shared plan client's `deno` option remain accepted
-and unused. This does not change either host's tool access or permission gates.
+Approved plans submit operation identities natively and start no program
+engine. This does not change either host's tool access or permission gates.
 
-Arbitrary programs still default to Deno. `codemode run|bridge --backend embedded-v8`
+Arbitrary programs still default to Deno. `codemode bridge --backend embedded-v8`
 and the shared client's `BridgeLimits.backend = "embedded-v8"` select the
 optional engine when the binary includes that build feature. The generic bridge
 client resolves Deno on the trusted host's PATH when its path is omitted; an
@@ -52,8 +47,7 @@ start frame arrives. Frames are
 LF-terminated JSON objects. Host frames are at most 1 MiB; the report frame is
 bounded by the run limits (64 KiB source, 64 KiB arguments per call, and the
 output budget). The library entry point is `codemode::serve_bridge`, which
-accepts any async reader and writer. Version 1 hosts are still accepted; only
-version 2 hosts may send `fact` frames.
+accepts any async reader and writer. Other start versions are refused.
 
 | Direction | Frame | Meaning |
 | --- | --- | --- |
@@ -66,8 +60,7 @@ version 2 hosts may send `fact` frames.
 | bridge → host | `{"type":"report","report":{...}}` | The execution record; the bridge then exits with the run's exit code. |
 | bridge → host | `{"type":"error","message":"..."}` | The run never started, for example an invalid start frame. |
 
-Rust behavior is unchanged from `run`: limits, the rolling scheduler, and call
-identities are enforced on the Rust side, and calls outside `tools` are rejected
+Limits, the rolling scheduler, and call identities are enforced on the Rust side, and calls outside `tools` are rejected
 before the host sees them. The host never receives guest correlation tokens.
 Results for unknown or finished calls are ignored, because they can race with a
 deadline. A malformed host frame ends the run with `protocol_error`. Dispatched
@@ -95,13 +88,13 @@ credentials stay in the host process.
 
 ## Plan bridge (version 3)
 
-`codemode plan run|resume --journal <file> --bridge [--deno <path>]` serves one
+`codemode plan run|resume --journal <file> --bridge` serves one
 session of an approved [plan](recovery.md) over stdin and stdout. The host is the
 trusted provider: it declares the recovery contracts, executes each attempt
 through its own permission gates, and answers reconciliation probes. Rust checks
 the approval against that declaration, owns the journal, and decides what may
 happen next. The library entry point is `codemode::serve_plan_bridge`.
-No guest process is used in plan mode; `--deno` is a compatibility option only.
+No guest process is used in plan mode.
 
 | Direction | Frame | Meaning |
 | --- | --- | --- |
@@ -109,7 +102,7 @@ No guest process is used in plan mode; `--deno` is a compatibility option only.
 | bridge → host | `{"type":"authorize","id":1,"scope":{...}}` | Is this scope authorized now? Answer `{"type":"authorized","id":1,"ok":true}`, or `"ok":false` with `error`. |
 | bridge → host | `{"type":"call","id":2,"tool":"...","arguments":{...},"operation":"...","attempt":"...","preconditions":[...],"scope":{...}}` | One attempt, sent only after its intent is durable. The host must refuse a `scope` it does not act as. Answer with a version 2 `result` frame, plus an optional `"effect":"refused"\|"not_applied"\|"unknown"` on failure; without it the effect is `unknown`. |
 | bridge → host | `{"type":"reconcile","id":3,"operation":"...","tool":"...","arguments":{...},"keys":[...],"scope":{...}}` | Establish an uncertain outcome. Answer `{"type":"reconciled","id":3,"verdict":"...","evidence":"..."}`, or with `error`. |
-| host → bridge | `{"type":"cancel"}` | Cancel the session; closing the input does too. `fact` frames are accepted and ignored. |
+| host → bridge | `{"type":"cancel"}` | Cancel the session; closing the input does too. Any other host frame, including a program-bridge `fact`, is malformed and ends the session. |
 | bridge → host | `{"type":"outcome","outcome":{...}}` | Last. A refused session's outcome is `{"session","status":"refused","detail"}`; `diagnostic` is present when host input ended the session. Exit codes match `codemode plan run`. |
 | bridge → host | `{"type":"error","message":"..."}` | No session ran, for example an invalid start frame or an unavailable journal. |
 
@@ -214,8 +207,8 @@ helper and keeps the CLI credential in that process. For each run it:
 5. on SIGINT, SIGTERM, or the deadline, prints the summary and exits; running calls
    are `unknown`, because the helper cannot abort an execution.
 
-`codemode run` and `codemode bridge` treat SIGTERM like Ctrl-C on Unix: they cancel
-the run and still emit its record. `composio run` forwards signals to its process
+`codemode bridge` treats SIGTERM like Ctrl-C on Unix: it cancels the run and
+still emits its record. `composio run` forwards signals to its process
 group, which includes the bridge.
 
 An `@composio/core` executor (`sdkExecutor`) forwards each call's abort signal to

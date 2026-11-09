@@ -12,9 +12,9 @@ anything else. Where nothing can establish the outcome and repeating could
 duplicate the effect, it stops and asks a person.
 
 Approved operation identities submit natively to the existing Rust scheduler.
-Plans do not find or launch Deno and create no guest process; legacy `--deno`
-options remain accepted and unused. Provider accounts, permissions, retention,
-journal ordering, and recovery contracts are unchanged by this dispatch path.
+Plans do not find or launch Deno and create no guest process. Provider
+accounts, permissions, retention, journal ordering, and recovery contracts are
+unchanged by this dispatch path.
 
 ```mermaid
 flowchart LR
@@ -34,16 +34,17 @@ flowchart LR
 codemode plan check plan.json --provider provider.json        # digest and preview
 codemode plan approve plan.json --journal j.db --provider provider.json \
   --digest sha256:... --approver alice [--concurrency 4 --max-attempts 3 ...]
-codemode plan run     --journal j.db --fixture fixture.db --account triage-bot
+codemode plan run     --journal j.db --bridge                  # a host serves stdio
 codemode plan inspect --journal j.db                           # after anything
-codemode plan resume  --journal j.db --fixture fixture.db --account triage-bot
+codemode plan resume  --journal j.db --bridge
 codemode plan review  --journal j.db --operation comment-105 --as applied --reviewer alice
 codemode plan trace   --journal j.db --session 2 | codemode inspect -
 ```
 
-`mise run recovery-demo` runs this end to end against the offline fixture:
-ten label changes and one comment, four in flight at a time; three responses
-lost after their effects, one request held before its effect, the executor
+`mise run recovery-demo` runs this end to end against the offline fixture, an
+issue tracker whose development-only `codemode-fixture session` command hosts the
+run and resume sessions: ten label changes and one comment, four in flight at a
+time; three responses lost after their effects, one request held before its effect, the executor
 killed with SIGKILL, then inspection, resume, the provider's own ledger, and a
 review. The library exposes the same steps: `Plan::parse`, `approval_binding`,
 `Journal`, `run_session`, `inspect_journal`, and `Journal::record_review`.
@@ -106,7 +107,7 @@ is a stated name, not an authenticated identity.
 
 ## 3. The journal
 
-The journal is a SQLite database (format version 1) holding the frozen plan and
+The journal is a SQLite database (format version 2) holding the frozen plan and
 append-only facts, each with an ordinal from one counter: approvals, sessions,
 dispatch intents (attempts), observations, reconciliation probes and their
 answers, reviews, and
@@ -139,13 +140,11 @@ Ordering per attempt:
    unknown.
 
 **Durability.** The journal uses SQLite's write-ahead log in normal locking mode.
-With the default `--durability storage` (`synchronous=FULL`, and `F_FULLFSYNC`
-on macOS), a commit returns after SQLite has asked the operating system to flush
-it to stable storage. Whether that survives power loss depends on the device
-honoring flushes; no test here establishes it. With `--durability process`
-(`synchronous=NORMAL`), commits survive the process being killed but the latest
-may be lost on an OS crash or power failure. The tests kill processes with
-SIGKILL; they establish process-crash durability only.
+With `synchronous=FULL` (and `F_FULLFSYNC` on macOS), a commit returns after
+SQLite has asked the operating system to flush it to stable storage. Whether
+that survives power loss depends on the device honoring flushes; no test here
+establishes it. The tests kill processes with SIGKILL; they establish
+process-crash durability only.
 
 **One owner.** Every command that writes the journal (`approve`, `run`,
 `resume`, `review`) first takes an exclusive operating-system lock on the lock
@@ -200,15 +199,9 @@ policy makes plan arguments or other private data secret-free.
 Recovery decisions use only the facts every policy keeps, so the same history
 reaches the same conclusions under either policy (tested through the bridge).
 
-*Older journals.* Approvals recorded before retention policies (binding format
-1) bind none, so a session refuses them: review the plan and run
-`codemode plan approve` again on the same journal. Facts recorded earlier are
-not rewritten and may hold provider results up to 16 KiB, messages, and
-evidence; deleting rows would not erase them from the file either (see SQLite's
-[write-ahead log](https://www.sqlite.org/wal.html) and
-[`secure_delete`](https://www.sqlite.org/pragma.html#pragma_secure_delete)), so
-treat such a journal file as possibly holding them. Inspection reports how many
-approvals predate retention and then shows probe evidence only with `--messages`.
+*Older journals.* A journal of any other format version, including one whose
+approvals predate retention policies, is refused at open as described above;
+there is no migration. Keep such a file with the binary that wrote it.
 
 Provider credentials stay in the trusted provider and are never passed to the
 journal or any guest. Native dispatch requests name operation identities only;
@@ -326,9 +319,10 @@ journal keeps approver names, notes, and other stored text to 1 KiB each.
 
 ## Host integration
 
-`codemode plan run|resume --fixture` uses the offline fixture provider in the
-Rust process. Other providers implement `RecoverableProvider`. A host such as
-Pi runs plan sessions over the bridge protocol (see
+The CLI runs plan sessions only through a host over the plan bridge
+(`--bridge`); library users can implement `RecoverableProvider` instead. The
+offline fixture provider behind the demo and tests is development-only and is
+not installed. A host such as Pi runs plan sessions over the bridge protocol (see
 [host integration](integrations.md)); a host is then the trusted provider: it
 declares the contracts, executes each operation through its own permission
 gates, and answers reconciliation probes. The Composio plan provider (GitHub
@@ -365,7 +359,7 @@ comment for review; blind retry duplicated the comment in every run while
 claiming success; stopping on uncertainty left five operations unresolved.
 Resume is the slowest: 89.2 ms at p50 against 17.0 ms for blind retry, without
 provider latency. Native execution has no guest startup; durable commits
-dominate. With `storage` durability each commit costs about 6 ms here (`F_FULLFSYNC`), so the
-journal, not the provider, limits a large batch; with `process` durability the
-journal added under 1 ms per operation. The [evaluation document](recovery-evaluation.md)
+dominate. Each flushed commit costs about 6 ms here (`F_FULLFSYNC`), so the
+journal, not the provider, limits a large batch; a since-removed `process`
+durability mode, measured in the same evaluation, added under 1 ms per operation. The [evaluation document](recovery-evaluation.md)
 keeps the earlier Deno results, including their guest startup, clearly separate.

@@ -1,5 +1,7 @@
 # Code-mode engine benchmark
 
+> The committed results under `results/` were measured at `8cb7a63`, `3f7e5ab`, and `6d26458`, as each `environment.json` records; codemode has changed since, and options or binaries named alongside them may no longer exist. Rerunning the harness measures the current code.
+
 One set of host tools, datasets, and guest programs, run through matching code-mode engines:
 
 | Name | Engine | How it runs a program |

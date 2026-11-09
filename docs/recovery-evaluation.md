@@ -1,5 +1,7 @@
 # Recovery evaluation
 
+> Historical record, measured at `21c84f8` (Deno results) and at `6d26458` with uncommitted tracked changes (native results). Its commands no longer run as written: `codemode-recovery-eval` now needs `--features testkit`, its `--deno` option no longer exists, and the plan CLI has no `--durability` option.
+
 An offline, reproducible comparison of what happens after an executor is killed
 in the middle of an approved plan, and of what durable accounting costs when
 nothing fails. It answers two questions:
