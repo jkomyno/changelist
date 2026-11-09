@@ -15,6 +15,9 @@
     "integrations/opencode/codemode-bridge.ts",
     "integrations/composio/host.ts",
     "integrations/composio/plan-host.ts",
+    "integrations/composio/composio-plan-host.ts",
+    "integrations/composio/testing/offline-host.ts",
+    "integrations/composio/testing/plan-host.ts",
     "integrations/composio/composio-provider.ts",
     "integrations/composio/composio-plan.ts"
   ]

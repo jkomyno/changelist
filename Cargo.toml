@@ -21,6 +21,19 @@ unimplemented = "warn"
 [features]
 default = []
 embedded-v8 = ["dep:deno_core", "dep:deno_ast", "dep:deno_error"]
+# Offline fixtures, mock tools, and fault injection for tests, demos, and evaluations.
+# Never part of the production binary or the default library API.
+testkit = []
+
+[[bin]]
+name = "codemode-fixture"
+path = "src/bin/codemode-fixture.rs"
+required-features = ["testkit"]
+
+[[bin]]
+name = "codemode-recovery-eval"
+path = "src/bin/codemode-recovery-eval.rs"
+required-features = ["testkit"]
 
 [dependencies]
 deno_core = { version = "=0.413.0", optional = true }

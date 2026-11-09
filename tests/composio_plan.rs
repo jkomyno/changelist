@@ -1,5 +1,6 @@
-//! Offline checks of the Composio plan host (`integrations/composio/plan-host.ts`)
-//! through the real plan bridge: the host runs under Deno with a stand-in for the
+//! Offline checks of the Composio plan host through the real plan bridge: its
+//! test-only entry (`integrations/composio/testing/plan-host.ts`) runs the
+//! production host under Deno with a stand-in for the
 //! `composio run` helper that keeps its own ledger of calls and label state. The
 //! Rust executor is killed with SIGKILL mid-session and resumed by fresh host
 //! processes. No account, credential, or network is used.
@@ -152,7 +153,7 @@ fn host(scratch: &Scratch, command: &str, extra: &[&str]) -> Command {
             "--allow-write",
             "--allow-env",
         ])
-        .arg("integrations/composio/plan-host.ts")
+        .arg("integrations/composio/testing/plan-host.ts")
         .arg(command)
         .args(["--config", path(&scratch.file("config.json"))])
         .args(["--offline", path(&scratch.file("labels.json"))]);
@@ -425,7 +426,7 @@ fn the_handlers_pass_their_offline_checks() {
     let output = Command::new(deno())
         .current_dir(root())
         .args(["run", "--allow-read", "--allow-write"])
-        .arg("integrations/composio/demo/plan-check.ts")
+        .arg("integrations/composio/testing/plan-check.ts")
         .arg(&scratch.0)
         .output()
         .expect("deno runs");

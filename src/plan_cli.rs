@@ -8,12 +8,10 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use codemode::fixture::FixtureProvider;
 use codemode::{
     Approval, Durability, Journal, JournalError, JournalInspectOptions, Plan, PlanBridgeError,
     ProviderDeclaration, RecoveryPolicy, Resolution, RunCancellation, SessionError, SessionKind,
-    SessionOptions, SessionOutcome, approval_binding, inspect_journal, run_session,
-    serve_plan_bridge,
+    SessionOptions, SessionOutcome, approval_binding, inspect_journal, serve_plan_bridge,
 };
 
 use crate::{CliError, cancel_on_interrupt, read_input};
@@ -28,8 +26,8 @@ Usage:
   codemode plan check <plan.json> [--provider <declaration.json>] [--json]
   codemode plan approve <plan.json> --journal <file> --provider <declaration.json>
                         --digest <sha256:...> --approver <name> [--note <text>] [policy options]
-  codemode plan run     --journal <file> (--fixture <fixture.db> --account <name> | --bridge)
-  codemode plan resume  --journal <file> (--fixture <fixture.db> --account <name> | --bridge)
+  codemode plan run     --journal <file> --bridge
+  codemode plan resume  --journal <file> --bridge
   codemode plan inspect --journal <file> [--json] [--messages]
   codemode plan review  --journal <file> --operation <id> --as applied|not-applied
                         --reviewer <name> [--note <text>]
@@ -46,12 +44,11 @@ changed, uncertain, and what can safely happen next, without argument or
 result values. review records a person's finding for an operation that needs
 one. trace prints a session's execution record for `codemode inspect`.
 
-run and resume act through the offline fixture (--fixture, --account) or, with
---bridge, through a parent host: stdin and stdout carry protocol version 3
-frames (start, authorize, call, reconcile, their replies, cancel, outcome). The
-host's start frame supplies its provider declaration; it authorizes, executes,
-and reconciles operations while Rust keeps the journal. Credentials stay with
-the host. Approved plans run natively.
+run and resume act through a parent host (--bridge): stdin and stdout carry
+protocol version 3 frames (start, authorize, call, reconcile, their replies,
+cancel, outcome). The host's start frame supplies its provider declaration; it
+authorizes, executes, and reconciles operations while Rust keeps the journal.
+Credentials stay with the host. Approved plans run natively.
 
 Policy options (approve):
   --concurrency <n>          Operations in flight at once (default 4)
@@ -184,7 +181,7 @@ pub(crate) async fn execute(args: Vec<OsString>) -> Result<u8, Box<dyn Error>> {
             ],
         )?),
         Some(kind @ ("run" | "resume")) => {
-            let flags = Flags::parse(rest, &["--journal", "--fixture", "--account", "--bridge"])?;
+            let flags = Flags::parse(rest, &["--journal", "--bridge"])?;
             let kind = if kind == "run" {
                 SessionKind::Run
             } else {
@@ -355,37 +352,13 @@ fn exit_code(outcome: &SessionOutcome) -> u8 {
 }
 
 async fn session(flags: Flags, kind: SessionKind) -> Result<u8, Box<dyn Error>> {
-    let options = SessionOptions { kind };
-    if flags.has("--bridge") {
-        if flags.has("--fixture") || flags.has("--account") {
-            return Err(CliError(
-                "--bridge cannot be combined with --fixture or --account; the host is the provider"
-                    .into(),
-            )
-            .into());
-        }
-        return bridge_session(flags.require("--journal")?, options).await;
+    if !flags.has("--bridge") {
+        return Err(CliError(
+            "--bridge is required; the parent host executes the plan's operations".into(),
+        )
+        .into());
     }
-    let journal = Journal::open(flags.require("--journal")?, Durability::Storage)?;
-    let provider = FixtureProvider::open(flags.require("--fixture")?, flags.require("--account")?)?;
-    let cancellation = RunCancellation::default();
-    let signal_task = cancel_on_interrupt(&cancellation);
-    let result = run_session(journal, provider, options, cancellation).await;
-    signal_task.abort();
-    match result {
-        Ok(outcome) => {
-            print_json(&outcome)?;
-            Ok(exit_code(&outcome))
-        }
-        Err(SessionError::Refused { session, reason }) => {
-            print_json(&serde_json::json!({
-                "session": session, "status": "refused", "detail": reason,
-            }))?;
-            eprintln!("codemode: session {session} refused: {reason}");
-            Ok(4)
-        }
-        Err(error) => Err(error.into()),
-    }
+    bridge_session(flags.require("--journal")?, SessionOptions { kind }).await
 }
 
 /// Serve one session over stdio with the host as provider. stdout carries only frames.

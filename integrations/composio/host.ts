@@ -9,14 +9,9 @@
  *       --program integrations/composio/demo/workflow.ts \
  *       --tools GITHUB_GET_THE_AUTHENTICATED_USER,SLACK_TEST_AUTH,GITHUB_GET_A_REPOSITORY
  *
- * Offline, with any Node-compatible runtime and recorded fake results:
- *
- *     deno run --allow-run --allow-read --allow-write --allow-env \
- *       integrations/composio/host.ts --offline --program ... --tools ...
- *
  * Options: --program <file> (required), --tools <slug,...> (required),
  * --trace <file>, --bin <codemode> (codemode on PATH), --deno <deno>, --backend deno|embedded-v8, --timeout-ms <n> (30000),
- * --concurrency <n> (4), --max-calls <n> (16), --offline.
+ * --concurrency <n> (4), --max-calls <n> (16).
  * stdout receives one compact JSON summary; the exit status is 0 only on success.
  * The host exits after the report, abandoning any call Rust recorded as unknown.
  * If an execution ends without an observed result, the host cancels the run so
@@ -37,10 +32,6 @@ function options(argv: string[]): Map<string, string> {
   const parsed = new Map<string, string>();
   for (let index = 0; index < argv.length; index++) {
     const name = argv[index].startsWith("--") ? argv[index].slice(2) : "";
-    if (name === "offline") {
-      parsed.set(name, "true");
-      continue;
-    }
     const value = argv[index + 1];
     if (!VALUE_OPTIONS.has(name)) throw new Error(`unexpected argument ${argv[index]}`);
     if (value === undefined || value.startsWith("--")) throw new Error(`--${name} needs a value`);
@@ -64,10 +55,8 @@ async function main(): Promise<void> {
   const tools = (args.get("tools") ?? "").split(",").filter(Boolean);
   if (!program || tools.length === 0) throw new Error("--program and --tools are required");
 
-  const execute = args.has("offline")
-    ? (await import("./demo/fake-composio.ts")).fakeExecute
-    : (globalThis as { execute?: RunHelperExecute }).execute;
-  if (!execute) throw new Error("run under `composio run`, or pass --offline");
+  const execute = (globalThis as { execute?: RunHelperExecute }).execute;
+  if (!execute) throw new Error("run under `composio run`, which supplies the execute helper");
 
   const backend = parseBackend(args.get("backend") ?? "deno");
   const controller = new AbortController();

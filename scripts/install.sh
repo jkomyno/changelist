@@ -56,61 +56,46 @@ trap 'exit 143' HUP TERM
 mkdir -p "$prefix/versions"
 version="$revision-$backend"
 destination="$prefix/versions/$version"
+# The installed files: the production binary, its adapters, declarations, user
+# docs, and the installed-workflow check. Fixtures, mock tools, test harnesses,
+# demos, and checkout-only scripts are never installed.
+ASSETS='bin/codemode
+integrations/README.md
+integrations/shared/bridge-client.ts
+integrations/pi/README.md
+integrations/pi/codemode-bridge.ts
+integrations/pi/pi-tools.d.ts
+integrations/opencode/README.md
+integrations/opencode/codemode-bridge.ts
+integrations/composio/README.md
+integrations/composio/host.ts
+integrations/composio/plan-host.ts
+integrations/composio/composio-plan-host.ts
+integrations/composio/composio-provider.ts
+integrations/composio/composio-plan.ts
+integrations/composio/composio-tools.d.ts
+types/codemode.d.ts
+docs/installation.md
+docs/integrations.md
+docs/recovery.md
+scripts/install-check.sh
+scripts/install-smoke.ts
+README.md
+LICENSE
+THIRD-PARTY-NOTICES.md'
 validate_bundle() {
   bundle=$1
   [ -d "$bundle" ] && [ ! -L "$bundle" ] || return 1
   # Keep these required public entrypoints and their imports together on reuse.
-  while IFS= read -r asset; do
+  for asset in REVISION BUILD_BACKEND BUILD_COMPILER $ASSETS; do
     [ -f "$bundle/$asset" ] && [ ! -L "$bundle/$asset" ] || {
       echo "missing installed asset: $bundle/$asset" >&2
       return 1
     }
-  done <<'ASSETS'
-REVISION
-BUILD_BACKEND
-BUILD_COMPILER
-bin/codemode
-bin/codemode-fixture
-integrations/shared/bridge-client.ts
-integrations/README.md
-integrations/pi/codemode-bridge.ts
-integrations/pi/pi-tools.d.ts
-integrations/pi/README.md
-integrations/opencode/codemode-bridge.ts
-integrations/opencode/README.md
-integrations/composio/host.ts
-integrations/composio/plan-host.ts
-integrations/composio/composio-provider.ts
-integrations/composio/composio-plan.ts
-integrations/composio/composio-tools.d.ts
-integrations/composio/README.md
-integrations/composio/demo/fake-composio.ts
-integrations/composio/demo/fake-labels.ts
-types/codemode.d.ts
-examples/compose.ts
-examples/failure.ts
-examples/recovery/plan.json
-docs/installation.md
-docs/integrations.md
-docs/recovery.md
-scripts/install.sh
-scripts/install-check.sh
-scripts/install-smoke.ts
-README.md
-CONTRIBUTING.md
-LICENSE
-THIRD-PARTY-NOTICES.md
-Cargo.toml
-Cargo.lock
-mise.toml
-package.json
-package-lock.json
-tsconfig.json
-ASSETS
+  done
   [ "$(cat "$bundle/REVISION")" = "$revision" ] &&
     [ "$(cat "$bundle/BUILD_BACKEND")" = "$backend" ] &&
-    [ -x "$bundle/bin/codemode" ] && [ -x "$bundle/bin/codemode-fixture" ] &&
-    [ -x "$bundle/scripts/install.sh" ] && [ -x "$bundle/scripts/install-check.sh" ]
+    [ -x "$bundle/bin/codemode" ] && [ -x "$bundle/scripts/install-check.sh" ]
 }
 if [ -e "$destination" ] || [ -L "$destination" ]; then
   validate_bundle "$destination" || {
@@ -130,14 +115,20 @@ else
     export MISE_TRUSTED_CONFIG_PATHS="$snapshot/source"
     unset CARGO_TARGET_DIR
     if [ "$backend" = embedded-v8 ]; then
-      mise exec -- cargo build --release --locked --features embedded-v8 --bin codemode --bin codemode-fixture
+      mise exec -- cargo build --release --locked --features embedded-v8 --bin codemode
     else
-      mise exec -- cargo build --release --locked --bin codemode --bin codemode-fixture
+      mise exec -- cargo build --release --locked --bin codemode
     fi
     mkdir "$stage/bin"
-    cp target/release/codemode target/release/codemode-fixture "$stage/bin/"
-    cp -R integrations types examples docs scripts "$stage/"
-    cp README.md CONTRIBUTING.md LICENSE THIRD-PARTY-NOTICES.md Cargo.toml Cargo.lock mise.toml package.json package-lock.json tsconfig.json "$stage/"
+    cp target/release/codemode "$stage/bin/"
+    for asset in $ASSETS; do
+      case "$asset" in
+        bin/*) ;;
+        *)
+          mkdir -p "$stage/$(dirname -- "$asset")"
+          cp -p "$asset" "$stage/$asset" ;;
+      esac
+    done
     mise exec -- rustc --version > "$stage/BUILD_COMPILER"
   )
   printf '%s\n' "$revision" > "$stage/REVISION"

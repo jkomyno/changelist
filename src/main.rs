@@ -3,45 +3,39 @@
 use std::env;
 use std::error::Error;
 use std::fmt;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use codemode::{
-    BridgeError, GuestBackend, InspectOptions, MockProvider, RunCancellation, RunConfig, RunReport,
-    Sections, inspect, run, serve_bridge,
+    BridgeError, GuestBackend, InspectOptions, RunCancellation, RunConfig, RunReport, Sections,
+    inspect, serve_bridge,
 };
 
 mod plan_cli;
 
-const MAX_CODE_BYTES: u64 = 64 * 1024;
 const MAX_TRACE_BYTES: u64 = 64 * 1024 * 1024;
 const HELP: &str = "codemode — bounded agent-written TypeScript/JavaScript workflows
 
 Usage:
-  codemode run --code <file.ts|file.js|-> [options]
-  codemode bridge [limit options]
+  codemode bridge [options]
   codemode inspect <trace.json|-> [inspect options]
   codemode plan <check|approve|run|resume|inspect|review|trace> ...  (see codemode plan --help)
 
 Options:
-  --timeout-ms <n>        Total run deadline, including startup (default: 5000)
-  --max-calls <n>         Maximum helper-call attempts (default: 32)
-  --concurrency <n>       Maximum active provider calls (default: 4)
-  --max-output-bytes <n>  Cumulative JSON response/output bytes (default: 262144)
-  --trace <file.json>     Save the full trace; print only status, output, and path (run only)
-  --deno <executable>     Deno executable (default: deno from PATH)
-  --backend <engine>      deno (default) or embedded-v8 (optional build feature)
   -h, --help             Show this help
   -V, --version          Show the version
-
-run supplies mock.echo, mock.wait, and mock.fail. stdout contains one JSON
-execution record; diagnostics use stderr. A dash reads source from stdin.
 
 bridge lets a parent host execute tools: stdin and stdout carry protocol
 version 2 frames (start, call, result, fact, cancel, report). The host's start
 frame supplies the source and authorized tool names. Credentials stay with the host.
+  --timeout-ms <n>        Total run deadline, including startup (default: 5000)
+  --max-calls <n>         Maximum helper-call attempts (default: 32)
+  --concurrency <n>       Maximum active provider calls (default: 4)
+  --max-output-bytes <n>  Cumulative JSON response/output bytes (default: 262144)
+  --deno <executable>     Deno executable (default: deno from PATH)
+  --backend <engine>      deno (default) or embedded-v8 (optional build feature)
 
 inspect reads a saved execution record and answers: why was this slow, which
 calls ran, and which outcomes require reconciliation. It prints tool names,
@@ -64,13 +58,6 @@ impl fmt::Display for CliError {
 impl Error for CliError {}
 
 #[derive(Debug)]
-struct Options {
-    code: PathBuf,
-    trace: Option<PathBuf>,
-    config: RunConfig,
-}
-
-#[derive(Debug)]
 struct InspectArgs {
     trace: PathBuf,
     options: InspectOptions,
@@ -82,7 +69,6 @@ struct InspectArgs {
 enum Command {
     Help,
     Version,
-    Run(Options),
     Bridge(RunConfig),
     Inspect(InspectArgs),
     Plan(Vec<std::ffi::OsString>),
@@ -132,23 +118,20 @@ fn parse_inspect(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<C
 
 fn parse_arguments() -> Result<Command, CliError> {
     let mut args = env::args_os().skip(1);
-    let bridge = match args.next().as_deref().and_then(|arg| arg.to_str()) {
+    match args.next().as_deref().and_then(|arg| arg.to_str()) {
         None | Some("-h" | "--help") => return Ok(Command::Help),
         Some("-V" | "--version") => return Ok(Command::Version),
-        Some("run") => false,
-        Some("bridge") => true,
+        Some("bridge") => {}
         Some("inspect") => return parse_inspect(args),
         Some("plan") => return Ok(Command::Plan(args.collect())),
-        _ => {
-            return Err(CliError(
-                "expected 'run', 'bridge', 'inspect', or 'plan'; use --help for usage".into(),
-            ));
+        Some(other) => {
+            return Err(CliError(format!(
+                "unknown command '{other}'; expected 'bridge', 'inspect', or 'plan'; use --help for usage"
+            )));
         }
-    };
+    }
 
     let mut config = RunConfig::default();
-    let mut code = None;
-    let mut trace = None;
     while let Some(flag) = args.next() {
         let flag = flag
             .to_str()
@@ -158,9 +141,7 @@ fn parse_arguments() -> Result<Command, CliError> {
         }
         if !matches!(
             flag,
-            "--code"
-                | "--trace"
-                | "--deno"
+            "--deno"
                 | "--backend"
                 | "--timeout-ms"
                 | "--max-calls"
@@ -169,21 +150,10 @@ fn parse_arguments() -> Result<Command, CliError> {
         ) {
             return Err(CliError(format!("unknown option '{flag}'")));
         }
-        if bridge && matches!(flag, "--code" | "--trace") {
-            return Err(CliError(format!(
-                "{flag} is not accepted by bridge; the host supplies source and receives the report"
-            )));
-        }
         let value = args
             .next()
             .ok_or_else(|| CliError(format!("missing value for {flag}")))?;
         match flag {
-            "--code" => {
-                if code.replace(PathBuf::from(value)).is_some() {
-                    return Err(CliError("--code can only be supplied once".into()));
-                }
-            }
-            "--trace" => trace = Some(PathBuf::from(value)),
             "--deno" => config.deno = PathBuf::from(value),
             "--backend" => {
                 config.backend = match value.to_str() {
@@ -215,14 +185,7 @@ fn parse_arguments() -> Result<Command, CliError> {
             }
         }
     }
-    if bridge {
-        return Ok(Command::Bridge(config));
-    }
-    Ok(Command::Run(Options {
-        code: code.ok_or_else(|| CliError("run requires --code <file|->".into()))?,
-        trace,
-        config,
-    }))
+    Ok(Command::Bridge(config))
 }
 
 /// Read a file or stdin (`-`), refusing more than `limit` bytes.
@@ -301,30 +264,6 @@ async fn execute() -> Result<u8, Box<dyn Error>> {
             .await;
             signal_task.abort();
             Ok(result?.status.exit_code())
-        }
-        Command::Run(options) => {
-            let source = read_input(&options.code, MAX_CODE_BYTES, "source")?;
-            let cancellation = RunCancellation::default();
-            let signal_task = cancel_on_interrupt(&cancellation);
-            let result = run(&source, options.config, MockProvider, cancellation).await;
-            signal_task.abort();
-            let report = result?;
-            let mut json = serde_json::to_vec(&report)?;
-            json.push(b'\n');
-            if let Some(path) = options.trace {
-                fs::write(&path, &json)?;
-                let mut summary = serde_json::json!({
-                    "status": report.status,
-                    "trace": path.to_string_lossy(),
-                });
-                if let Some(output) = report.output {
-                    summary["output"] = output;
-                }
-                writeln!(io::stdout().lock(), "{summary}")?;
-            } else {
-                io::stdout().lock().write_all(&json)?;
-            }
-            Ok(report.status.exit_code())
         }
     }
 }

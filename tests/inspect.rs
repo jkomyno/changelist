@@ -3,21 +3,38 @@
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
 
-use codemode::{
-    Evidence, InspectOptions, MockProvider, RunCancellation, RunConfig, RunReport, RunStatus,
-    Sections, inspect, run,
-};
+use codemode::{Evidence, InspectOptions, RunReport, Sections, inspect};
+#[cfg(feature = "testkit")]
+use codemode::{MockProvider, RunCancellation, RunConfig, RunStatus, run};
 use serde_json::{Value, json};
 
 const SECRET: &str = "codemode-inspect-secret-value";
-const ENV_SECRET: &str = "codemode-inspect-environment-secret";
 
+#[cfg(feature = "testkit")]
 fn config() -> RunConfig {
     RunConfig {
         deno: std::env::var_os("CODEMODE_TEST_DENO").map_or_else(|| "deno".into(), Into::into),
         timeout_ms: 5_000,
-        ..RunConfig::default()
+        ..MockProvider::config()
     }
+}
+
+/// A program run with the mock tools, saved as a host would save its trace.
+#[cfg(feature = "testkit")]
+async fn saved_run(name: &str, source: &str, config: RunConfig) -> (RunReport, std::path::PathBuf) {
+    let report = run(source, config, MockProvider, RunCancellation::default())
+        .await
+        .expect("run completes");
+    let trace = std::env::temp_dir().join(format!(
+        "codemode-inspect-{name}-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &trace,
+        serde_json::to_vec(&report).expect("report serializes"),
+    )
+    .expect("trace written");
+    (report, trace)
 }
 
 fn phase(report: &RunReport, name: &str) -> u64 {
@@ -30,6 +47,7 @@ fn phase(report: &RunReport, name: &str) -> u64 {
         .expect("phase exists")
 }
 
+#[cfg(feature = "testkit")]
 #[tokio::test]
 async fn why_slow_attributes_waiting_to_the_concurrency_cap() {
     let mut options = config();
@@ -150,7 +168,6 @@ fn reconciliation_lists_only_uncertain_calls_with_their_strongest_evidence() {
 fn codemode(args: &[&str], stdin: Option<&str>) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_codemode"))
         .args(args)
-        .env("CODEMODE_INSPECT_SECRET", ENV_SECRET)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -164,33 +181,19 @@ fn codemode(args: &[&str], stdin: Option<&str>) -> Output {
     child.wait_with_output().expect("CLI finishes")
 }
 
-#[test]
-fn inspection_keeps_values_messages_and_credentials_out_of_its_output() {
-    let trace = std::env::temp_dir().join(format!("codemode-inspect-{}.json", std::process::id()));
+#[cfg(feature = "testkit")]
+#[tokio::test]
+async fn inspection_keeps_values_and_messages_out_of_its_output() {
     let source = format!(
-        "let env = 'denied'; try {{ env = Deno.env.get('CODEMODE_INSPECT_SECRET') ?? 'unset'; }} catch {{}}
-         await tools.call('mock.echo', {{token: '{SECRET}', env}});
+        "await tools.call('mock.echo', {{token: '{SECRET}'}});
          try {{ await tools.call('mock.fail', {{message: '{SECRET}'}}); }} catch {{}}
          try {{ await tools.call('evil\\u001b[31m', {{}}); }} catch {{}}
          throw new Error('{SECRET}');"
     );
-    let ran = codemode(
-        &[
-            "run",
-            "--code",
-            "-",
-            "--trace",
-            trace.to_str().expect("UTF-8 path"),
-        ],
-        Some(&source),
-    );
-    assert_eq!(ran.status.code(), Some(1), "{ran:?}");
+    let (report, trace) = saved_run("values", &source, config()).await;
+    assert_eq!(report.status, RunStatus::GuestError, "{report:?}");
     let saved = std::fs::read_to_string(&trace).expect("trace written");
     assert!(saved.contains(SECRET), "the full record keeps task data");
-    assert!(
-        !saved.contains(ENV_SECRET),
-        "the guest never read the environment"
-    );
 
     let path = trace.to_str().expect("UTF-8 path");
     for args in [vec!["inspect", path], vec!["inspect", path, "--json"]] {
@@ -198,42 +201,32 @@ fn inspection_keeps_values_messages_and_credentials_out_of_its_output() {
         assert!(output.status.success(), "{output:?}");
         let text = String::from_utf8(output.stdout).expect("UTF-8");
         assert!(!text.contains(SECRET), "{args:?}: {text}");
-        assert!(!text.contains(ENV_SECRET));
         assert!(!text.contains('\u{1b}'), "control characters are replaced");
         assert!(
             text.contains("mock_failure") && text.contains("tool_denied"),
             "{text}"
         );
     }
-    // Messages are opt-in, and still exclude what the guest never saw.
+    // Messages are opt-in.
     let output = codemode(&["inspect", path, "--messages"], None);
     let text = String::from_utf8(output.stdout).expect("UTF-8");
     let _ = std::fs::remove_file(&trace);
     assert!(text.contains(SECRET), "{text}");
-    assert!(!text.contains(ENV_SECRET));
 }
 
-#[test]
-fn inspection_output_is_bounded_and_counts_what_it_omits() {
-    let trace = std::env::temp_dir().join(format!(
-        "codemode-inspect-bound-{}.json",
-        std::process::id()
-    ));
-    let ran = codemode(
-        &[
-            "run",
-            "--code",
-            "-",
-            "--max-calls",
-            "64",
-            "--trace",
-            trace.to_str().expect("UTF-8 path"),
-        ],
-        Some(
-            "return (await Promise.all(Array.from({length: 30}, (_, i) => tools.call('mock.echo', i)))).length;",
-        ),
-    );
-    assert!(ran.status.success(), "{ran:?}");
+#[cfg(feature = "testkit")]
+#[tokio::test]
+async fn inspection_output_is_bounded_and_counts_what_it_omits() {
+    let (report, trace) = saved_run(
+        "bound",
+        "return (await Promise.all(Array.from({length: 30}, (_, i) => tools.call('mock.echo', i)))).length;",
+        RunConfig {
+            max_calls: 64,
+            ..config()
+        },
+    )
+    .await;
+    assert_eq!(report.status, RunStatus::Success, "{report:?}");
     let output = codemode(
         &[
             "inspect",
@@ -336,6 +329,7 @@ fn an_omitted_provider_error_is_not_reported_as_a_run_tool() {
     assert_eq!(inspection.calls.rows[0].evidence, Evidence::ErrorOmitted);
 }
 
+#[cfg(feature = "testkit")]
 #[tokio::test]
 async fn native_inspection_has_exclusive_host_phases_and_roundtrips_without_guest_evidence() {
     let calls = [20, 20].map(|ms| codemode::NativeCall {

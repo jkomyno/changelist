@@ -50,6 +50,7 @@ pub struct RunConfig {
     /// Native [`run_calls`] does not use this setting.
     pub backend: GuestBackend,
     /// Tool names authorized by this host, independently of guest requests.
+    /// Empty by default: every call is denied until the host authorizes its tool.
     pub allowed_tools: Vec<String>,
 }
 
@@ -92,9 +93,7 @@ impl Default for RunConfig {
             max_output_bytes: 256 * 1024,
             deno: PathBuf::from("deno"),
             backend: GuestBackend::Deno,
-            allowed_tools: ["mock.echo", "mock.wait", "mock.fail"]
-                .map(String::from)
-                .to_vec(),
+            allowed_tools: Vec::new(),
         }
     }
 }
@@ -297,33 +296,64 @@ impl fmt::Display for ProviderError {
 }
 impl std::error::Error for ProviderError {}
 
-/// Local deterministic tools for exercising execution without external credentials.
+/// Local deterministic tools for exercising execution without external credentials:
+/// `mock.echo` returns its arguments, `mock.wait` `{ms, value?}` sleeps, and
+/// `mock.fail` `{message?}` fails with `mock_failure`. Invalid arguments fail with
+/// `invalid_arguments`. Requires the `testkit` feature.
+#[cfg(feature = "testkit")]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MockProvider;
 
+#[cfg(feature = "testkit")]
+impl MockProvider {
+    /// The tools this provider implements.
+    pub const TOOLS: [&'static str; 3] = ["mock.echo", "mock.wait", "mock.fail"];
+
+    /// [`RunConfig::default`] with every mock tool authorized.
+    #[must_use]
+    pub fn config() -> RunConfig {
+        RunConfig {
+            allowed_tools: Self::TOOLS.map(String::from).to_vec(),
+            ..RunConfig::default()
+        }
+    }
+}
+
+#[cfg(feature = "testkit")]
 impl ToolProvider for MockProvider {
     async fn execute(&self, call: ToolCall, context: CallContext) -> Result<Value, ProviderError> {
+        let invalid = |message: &str| ProviderError {
+            code: "invalid_arguments".into(),
+            message: message.into(),
+        };
         match call.tool.as_str() {
             "mock.echo" => Ok(call.arguments),
             "mock.wait" => {
-                let ms = call.arguments["ms"]
-                    .as_u64()
-                    .ok_or_else(|| invalid_arguments("ms must be a nonnegative integer"))?;
+                let ms = call.arguments["ms"].as_u64().ok_or_else(|| {
+                    invalid("mock.wait requires an object with nonnegative integer ms")
+                })?;
                 tokio::select! {
                     () = time::sleep(Duration::from_millis(ms)) => Ok(call.arguments.get("value").cloned().unwrap_or(Value::Null)),
                     () = time::sleep_until(context.deadline) => Err(ProviderError { code: "deadline".into(), message: "run deadline reached".into() }),
                     () = context.cancellation.cancelled() => Err(ProviderError { code: "cancelled".into(), message: "run cancelled".into() }),
                 }
             }
-            "mock.fail" => Err(ProviderError {
-                code: "mock_failure".into(),
-                message: call
-                    .arguments
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("mock provider failed")
-                    .into(),
-            }),
+            "mock.fail" => match call.arguments.get("message") {
+                _ if !call.arguments.is_object() => Err(invalid(
+                    "mock.fail requires an object with optional string message",
+                )),
+                Some(Value::String(message)) => Err(ProviderError {
+                    code: "mock_failure".into(),
+                    message: message.clone(),
+                }),
+                None => Err(ProviderError {
+                    code: "mock_failure".into(),
+                    message: "mock provider failed".into(),
+                }),
+                Some(_) => Err(invalid(
+                    "mock.fail requires an object with optional string message",
+                )),
+            },
             _ => Err(ProviderError {
                 code: "unknown_tool".into(),
                 message: "provider does not implement this tool".into(),
@@ -773,12 +803,6 @@ fn record_fact(
         provider_ms: fact.provider_ms,
     });
 }
-fn invalid_arguments(message: &str) -> ProviderError {
-    ProviderError {
-        code: "invalid_arguments".into(),
-        message: message.into(),
-    }
-}
 fn validate_call(call: &ToolCall, config: &RunConfig) -> Result<(), ProviderError> {
     if !config.allowed_tools.contains(&call.tool) {
         return Err(ProviderError {
@@ -786,23 +810,7 @@ fn validate_call(call: &ToolCall, config: &RunConfig) -> Result<(), ProviderErro
             message: "tool is not authorized by the host".into(),
         });
     }
-    match call.tool.as_str() {
-        "mock.wait" if call.arguments.get("ms").and_then(Value::as_u64).is_none() => Err(
-            invalid_arguments("mock.wait requires an object with nonnegative integer ms"),
-        ),
-        "mock.fail"
-            if !call.arguments.is_object()
-                || call
-                    .arguments
-                    .get("message")
-                    .is_some_and(|value| !value.is_string()) =>
-        {
-            Err(invalid_arguments(
-                "mock.fail requires an object with optional string message",
-            ))
-        }
-        _ => Ok(()),
-    }
+    Ok(())
 }
 
 /// Read one LF-terminated frame of at most `limit` bytes, keeping partial input
@@ -978,10 +986,21 @@ impl PreparedGuest {
 /// # Examples
 ///
 /// ```no_run
-/// use codemode::{run, MockProvider, RunCancellation, RunConfig};
+/// use codemode::{CallContext, ProviderError, RunCancellation, RunConfig, ToolCall, ToolProvider, run};
+/// use serde_json::Value;
+///
+/// struct Echo;
+/// impl ToolProvider for Echo {
+///     async fn execute(&self, call: ToolCall, _: CallContext) -> Result<Value, ProviderError> {
+///         Ok(call.arguments)
+///     }
+/// }
+///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let report = run("return await tools.call(\"mock.echo\", {answer: 42});", RunConfig::default(),
-///                  MockProvider, RunCancellation::default()).await?;
+/// // The host authorizes each tool; the default configuration authorizes none.
+/// let config = RunConfig { allowed_tools: vec!["host.echo".into()], ..RunConfig::default() };
+/// let report = run("return await tools.call(\"host.echo\", {answer: 42});", config,
+///                  Echo, RunCancellation::default()).await?;
 /// assert!(report.status.is_success());
 /// # Ok(())
 /// # }
@@ -1086,11 +1105,23 @@ fn validate(code: &str, config: &RunConfig) -> Result<Vec<u8>, RunError> {
 /// # Examples
 ///
 /// ```
-/// use codemode::{NativeCall, MockProvider, RunCancellation, RunConfig, run_calls};
+/// use codemode::{
+///     CallContext, NativeCall, ProviderError, RunCancellation, RunConfig, ToolCall, ToolProvider,
+///     run_calls,
+/// };
+/// use serde_json::Value;
+///
+/// struct Echo;
+/// impl ToolProvider for Echo {
+///     async fn execute(&self, call: ToolCall, _: CallContext) -> Result<Value, ProviderError> {
+///         Ok(call.arguments)
+///     }
+/// }
+///
 /// # async fn example() -> Result<(), codemode::RunError> {
-/// let requests = [NativeCall { tool: "mock.echo".into(), arguments: serde_json::json!(42) }];
-/// let report = run_calls(&requests, RunConfig::default(), MockProvider,
-///                        RunCancellation::default()).await?;
+/// let requests = [NativeCall { tool: "host.echo".into(), arguments: serde_json::json!(42) }];
+/// let config = RunConfig { allowed_tools: vec!["host.echo".into()], ..RunConfig::default() };
+/// let report = run_calls(&requests, config, Echo, RunCancellation::default()).await?;
 /// assert!(report.status.is_success());
 /// assert!(report.output.is_none());
 /// # Ok(())
@@ -1538,8 +1569,48 @@ async fn execute(
 
 #[cfg(test)]
 mod tests {
-    use super::frame;
+    use super::{
+        CallContext, CallOutcome, NativeCall, ProviderError, RunCancellation, RunConfig, RunStatus,
+        ToolCall, ToolProvider, frame, run_calls,
+    };
+    use serde_json::{Value, json};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncWriteExt, BufReader};
+
+    struct Counting(Arc<AtomicUsize>);
+    impl ToolProvider for Counting {
+        async fn execute(&self, call: ToolCall, _: CallContext) -> Result<Value, ProviderError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(call.arguments)
+        }
+    }
+
+    #[tokio::test]
+    async fn the_default_configuration_authorizes_no_tool() {
+        let dispatches = Arc::new(AtomicUsize::new(0));
+        let calls =
+            ["mock.echo", "mock.wait", "mock.fail", "host.read", ""].map(|tool| NativeCall {
+                tool: tool.into(),
+                arguments: json!({}),
+            });
+        let report = run_calls(
+            &calls,
+            RunConfig::default(),
+            Counting(Arc::clone(&dispatches)),
+            RunCancellation::default(),
+        )
+        .await
+        .expect("rejections produce a report");
+        assert!(RunConfig::default().allowed_tools.is_empty());
+        assert_eq!(report.status, RunStatus::Success, "{report:?}");
+        assert_eq!(report.calls.len(), calls.len());
+        assert!(report.calls.iter().all(|record| matches!(
+            &record.outcome,
+            CallOutcome::Rejected { error } if error.code == "tool_denied"
+        )));
+        assert_eq!(dispatches.load(Ordering::SeqCst), 0);
+    }
 
     #[tokio::test]
     async fn partial_stdout_frame_survives_a_cancelled_read() {

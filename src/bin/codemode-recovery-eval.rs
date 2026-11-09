@@ -2,10 +2,10 @@
 //! accounting costs when nothing fails.
 //!
 //! **A. Recovery.** Each repetition and latency profile creates one crashed state
-//! with a real process kill: `codemode plan run` executes the 11-operation plan of
-//! `examples/recovery/plan.json` against a fixture with three lost responses and
-//! one held request, and is sent SIGKILL once the fixture ledger shows the held
-//! request. The journal and fixture files are then copied three times, and each
+//! with a real process kill: `codemode-fixture session run` executes the
+//! 11-operation plan of `examples/recovery/plan.json` against a fixture with three
+//! lost responses and one held request, and is sent SIGKILL once the fixture
+//! ledger shows the held request. The journal and fixture files are then copied three times, and each
 //! strategy recovers its own copy from the identical state:
 //!
 //! - `stop`: read the journal and stop if any operation is unknown;
@@ -26,8 +26,8 @@
 //! No speedup is assumed or claimed.
 //!
 //! ```text
-//! cargo build --release --locked --bin codemode
-//! cargo run --release --locked --bin codemode-recovery-eval -- \
+//! cargo build --release --locked --features testkit --bin codemode-fixture
+//! cargo run --release --locked --features testkit --bin codemode-recovery-eval -- \
 //!     [--reps N] [--warmup N] [--latency 0,25] [--large N] [--out DIR] [--bin PATH]
 //! ```
 
@@ -98,8 +98,8 @@ Options:
   --latency <list>   Fixture latency profiles in ms, comma-separated (default: 0,25)
   --large <n>        Operations in the extra label-only overhead plan; 0 skips it (default: 64)
   --out <dir>        Also write summary.json
-  --bin <path>       codemode executable that is killed mid-run
-                     (default: codemode next to this executable)
+  --bin <path>       codemode-fixture executable whose session is killed mid-run
+                     (default: codemode-fixture next to this executable)
   -h, --help         Show this help
 
 Prints a Markdown summary to stdout and progress to stderr. Exits 1 if any
@@ -404,9 +404,9 @@ async fn crash(
     }
     drop(fixture);
     let mut child = Command::new(&args.bin)
-        .args(["plan", "run", "--journal"])
+        .args(["session", "run", "--journal"])
         .arg(dir.join("j.db"))
-        .arg("--fixture")
+        .arg("--db")
         .arg(&fixture_path)
         .args(["--account", ACCOUNT])
         .stdin(Stdio::null())
@@ -418,7 +418,7 @@ async fn crash(
     let waited: Result<(), String> = loop {
         if let Some(status) = child.try_wait()? {
             break Err(format!(
-                "codemode plan run exited ({status}) before the crash checkpoint"
+                "codemode-fixture session run exited ({status}) before the crash checkpoint"
             ));
         }
         let ledger = Fixture::open(&fixture_path)?.ledger()?;
@@ -1221,12 +1221,13 @@ struct Environment {
     /// Whether tracked files differ from that commit (untracked files ignored).
     git_dirty: Option<bool>,
     evaluator_binary_digest: Option<Digest>,
-    codemode_binary_digest: Option<Digest>,
+    /// Digest of the `codemode-fixture` executable whose session is killed.
+    fixture_binary_digest: Option<Digest>,
     evaluator_source_digest: Digest,
     fixture_source_digest: Digest,
     recovery_plan_source_digest: Digest,
     /// The executable killed mid-run, relative to the source checkout when inside it.
-    codemode_bin: PathBuf,
+    fixture_bin: PathBuf,
 }
 
 /// Trimmed stdout of a command that exited successfully.
@@ -1281,11 +1282,11 @@ fn environment(args: &Args) -> Environment {
         evaluator_binary_digest: std::env::current_exe()
             .ok()
             .and_then(|path| binary_digest(&path)),
-        codemode_binary_digest: binary_digest(&args.bin),
+        fixture_binary_digest: binary_digest(&args.bin),
         evaluator_source_digest: Digest::of(include_bytes!("codemode-recovery-eval.rs")),
         fixture_source_digest: Digest::of(include_bytes!("../fixture.rs")),
         recovery_plan_source_digest: Digest::of(RECOVERY_PLAN.as_bytes()),
-        codemode_bin: args
+        fixture_bin: args
             .bin
             .strip_prefix(source)
             .unwrap_or(&args.bin)
@@ -1329,7 +1330,7 @@ struct Args {
 }
 
 fn default_bin() -> PathBuf {
-    let name = format!("codemode{}", std::env::consts::EXE_SUFFIX);
+    let name = format!("codemode-fixture{}", std::env::consts::EXE_SUFFIX);
     std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join(&name)))
@@ -1388,7 +1389,7 @@ fn parse_args() -> Result<Option<Args>, String> {
     }
     if !args.bin.is_file() {
         return Err(format!(
-            "{} does not exist; build it with `cargo build --release --locked --bin codemode` or pass --bin",
+            "{} does not exist; build it with `cargo build --release --locked --features testkit --bin codemode-fixture` or pass --bin",
             args.bin.display()
         ));
     }
@@ -1624,7 +1625,7 @@ async fn evaluate() -> Result<ExitCode, Box<dyn Error>> {
                 .collect(),
             percentiles: "nearest-rank",
             ordering: "round-robin strategies (A) and modes (B) per repetition; the starting one rotates each repetition",
-            crash: "codemode plan run is sent SIGKILL once the fixture ledger records all ten intended requests, including the held one; journal and fixture files (database and write-ahead log) are copied once per strategy",
+            crash: "codemode-fixture session run is sent SIGKILL once the fixture ledger records all ten intended requests, including the held one; journal and fixture files (database and write-ahead log) are copied once per strategy",
         };
         let summary = Summary {
             environment: &environment,

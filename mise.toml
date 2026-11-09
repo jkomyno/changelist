@@ -20,13 +20,14 @@ env = { RUSTDOCFLAGS = "-D warnings" }
 run = [
     "cargo fmt --all --check",
     "cargo clippy --locked --all-targets --all-features -- -D warnings",
-    "cargo test --locked",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo test --locked --all-features",
     "cargo doc --locked --no-deps",
 ]
 
 [tasks.embedded-check]
 description = "Exercise the optional embedded worker and program backend contracts"
-run = "cargo test --locked --features embedded-v8 --test embedded --test backend --test bridge_client"
+run = "cargo test --locked --features embedded-v8,testkit --test embedded --test backend --test bridge_client"
 
 [tasks.embedded-bench]
 description = "Compare Deno and embedded workers, including prewarming, on shared offline fixtures"
@@ -93,7 +94,7 @@ run = "examples/recovery/demo.sh"
 [tasks.recovery-eval]
 description = "Compare recovery strategies after a killed run, and measure journal overhead"
 run = [
-    "cargo build --release --locked --bin codemode",
+    "cargo build --release --locked --features testkit --bin codemode-fixture",
     "mkdir -p eval/recovery-local",
-    "cargo run --release --locked --bin codemode-recovery-eval -- --reps 15 --out eval/recovery-local > eval/recovery-local/summary.md",
+    "cargo run --release --locked --features testkit --bin codemode-recovery-eval -- --reps 15 --out eval/recovery-local > eval/recovery-local/summary.md",
 ]

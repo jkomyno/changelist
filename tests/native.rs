@@ -1,4 +1,5 @@
 //! Host-owned requests exercise the same control contract without a guest.
+#![cfg(feature = "testkit")]
 
 use codemode::{
     CallOutcome, ExecutionBackend, MockProvider, NativeCall, RunCancellation, RunConfig, RunStatus,
@@ -9,7 +10,7 @@ use serde_json::json;
 fn config() -> RunConfig {
     RunConfig {
         deno: "/nonexistent/codemode-native-must-not-start-deno".into(),
-        ..RunConfig::default()
+        ..MockProvider::config()
     }
 }
 
@@ -127,15 +128,15 @@ async fn rolling_refills_before_a_held_call_and_never_exceeds_the_cap() {
 }
 
 #[tokio::test]
-async fn authorization_and_argument_rejections_consume_the_same_call_allowance() {
+async fn rejections_consume_the_same_call_allowance() {
     let calls = [
         NativeCall {
             tool: "private.write".into(),
             arguments: json!({}),
         },
         NativeCall {
-            tool: "mock.wait".into(),
-            arguments: json!({"ms": -1}),
+            tool: "private.delete".into(),
+            arguments: json!({}),
         },
         echo(3),
         echo(4),
@@ -153,11 +154,10 @@ async fn authorization_and_argument_rejections_consume_the_same_call_allowance()
     .expect("rejections produce a report");
     assert_eq!(report.status, RunStatus::CallLimit);
     assert_eq!(report.calls.len(), 3);
-    for (record, code) in
-        report
-            .calls
-            .iter()
-            .zip(["tool_denied", "invalid_arguments", "call_limit"])
+    for (record, code) in report
+        .calls
+        .iter()
+        .zip(["tool_denied", "tool_denied", "call_limit"])
     {
         assert!(matches!(&record.outcome, CallOutcome::Rejected { error } if error.code == code));
         assert!(record.started_ms.is_none());

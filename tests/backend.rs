@@ -1,25 +1,17 @@
-//! Explicit program backend selection through the library, CLI, and bridge.
-
-use std::io::Write;
-use std::process::{Command, Stdio};
+//! Explicit program backend selection through the library and the bridge.
 
 #[cfg(not(feature = "embedded-v8"))]
 #[test]
 fn selecting_embedded_without_the_build_feature_explains_the_requirement() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_codemode"))
-        .args(["run", "--code", "-", "--backend", "embedded-v8"])
-        .stdin(Stdio::piped())
+    use std::process::{Command, Stdio};
+
+    let output = Command::new(env!("CARGO_BIN_EXE_codemode"))
+        .args(["bridge", "--backend", "embedded-v8"])
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("CLI starts");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(b"return 42;")
-        .expect("source");
-    let output = child.wait_with_output().expect("CLI exits");
+        .output()
+        .expect("CLI runs");
     assert_eq!(output.status.code(), Some(2));
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("embedded-v8 build feature"),
@@ -27,15 +19,15 @@ fn selecting_embedded_without_the_build_feature_explains_the_requirement() {
     );
 }
 
-#[cfg(feature = "embedded-v8")]
+#[cfg(all(feature = "embedded-v8", feature = "testkit"))]
 mod enabled {
-    use super::*;
     use codemode::{
         CallOutcome, ExecutionBackend, GuestBackend, MockProvider, PreparedGuest, RunCancellation,
         RunConfig, RunStatus, run, run_prepared,
     };
     use serde_json::{Value, json};
-    use std::io::{BufRead, BufReader};
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
     fn config() -> RunConfig {
@@ -44,7 +36,7 @@ mod enabled {
             backend: GuestBackend::EmbeddedV8 {
                 executable: env!("CARGO_BIN_EXE_codemode").into(),
             },
-            ..RunConfig::default()
+            ..MockProvider::config()
         }
     }
 
@@ -248,27 +240,7 @@ mod enabled {
     }
 
     #[test]
-    fn cli_and_bridge_select_embedded_with_an_empty_environment() {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_codemode"))
-            .args(["run", "--code", "-", "--backend", "embedded-v8"])
-            .env_clear()
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("CLI starts");
-        child
-            .stdin
-            .take()
-            .expect("stdin")
-            .write_all(b"const n: number = 42; return n;")
-            .expect("source");
-        let output = child.wait_with_output().expect("CLI exits");
-        assert!(output.status.success(), "{output:?}");
-        let report: Value = serde_json::from_slice(&output.stdout).expect("report");
-        assert_eq!(report["output"], 42);
-        assert_eq!(report["backend"], "embedded_v8");
-
+    fn bridge_selects_embedded_with_an_empty_environment() {
         let mut bridge = Command::new(env!("CARGO_BIN_EXE_codemode"))
             .args(["bridge", "--backend", "embedded-v8"])
             .env_clear()

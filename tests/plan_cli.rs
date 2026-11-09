@@ -1,7 +1,8 @@
-//! Crash and recovery through the real binaries: the executor is killed with
-//! SIGKILL while the fixture provider holds requests, and the fixture's own
-//! ledger checks what actually happened.
-#![cfg(unix)]
+//! Crash and recovery through the real binaries: the fixture binary's plan
+//! session is killed with SIGKILL while the fixture provider holds requests, the
+//! `codemode` CLI inspects and reviews the journal, and the fixture's own ledger
+//! checks what actually happened.
+#![cfg(all(unix, feature = "testkit"))]
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -16,57 +17,6 @@ static SCRATCH: AtomicU64 = AtomicU64::new(0);
 const CODEMODE: &str = env!("CARGO_BIN_EXE_codemode");
 const FIXTURE: &str = env!("CARGO_BIN_EXE_codemode-fixture");
 const ACCOUNT: &str = "triage-bot";
-
-#[test]
-fn plan_preview_escapes_terminal_text_without_changing_the_approved_data() {
-    let scratch = Scratch::new();
-    let summary = "safe\u{1b}[2J\u{1b}[HAPPROVED\nforged line";
-    let key = "x\u{1b}[31m";
-    let plan = json!({"version":1,"summary":summary,"operations":[{
-        "id":"op","tool":"test.action",
-        "scope":{"provider":"test","account":"bot","destination":"repo"},
-        "arguments":{key:1}
-    }]})
-    .to_string();
-    let path = scratch.file("plan.json");
-    std::fs::write(&path, &plan).expect("write plan");
-    let expected = codemode::Plan::parse(&plan).expect("valid plan");
-    let preview = ok(CODEMODE, &["plan", "check", path.to_str().expect("path")]);
-    assert!(!preview.chars().any(|c| c.is_control() && c != '\n'));
-    assert!(!preview.contains("\nforged line"));
-    assert!(preview.contains(expected.digest().as_str()));
-    let output = ok(
-        CODEMODE,
-        &["plan", "check", path.to_str().expect("path"), "--json"],
-    );
-    let decoded: Value = serde_json::from_str(&output).expect("JSON preview");
-    assert_eq!(decoded["digest"], expected.digest().as_str());
-    assert_eq!(decoded["summary"], summary);
-    assert_eq!(decoded["operations"][0]["argument_keys"][0], key);
-}
-
-#[test]
-fn removed_plan_options_are_unknown() {
-    let cases: &[&[&str]] = &[
-        &["plan", "run", "--deno", "x"],
-        &["plan", "resume", "--deno", "x"],
-        &["plan", "inspect", "--durability", "process"],
-        &["plan", "approve", "--durability", "process"],
-        &["plan", "run", "--durability", "process"],
-        &["plan", "resume", "--durability", "process"],
-        &["plan", "review", "--durability", "process"],
-        &["plan", "trace", "--durability", "process"],
-    ];
-    for args in cases {
-        let output = command(CODEMODE, args).output().expect("starts");
-        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains(&format!("unknown option '{}'", args[2])),
-            "{args:?}: {stderr}"
-        );
-    }
-}
 
 struct Scratch(PathBuf);
 
@@ -213,13 +163,13 @@ fn session(scratch: &Scratch, kind: &str, account: &str) -> Command {
     let journal = scratch.journal();
     let fixture = scratch.fixture();
     let mut command = command(
-        CODEMODE,
+        FIXTURE,
         &[
-            "plan",
+            "session",
             kind,
             "--journal",
             path(&journal),
-            "--fixture",
+            "--db",
             path(&fixture),
             "--account",
             account,

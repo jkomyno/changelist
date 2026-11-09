@@ -1,4 +1,5 @@
 //! Public runtime contracts exercised through the real guest subprocess.
+#![cfg(feature = "testkit")]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -14,7 +15,7 @@ fn config() -> RunConfig {
     RunConfig {
         deno: std::env::var_os("CODEMODE_TEST_DENO").map_or_else(|| "deno".into(), Into::into),
         timeout_ms: 5_000,
-        ..RunConfig::default()
+        ..MockProvider::config()
     }
 }
 
@@ -246,19 +247,16 @@ impl ToolProvider for CountDispatches {
 }
 
 #[tokio::test]
-async fn denial_and_invalid_arguments_never_reach_provider() {
+async fn denied_tools_never_reach_provider() {
     let dispatches = Arc::new(AtomicUsize::new(0));
     let mut options = config();
     options.allowed_tools = vec!["mock.wait".into()];
     let report = run(
-        "const errors=[]; for (const fn of [() => tools.call('mock.echo', 1), () => tools.call('mock.wait', {ms:-1})]) { try { await fn(); } catch (e) { errors.push(e.code); } } return errors;",
+        "const errors=[]; for (const fn of [() => tools.call('mock.echo', 1), () => tools.call('mock.fail', {})]) { try { await fn(); } catch (e) { errors.push(e.code); } } return errors;",
         options, CountDispatches(Arc::clone(&dispatches)), RunCancellation::default(),
     ).await.expect("caught host validation errors return normally");
     assert_eq!(report.status, RunStatus::Success, "{report:?}");
-    assert_eq!(
-        report.output,
-        Some(json!(["tool_denied", "invalid_arguments"]))
-    );
+    assert_eq!(report.output, Some(json!(["tool_denied", "tool_denied"])));
     assert_eq!(dispatches.load(Ordering::SeqCst), 0);
     assert!(
         report

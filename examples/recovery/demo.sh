@@ -5,12 +5,14 @@
 #   mise run recovery-demo            # or: examples/recovery/demo.sh [DIR]
 #
 # The "remote" is codemode-fixture, an offline issue tracker in its own SQLite
-# file with a ledger of every request and effect. No account or network is used.
+# file with a ledger of every request and effect. It also hosts the plan
+# session in its own process (codemode-fixture session), which this demo kills.
+# codemode inspects and reviews the journal. No account or network is used.
 set -eu
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$root"
-mise exec -- cargo build --quiet --release --locked --bin codemode --bin codemode-fixture
+mise exec -- cargo build --quiet --release --locked --features testkit --bin codemode --bin codemode-fixture
 codemode="$root/target/release/codemode"
 fixture="$root/target/release/codemode-fixture"
 work=${1:-$(mktemp -d "${TMPDIR:-/tmp}/codemode-recovery.XXXXXX")}
@@ -43,8 +45,8 @@ step "3. Execute four at a time; some responses will be lost, then the executor 
 "$fixture" fault --db "$db" --tool issues.remove_label --issue 107 --mode lose-response
 "$fixture" fault --db "$db" --tool issues.add_comment --issue 105 --mode lose-response
 "$fixture" fault --db "$db" --tool issues.add_label --issue 109 --mode hold
-printf '$ codemode plan run --journal $WORK/journal.db --fixture $WORK/fixture.db --account triage-bot &\n'
-"$codemode" plan run --journal "$journal" --fixture "$db" --account triage-bot \
+printf '$ codemode-fixture session run --journal $WORK/journal.db --db $WORK/fixture.db --account triage-bot &\n'
+"$fixture" session run --journal "$journal" --db "$db" --account triage-bot \
   > "$work/run.json" 2>&1 &
 pid=$!
 tries=0
@@ -67,8 +69,8 @@ show "$codemode" plan inspect --journal "$journal"
 
 step "5. Restart: reconcile what may have happened, then continue only what is safe"
 status=0
-printf '$ codemode plan resume --journal $WORK/journal.db --fixture $WORK/fixture.db --account triage-bot\n'
-"$codemode" plan resume --journal "$journal" --fixture "$db" --account triage-bot \
+printf '$ codemode-fixture session resume --journal $WORK/journal.db --db $WORK/fixture.db --account triage-bot\n'
+"$fixture" session resume --journal "$journal" --db "$db" --account triage-bot \
   > "$work/resume.json" || status=$?
 printf 'resume exited %s (3: a person must review something)\n' "$status"
 show "$codemode" plan inspect --journal "$journal"
@@ -81,8 +83,8 @@ printf '$ codemode-fixture state --db $WORK/fixture.db\n'
 "$fixture" state --db "$db" | sed -n '/^#105/,/^#106/p' | sed '$d'
 show "$codemode" plan review --journal "$journal" --operation comment-105 --as applied \
   --reviewer demo --note "comment present once on issue 105"
-printf '$ codemode plan resume --journal $WORK/journal.db --fixture $WORK/fixture.db --account triage-bot\n'
-"$codemode" plan resume --journal "$journal" --fixture "$db" --account triage-bot \
+printf '$ codemode-fixture session resume --journal $WORK/journal.db --db $WORK/fixture.db --account triage-bot\n'
+"$fixture" session resume --journal "$journal" --db "$db" --account triage-bot \
   > "$work/final.json"
 show "$codemode" plan inspect --journal "$journal"
 printf '\nFiles are in %s; the dispatch trace of a session: codemode plan trace --journal %s --session 2\n' \

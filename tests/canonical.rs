@@ -67,9 +67,10 @@ fn reserved_json_marker_keys_remain_literal_plan_data() {
     );
 }
 
+#[cfg(feature = "testkit")]
 #[tokio::test]
 async fn literal_marker_objects_survive_native_and_program_protocols() {
-    use codemode::{MockProvider, NativeCall, RunCancellation, RunConfig, RunStatus};
+    use codemode::{MockProvider, NativeCall, RunCancellation, RunStatus};
     let expected = serde_json::json!({"$serde_json::private::RawValue":"not JSON"});
     assert_eq!(
         codemode::parse_json(r#"{"$serde_json::private::RawValue":"not JSON"}"#)
@@ -83,7 +84,7 @@ async fn literal_marker_objects_survive_native_and_program_protocols() {
     .expect("literal native request");
     let native = codemode::run_calls(
         &[request],
-        RunConfig::default(),
+        MockProvider::config(),
         MockProvider,
         RunCancellation::default(),
     )
@@ -93,13 +94,13 @@ async fn literal_marker_objects_survive_native_and_program_protocols() {
         matches!(&native.calls[0].outcome, codemode::CallOutcome::Succeeded {value} if value == &expected)
     );
 
-    let mut configs = vec![RunConfig::default()];
+    let mut configs = vec![MockProvider::config()];
     #[cfg(feature = "embedded-v8")]
-    configs.push(RunConfig {
+    configs.push(codemode::RunConfig {
         backend: codemode::GuestBackend::EmbeddedV8 {
             executable: env!("CARGO_BIN_EXE_codemode").into(),
         },
-        ..RunConfig::default()
+        ..MockProvider::config()
     });
     for config in configs.drain(..) {
         let report = codemode::run(

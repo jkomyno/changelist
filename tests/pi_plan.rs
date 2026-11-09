@@ -1,7 +1,7 @@
 //! An approved plan run and recovered through a real Pi process, with the offline
 //! fixture as the provider. Needs Pi 1.4.0; ignored by default, run it with
 //! `mise run pi-check`.
-#![cfg(unix)]
+#![cfg(all(unix, feature = "testkit"))]
 
 use std::collections::HashSet;
 use std::fs;

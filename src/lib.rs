@@ -13,13 +13,17 @@
 //! [`serve_plan_bridge`] does the same for an approved plan's session: the host
 //! executes and reconciles operations while Rust keeps the journal.
 //!
-//! [`fixture`] is an offline issue tracker with its own side-effect ledger, for
-//! demos, tests, and baselines of recoverable operations.
+//! Every tool must be authorized by the host: [`RunConfig::default`] authorizes none.
+//!
+//! The non-default `testkit` feature adds `fixture`, an offline issue tracker
+//! with its own side-effect ledger, and `MockProvider`, local deterministic
+//! tools, for tests, demos, and evaluations. Neither is part of the default API.
 
 mod bridge;
 #[cfg(feature = "embedded-v8")]
 mod embedded;
 mod executor;
+#[cfg(feature = "testkit")]
 pub mod fixture;
 mod inspect;
 mod journal;
@@ -62,9 +66,11 @@ pub use recovery::{
     ReconcileMethod, Reconciliation, RecoverableProvider, RecoveryContract, RecoveryPolicy,
     RepeatSafety, Resolution, Retention, UNRECOGNIZED_CODE, Verdict, approval_binding,
 };
+#[cfg(feature = "testkit")]
+pub use runtime::MockProvider;
 pub use runtime::{
     BridgeTotals, ByteTotals, CallContext, CallOutcome, CallRecord, ClockInfo, ExecutionBackend,
-    FactSink, GuestBackend, MockProvider, NativeCall, PreparedGuest, ProviderError, ProviderFact,
+    FactSink, GuestBackend, NativeCall, PreparedGuest, ProviderError, ProviderFact,
     ProviderFactKind, REPORT_SCHEMA_VERSION, RunCancellation, RunConfig, RunError, RunEvent,
     RunLimits, RunReport, RunStatus, ToolCall, ToolProvider, run, run_calls, run_prepared,
 };

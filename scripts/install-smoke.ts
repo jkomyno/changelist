@@ -1,11 +1,10 @@
 // Invoked by install-check.sh with no source checkout or remote dependencies.
-import { runBridge } from "../integrations/shared/bridge-client.ts";
+import { type ProviderDeclaration, runBridge, runPlanBridge } from "../integrations/shared/bridge-client.ts";
 import { codemode } from "../integrations/opencode/codemode-bridge.ts";
 
 const [installation, backend, deno] = Deno.args;
 if (backend !== "deno" && backend !== "embedded-v8") throw new Error("unknown backend");
 const bin = `${installation}/bin/codemode`;
-const fixture = `${installation}/bin/codemode-fixture`;
 const cwd = Deno.cwd();
 function assert(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -51,26 +50,48 @@ assert(JSON.parse(pluginResult.output).output === "installed-opencode", "install
 assert(permissions.length === 1 && permissions[0] === "codemode_echo", "adapter skipped its permission request");
 await command(bin, ["inspect", "opencode-trace.json"]);
 
-// Native plans use the installed fixture and must work without a guest engine.
-await command(fixture, ["init", "--db", "fixture.db", "--repo", "acme/widgets", "--account", "triage-bot", "--issues", "101-101"]);
-await Deno.writeTextFile("provider.json", await command(fixture, ["declare", "--db", "fixture.db", "--account", "triage-bot"]));
+// Native plans run through the installed plan bridge, with this script as the host
+// and provider, and must work without a guest engine.
+const scope = { provider: "smoke.labels", account: "triage-bot", destination: "acme/widgets" };
+const declaration: ProviderDeclaration = {
+  provider: scope.provider, account: scope.account,
+  contracts: { "labels.add": { repeat: "safe", reconcile: "state" } },
+};
+await Deno.writeTextFile("provider.json", JSON.stringify(declaration));
 await Deno.writeTextFile("plan.json", JSON.stringify({
   version: 1, summary: "Installed offline label change", operations: [{
-    id: "label-101", tool: "issues.add_label",
-    scope: { provider: "fixture.issues", account: "triage-bot", destination: "acme/widgets" },
-    arguments: { issue: 101, label: "triage" },
+    id: "label-101", tool: "labels.add", scope, arguments: { issue: 101, label: "triage" },
   }],
 }));
 const checked = JSON.parse(await command(bin, ["plan", "check", "plan.json", "--provider", "provider.json", "--json"]));
 assert(typeof checked.digest === "string", "plan check omitted digest");
 await command(bin, ["plan", "approve", "plan.json", "--journal", "journal.db", "--provider", "provider.json", "--digest", checked.digest, "--approver", "install-smoke"]);
-for (const action of ["run", "resume"]) {
-  await Deno.writeTextFile(`${action}.json`, await command(bin, ["plan", action, "--journal", "journal.db", "--fixture", "fixture.db", "--account", "triage-bot"]));
+// The host's own record of applied effects: every attempt it executed, by attempt key.
+const labels = new Set<string>();
+const effects: string[] = [];
+for (const kind of ["run", "resume"] as const) {
+  const { outcome } = await runPlanBridge({
+    bin, cwd, journal: `${cwd}/journal.db`, kind, declaration,
+    async authorize(requested) {
+      return requested.provider === scope.provider && requested.account === scope.account
+        ? { ok: true }
+        : { ok: false, error: { code: "unauthorized", message: "not this account" } };
+    },
+    async execute(call) {
+      const key = JSON.stringify(call.arguments);
+      labels.add(key);
+      effects.push(call.attempt);
+      return { ok: true, value: { applied: key } };
+    },
+    async reconcile(request) {
+      return { verdict: labels.has(JSON.stringify(request.arguments)) ? "satisfied" : "not_applied", evidence: "labels" };
+    },
+  });
+  assert(outcome.status === "completed", `plan ${kind} did not complete: ${JSON.stringify(outcome)}`);
+  await Deno.writeTextFile(`${kind}.json`, JSON.stringify(outcome));
 }
+assert(effects.length === 1, `resume repeated or lost the effect: ${effects.length} attempts`);
 await Deno.writeTextFile("plan-inspection.txt", await command(bin, ["plan", "inspect", "--journal", "journal.db"]));
-const ledger = JSON.parse(await command(fixture, ["ledger", "--db", "fixture.db", "--json"]));
-assert(Array.isArray(ledger.rows) && ledger.rows.length === 1 && ledger.rows[0].effect === true, "resume repeated or lost the fixture effect");
-await Deno.writeTextFile("ledger.json", JSON.stringify(ledger));
 await Deno.writeTextFile("native-trace.json", await command(bin, ["plan", "trace", "--journal", "journal.db", "--session", "1"]));
 await command(bin, ["inspect", "native-trace.json"]);
 console.log(JSON.stringify({ status: "success", backend, installed: installation, work: cwd }));

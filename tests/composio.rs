@@ -1,4 +1,5 @@
-//! Offline checks of the optional Composio host adapter. They run the adapter
+//! Offline checks of the optional Composio host adapter. They run the production
+//! host through its test-only entry (`integrations/composio/testing/offline-host.ts`)
 //! under Deno with recorded fake Composio results; no account or network is used.
 //! The live, read-only check is `mise run composio-live-check`.
 
@@ -46,8 +47,8 @@ fn host(program: &str, trace: &Path) -> Command {
             "--allow-write",
             "--allow-env",
         ])
-        .arg("integrations/composio/host.ts")
-        .args(["--offline", "--program", program, "--tools", TOOLS])
+        .arg("integrations/composio/testing/offline-host.ts")
+        .args(["--program", program, "--tools", TOOLS])
         .args(["--bin", env!("CARGO_BIN_EXE_codemode")])
         .arg("--deno")
         .arg(deno())

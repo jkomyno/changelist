@@ -1,5 +1,6 @@
 //! The offline recovery evaluation runs end to end: a real killed run, three
 //! recovery strategies, and the no-fault overhead comparison.
+#![cfg(feature = "testkit")]
 
 use std::process::Command;
 
@@ -23,7 +24,7 @@ fn recovery_evaluation_checks_every_strategy_and_mode() {
             "0",
         ])
         .arg("--bin")
-        .arg(env!("CARGO_BIN_EXE_codemode"))
+        .arg(env!("CARGO_BIN_EXE_codemode-fixture"))
         .arg("--out")
         .arg(&results)
         .output()

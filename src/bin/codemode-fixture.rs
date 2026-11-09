@@ -2,7 +2,8 @@
 //!
 //! The logic lives in [`codemode::fixture`]; this binary parses flags, calls it,
 //! and prints results. `call` and `reconcile` let a host in another language use
-//! the fixture as a separate process.
+//! the fixture as a separate process. `session` hosts one plan session in this
+//! process with the fixture as provider, so tests and evaluations can kill it.
 
 use std::env;
 use std::process::ExitCode;
@@ -12,7 +13,10 @@ use codemode::fixture::{
     FIXTURE_PROVIDER, FaultMode, Fixture, FixtureError, FixtureProvider, LabelEdit, Ledger, Seed,
     State,
 };
-use codemode::{Attempt, Operation, ProbeContext, RecoverableProvider, RunCancellation, Scope};
+use codemode::{
+    Attempt, Durability, Journal, Operation, ProbeContext, RecoverableProvider, RunCancellation,
+    Scope, SessionError, SessionKind, SessionOptions, SessionOutcome, run_session,
+};
 use serde_json::{Value, json};
 use tokio::time::Instant;
 
@@ -34,6 +38,7 @@ Usage:
   codemode-fixture authorize --db PATH --account NAME --scope JSON
   codemode-fixture reconcile --db PATH --account NAME --tool TOOL --arguments JSON --keys K1,K2
                              [--scope JSON]
+  codemode-fixture session run|resume --journal PATH --db PATH --account NAME
 
 Tools: issues.add_label {issue, label}, issues.remove_label {issue, label},
 issues.add_comment {issue, body}. Precondition: {\"issue_state\": \"open\"|\"closed\"}.
@@ -47,13 +52,21 @@ not this account and repository (permission_denied), and reconcile one (unauthor
 {\"ok\":true} or {\"ok\":false,\"error\":{...}}. reconcile prints {\"verdict\",\"evidence\"}
 or {\"error\":{...}}.
 
+session runs or resumes the approved plan in a journal (see `codemode plan`) in
+this process, with the fixture acting as the account, and prints the session
+outcome as one JSON line.
+
 Exit status: 0 success; 1 a tool error or refusal from call, authorize, or reconcile;
-2 a usage or storage error (message on stderr).
+2 a usage, storage, or journal error (message on stderr). session exits as
+`codemode plan run` does: 0 completed, 3 work remains, 4 refused, 124 deadline,
+130 cancelled.
 ";
 
 enum Failure {
     Usage(String),
     Fixture(FixtureError),
+    /// A journal or session error.
+    Session(String),
     /// The JSON line was already printed.
     Tool,
 }
@@ -191,8 +204,9 @@ fn context() -> ProbeContext {
     }
 }
 
-async fn run(command: &str, args: &[String]) -> Result<(), Failure> {
+async fn run(command: &str, args: &[String]) -> Result<u8, Failure> {
     match command {
+        "session" => return session(args).await,
         "init" => {
             let flags = Flags::parse(
                 args,
@@ -402,7 +416,71 @@ async fn run(command: &str, args: &[String]) -> Result<(), Failure> {
             )));
         }
     }
-    Ok(())
+    Ok(0)
+}
+
+/// Run or resume a journal's approved plan with the fixture as provider.
+async fn session(args: &[String]) -> Result<u8, Failure> {
+    let (kind, rest) = match args.split_first() {
+        Some((kind, rest)) if kind == "run" => (SessionKind::Run, rest),
+        Some((kind, rest)) if kind == "resume" => (SessionKind::Resume, rest),
+        _ => return Err(usage("session takes run or resume")),
+    };
+    let flags = Flags::parse(rest, &["journal", "db", "account"], false)?;
+    let journal = Journal::open(flags.required("journal")?, Durability::Storage)
+        .map_err(|error| Failure::Session(error.to_string()))?;
+    let provider = FixtureProvider::open(flags.required("db")?, flags.required("account")?)?;
+    let cancellation = RunCancellation::default();
+    let signal_task = cancel_on_interrupt(&cancellation);
+    let result = run_session(journal, provider, SessionOptions { kind }, cancellation).await;
+    signal_task.abort();
+    match result {
+        Ok(outcome) => {
+            print_json(&outcome);
+            Ok(exit_code(&outcome))
+        }
+        Err(SessionError::Refused { session, reason }) => {
+            print_json(&json!({"session": session, "status": "refused", "detail": reason}));
+            eprintln!("codemode-fixture: session {session} refused: {reason}");
+            Ok(4)
+        }
+        Err(error) => Err(Failure::Session(error.to_string())),
+    }
+}
+
+/// The exit status of `codemode plan run|resume` for the same outcome.
+fn exit_code(outcome: &SessionOutcome) -> u8 {
+    match outcome.status.as_str() {
+        "completed" => 0,
+        "interrupted" => match outcome.trace.as_ref().map(|trace| trace.status) {
+            Some(status) => status.exit_code().max(1),
+            None => 130,
+        },
+        _ => 3,
+    }
+}
+
+/// Cancel the session on Ctrl-C or SIGTERM, as `codemode plan run` does.
+fn cancel_on_interrupt(cancellation: &RunCancellation) -> tokio::task::JoinHandle<()> {
+    let signal = cancellation.clone();
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        let terminate = async {
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut stream) => {
+                    stream.recv().await;
+                }
+                Err(_) => std::future::pending().await,
+            }
+        };
+        #[cfg(not(unix))]
+        let terminate = std::future::pending::<()>();
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => if result.is_err() { return; },
+            () = terminate => {}
+        }
+        signal.cancel();
+    })
 }
 
 /// The last characters of an attempt key, which hold its operation and number.
@@ -486,7 +564,7 @@ fn print_state(state: &State) {
     }
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() -> ExitCode {
     let args: Vec<String> = match env::args_os()
         .skip(1)
@@ -508,7 +586,7 @@ async fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     match run(command, rest).await {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => ExitCode::from(code),
         Err(Failure::Tool) => ExitCode::from(1),
         Err(Failure::Usage(message)) => {
             eprintln!("codemode-fixture: {message}");
@@ -516,6 +594,10 @@ async fn main() -> ExitCode {
         }
         Err(Failure::Fixture(error)) => {
             eprintln!("codemode-fixture: {error}");
+            ExitCode::from(2)
+        }
+        Err(Failure::Session(message)) => {
+            eprintln!("codemode-fixture: {message}");
             ExitCode::from(2)
         }
     }

@@ -16,4 +16,4 @@ work=$(CDPATH='' cd -- "$work" && pwd -P)
 cd "$work"
 "$deno" run --no-config --allow-run --allow-read --allow-write --allow-env \
   "$installation/scripts/install-smoke.ts" "$installation" "$backend" "$deno"
-printf 'Installed workflow passed; trace, journal, and fixture evidence: %s\n' "$work"
+printf 'Installed workflow passed; trace, journal, and plan evidence: %s\n' "$work"
