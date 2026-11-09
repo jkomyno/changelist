@@ -205,11 +205,15 @@ fn terminating_the_process_group_leaves_an_unabortable_composio_call_unknown() {
         .recv_timeout(Duration::from_secs(30))
         .expect("the call starts");
     let started = Instant::now();
-    let status = Command::new("kill")
-        .args(["-TERM", &format!("-{}", child.id())])
-        .status()
+    let signal = Command::new("kill")
+        .args(["-TERM", "--", &format!("-{}", child.id())])
+        .output()
         .expect("kill runs");
-    assert!(status.success());
+    assert!(
+        signal.status.success(),
+        "group signal failed: {}",
+        String::from_utf8_lossy(&signal.stderr)
+    );
     let output = child.wait_with_output().expect("host exits");
     let _ = std::fs::remove_file(&program);
     assert!(
