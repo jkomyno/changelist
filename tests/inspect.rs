@@ -342,3 +342,81 @@ fn an_omitted_provider_error_is_not_reported_as_a_run_tool() {
     );
     assert_eq!(inspection.calls.rows[0].evidence, Evidence::ErrorOmitted);
 }
+
+#[tokio::test]
+async fn native_inspection_has_exclusive_host_phases_and_roundtrips_without_guest_evidence() {
+    let calls = [20, 20].map(|ms| codemode::NativeCall {
+        tool: "mock.wait".into(),
+        arguments: json!({"ms": ms}),
+    });
+    let report = codemode::run_calls(
+        &calls,
+        RunConfig {
+            max_concurrency: 1,
+            deno: "/nonexistent/native-inspect-deno".into(),
+            ..config()
+        },
+        MockProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("native run completes");
+    let saved = serde_json::to_value(&report).expect("native report serializes");
+    assert_eq!(saved["schema_version"], 3);
+    assert_eq!(saved["backend"], "native");
+    assert!(saved.get("output").is_none());
+    assert!(
+        saved["calls"]
+            .as_array()
+            .expect("calls array")
+            .iter()
+            .all(|call| call.get("guest_id").is_none())
+    );
+    let restored: RunReport = serde_json::from_value(saved).expect("native report deserializes");
+    let inspection = inspect(&restored, &InspectOptions::default());
+    assert_eq!(inspection.backend, codemode::ExecutionBackend::Native);
+    assert_eq!(
+        inspection
+            .timing
+            .phases
+            .iter()
+            .map(|phase| phase.ms)
+            .sum::<u64>(),
+        report.elapsed_ms
+    );
+    assert!(phase(&report, "queued_at_cap") > 0);
+    assert!(
+        inspection
+            .timing
+            .phases
+            .iter()
+            .all(|phase| !phase.meaning.contains("guest")
+                && phase.name != "startup"
+                && phase.name != "draining")
+    );
+    let text = inspection.render(Sections::ALL);
+    assert!(text.contains("backend native"), "{text}");
+    let output = codemode(
+        &["inspect", "-", "--json"],
+        Some(&serde_json::to_string(&restored).expect("report serializes")),
+    );
+    assert!(output.status.success(), "{output:?}");
+    let inspected: Value = serde_json::from_slice(&output.stdout).expect("inspection JSON");
+    assert_eq!(inspected["backend"], "native");
+}
+
+#[test]
+fn schema_two_defaults_to_deno_and_preserves_numeric_guest_tokens() {
+    let report = evidence_report();
+    assert_eq!(report.backend, codemode::ExecutionBackend::Deno);
+    assert_eq!(report.calls[0].guest_id, Some(0));
+    let saved = serde_json::to_value(&report).expect("historical report serializes");
+    assert_eq!(saved["calls"][0]["guest_id"], 0);
+    assert!(
+        inspect(&report, &InspectOptions::default())
+            .timing
+            .phases
+            .iter()
+            .any(|phase| phase.name == "guest")
+    );
+}

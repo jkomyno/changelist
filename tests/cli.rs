@@ -36,7 +36,7 @@ fn stdin_execution_returns_one_json_record_and_a_failure_exit_status() {
     );
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let report: Value = serde_json::from_slice(&output.stdout).expect("stdout is one JSON object");
-    assert_eq!(report["schema_version"], 2);
+    assert_eq!(report["schema_version"], 3);
     assert_eq!(report["status"], "guest_error");
     assert!(report.get("output").is_none());
     assert_eq!(report["calls"].as_array().expect("call records").len(), 2);

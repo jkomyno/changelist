@@ -1,4 +1,4 @@
-//! Execute bounded TypeScript programs with host-authorized tool calls.
+//! Execute bounded TypeScript programs or finite host-owned tool calls.
 //!
 //! The Deno subprocess receives no host environment and denies guest filesystem,
 //! network, environment, and process permissions. Its stdout is untrusted protocol
@@ -6,6 +6,7 @@
 //! limits, and the resulting trace.
 //! Built-in and inline data modules and raw child stdio remain accessible.
 //!
+//! [`run_calls`] submits finite host-owned requests without a guest process.
 //! [`run`] takes any [`ToolProvider`]. [`serve_bridge`] supplies one whose calls
 //! are executed by a parent host, such as an agent extension, over a versioned
 //! stdio protocol; the host keeps its permissions, approvals, and credentials.
@@ -58,7 +59,8 @@ pub use recovery::{
 };
 pub use runtime::{
     BridgeTotals, ByteTotals, CallContext, CallOutcome, CallRecord, ClockInfo, DispatchPolicy,
-    FactSink, MockProvider, PreparedGuest, ProviderError, ProviderFact, ProviderFactKind,
-    REPORT_SCHEMA_VERSION, RunCancellation, RunConfig, RunError, RunEvent, RunLimits, RunReport,
-    RunStatus, ToolCall, ToolProvider, run, run_prepared,
+    ExecutionBackend, FactSink, MockProvider, NativeCall, PreparedGuest, ProviderError,
+    ProviderFact, ProviderFactKind, REPORT_SCHEMA_VERSION, RunCancellation, RunConfig, RunError,
+    RunEvent, RunLimits, RunReport, RunStatus, ToolCall, ToolProvider, run, run_calls,
+    run_prepared,
 };

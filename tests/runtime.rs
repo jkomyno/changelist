@@ -394,7 +394,7 @@ async fn duplicate_guest_tokens_cannot_reuse_host_identity() {
     assert_eq!(report.status, RunStatus::ProtocolError, "{report:?}");
     assert_eq!(report.calls.len(), 1);
     assert_eq!(report.calls[0].call.id, 1);
-    assert_eq!(report.calls[0].guest_id, 44);
+    assert_eq!(report.calls[0].guest_id, Some(44));
 }
 
 #[tokio::test]
@@ -595,7 +595,7 @@ async fn trace_separates_admission_dispatch_result_and_delivery_with_byte_accoun
     .await
     .expect("run completes");
     assert_eq!(report.status, RunStatus::Success, "{report:?}");
-    assert_eq!(report.schema_version, 2);
+    assert_eq!(report.schema_version, 3);
     for record in &report.calls {
         let admitted = record.admitted_ms.expect("admitted");
         let started = record.started_ms.expect("dispatched");

@@ -24,7 +24,7 @@ pub(crate) const FRAME_BYTES: usize = 64 * 1024;
 /// Largest reply frame to the guest, including its LF; the launcher accepts up to 1 MiB.
 pub(crate) const REPLY_FRAME_BYTES: usize = 1024 * 1024;
 /// Version of the serialized [`RunReport`] format written by this build.
-pub const REPORT_SCHEMA_VERSION: u32 = 2;
+pub const REPORT_SCHEMA_VERSION: u32 = 3;
 /// Provider facts kept per call; later facts for that call are counted as dropped.
 const MAX_FACTS_PER_CALL: usize = 8;
 /// Provider facts buffered between the provider and the run loop.
@@ -44,6 +44,7 @@ pub struct RunConfig {
     /// Maximum provider futures executing simultaneously.
     pub max_concurrency: usize,
     /// Cumulative serialized response and final-output bytes, not a process memory limit.
+    /// Guest responses include their protocol envelopes; native results do not.
     pub max_output_bytes: usize,
     /// Deno executable; use an absolute path when executable selection must be fixed.
     pub deno: PathBuf,
@@ -134,6 +135,32 @@ impl RunCancellation {
             }
         }
     }
+}
+
+/// A finite host-owned request, without guest correlation or transport metadata.
+///
+/// [`run_calls`] borrows requests and applies the run's allowance before copying
+/// them. Each serialized request must fit in 64 KiB, including its tool name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NativeCall {
+    /// Tool name to check against the host's allowance.
+    pub tool: String,
+    /// JSON arguments, validated before provider dispatch.
+    pub arguments: Value,
+}
+
+/// The execution source whose work and lifecycle the report records.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ExecutionBackend {
+    /// Host-owned finite calls, with no JavaScript guest.
+    Native,
+    /// A restricted Deno subprocess; also the default for historical reports.
+    #[default]
+    Deno,
+    /// A restricted subprocess embedding V8.
+    EmbeddedV8,
 }
 
 /// Host identity and validated input passed to a provider.
@@ -310,13 +337,13 @@ impl ToolProvider for MockProvider {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
-    /// The guest returned output and all dispatched calls were observed.
+    /// The input completed and all dispatched calls were observed.
     Success,
     /// Guest execution failed.
     GuestError,
     /// A dispatched provider task terminated without returning a result.
     ProviderTaskError,
-    /// Guest attempted more calls than allowed; the first excess call is recorded
+    /// Input attempted more calls than allowed; the first excess call is recorded
     /// as rejected with code `call_limit`.
     CallLimit,
     /// Serialized responses or final output exceeded the byte budget.
@@ -402,7 +429,8 @@ pub struct CallRecord {
     /// Validated request and trusted identity.
     pub call: ToolCall,
     /// Untrusted correlation token used only for guest replies.
-    pub guest_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest_id: Option<u64>,
     /// Observed result or precise reason no result is known.
     pub outcome: CallOutcome,
     /// Admission time; absent in schema version 1 reports.
@@ -416,7 +444,7 @@ pub struct CallRecord {
     /// may not have read it; absent when no reply was delivered.
     #[serde(default)]
     pub delivered_ms: Option<u64>,
-    /// Serialized size of the guest-supplied arguments.
+    /// Serialized size of the submitted arguments.
     #[serde(default)]
     pub argument_bytes: u64,
     /// Serialized size of the observed value or error, including omitted ones.
@@ -446,7 +474,7 @@ pub struct RunEvent {
 /// Which clock stamped the report's Rust times.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClockInfo {
-    /// What zero means: `run_start`, taken before the guest process is spawned.
+    /// What zero means: `run_start`, before submission or guest process startup.
     pub origin: String,
     /// The clock: `rust_monotonic`, the host's monotonic clock read by Rust.
     pub source: String,
@@ -485,7 +513,10 @@ pub struct ByteTotals {
 pub struct RunReport {
     /// Version of this serialized report format.
     pub schema_version: u32,
-    /// Exact executed TypeScript source.
+    /// Execution source; absent historical fields deserialize as Deno.
+    #[serde(default)]
+    pub backend: ExecutionBackend,
+    /// Exact executed TypeScript source; empty for native execution.
     pub code: String,
     /// Host-selected terminal status.
     pub status: RunStatus,
@@ -532,10 +563,10 @@ pub struct BridgeTotals {
     pub to_host: u64,
 }
 
-/// Failure to configure, launch, or communicate with the child process.
+/// Failure to configure execution, launch a guest, or communicate with it.
 #[derive(Debug)]
 pub enum RunError {
-    /// Invalid host limits or oversized source.
+    /// Invalid host limits, oversized source, or an oversized native request.
     Config(String),
     /// Launcher creation, process spawning, or pipe I/O failed.
     Io(io::Error),
@@ -962,7 +993,18 @@ pub async fn run(
     // The deadline includes guest startup.
     let start = Instant::now();
     let guest = PreparedGuest::start(&config.deno)?;
-    execute(guest, start, initial, code, config, provider, cancellation).await
+    execute(
+        ExecutionInput::Guest {
+            guest: Box::new(guest),
+            initial,
+            code,
+        },
+        start,
+        config,
+        provider,
+        cancellation,
+    )
+    .await
 }
 
 /// Execute TypeScript in a guest started earlier with [`PreparedGuest::start`].
@@ -982,10 +1024,12 @@ pub async fn run_prepared(
 ) -> Result<RunReport, RunError> {
     let initial = validate(code, &config)?;
     execute(
-        guest,
+        ExecutionInput::Guest {
+            guest: Box::new(guest),
+            initial,
+            code,
+        },
         Instant::now(),
-        initial,
-        code,
         config,
         provider,
         cancellation,
@@ -993,13 +1037,19 @@ pub async fn run_prepared(
     .await
 }
 
-/// Check limits and source size, returning the initial guest frame.
-fn validate(code: &str, config: &RunConfig) -> Result<Vec<u8>, RunError> {
+/// Check limits shared by native and program execution.
+fn validate_limits(config: &RunConfig) -> Result<(), RunError> {
     if config.timeout_ms == 0 || config.max_concurrency == 0 || config.max_output_bytes == 0 {
         return Err(RunError::Config(
             "timeout, concurrency, and output budget must be positive".into(),
         ));
     }
+    Ok(())
+}
+
+/// Check limits and source size, returning the initial guest frame.
+fn validate(code: &str, config: &RunConfig) -> Result<Vec<u8>, RunError> {
+    validate_limits(config)?;
     if code.len() > FRAME_BYTES {
         return Err(RunError::Config(
             "source exceeds the 64 KiB frame limit".into(),
@@ -1015,20 +1065,110 @@ fn validate(code: &str, config: &RunConfig) -> Result<Vec<u8>, RunError> {
     Ok(initial)
 }
 
-async fn execute(
-    guest: PreparedGuest,
-    start: Instant,
-    initial: Vec<u8>,
-    code: &str,
+/// Execute finite host-owned requests through the program runtime's controls.
+///
+/// Deno is never resolved or started. Input exhaustion waits for queued and
+/// running calls; successful runs have no final output value. Authorization,
+/// dispatch policy, deadlines, cancellation, provider facts, and cumulative
+/// serialized-result limits match program execution. Results are budgeted as
+/// JSON values or errors, without a guest reply envelope.
+///
+/// Requests are borrowed, with at most `max_calls + 1` copied into the report.
+/// Each request must serialize within 64 KiB. Requests after the first excess
+/// call are neither inspected nor admitted.
+///
+/// # Examples
+///
+/// ```
+/// use codemode::{NativeCall, MockProvider, RunCancellation, RunConfig, run_calls};
+/// # async fn example() -> Result<(), codemode::RunError> {
+/// let requests = [NativeCall { tool: "mock.echo".into(), arguments: serde_json::json!(42) }];
+/// let report = run_calls(&requests, RunConfig::default(), MockProvider,
+///                        RunCancellation::default()).await?;
+/// assert!(report.status.is_success());
+/// assert!(report.output.is_none());
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Errors
+/// Returns [`RunError::Config`] for invalid limits or oversized admitted input.
+/// Provider failures, cancellation, and exceeded execution budgets return a report.
+pub async fn run_calls(
+    calls: &[NativeCall],
     config: RunConfig,
     provider: impl ToolProvider,
     cancellation: RunCancellation,
 ) -> Result<RunReport, RunError> {
+    validate_limits(&config)?;
+    for call in calls.iter().take(config.max_calls.saturating_add(1)) {
+        if bounded_json(call, FRAME_BYTES).is_none() {
+            return Err(RunError::Config(
+                "native request exceeds the 64 KiB limit".into(),
+            ));
+        }
+    }
+    execute(
+        ExecutionInput::Native(calls),
+        Instant::now(),
+        config,
+        provider,
+        cancellation,
+    )
+    .await
+}
+
+enum ExecutionInput<'a> {
+    Guest {
+        guest: Box<PreparedGuest>,
+        initial: Vec<u8>,
+        code: &'a str,
+    },
+    Native(&'a [NativeCall]),
+}
+
+/// Input events without transport-specific identities for host-owned requests.
+enum Submission {
+    Call {
+        guest_id: Option<u64>,
+        tool: String,
+        arguments: Value,
+    },
+    Output(Value),
+    Error(String),
+    InvalidFrame,
+    Exhausted,
+}
+
+async fn execute(
+    source: ExecutionInput<'_>,
+    start: Instant,
+    config: RunConfig,
+    provider: impl ToolProvider,
+    cancellation: RunCancellation,
+) -> Result<RunReport, RunError> {
+    let (guest, initial, code, native_calls, backend) = match source {
+        ExecutionInput::Guest {
+            guest,
+            initial,
+            code,
+        } => (
+            Some(guest),
+            Some(initial),
+            code,
+            &[][..],
+            ExecutionBackend::Deno,
+        ),
+        ExecutionInput::Native(calls) => (None, None, "", calls, ExecutionBackend::Native),
+    };
+    let native = backend == ExecutionBackend::Native;
+    let mut native_calls = native_calls.iter();
     let deadline = start
         .checked_add(Duration::from_millis(config.timeout_ms))
         .ok_or_else(|| RunError::Config("timeout is too large".into()))?;
     let mut report = RunReport {
         schema_version: REPORT_SCHEMA_VERSION,
+        backend,
         code: code.into(),
         status: RunStatus::Success,
         limits: RunLimits {
@@ -1050,19 +1190,24 @@ async fn execute(
         bridge: None,
         diagnostic: None,
     };
-    let PreparedGuest {
-        launcher: _launcher,
-        mut child,
-        mut input,
-        mut output,
-        spawned,
-    } = guest;
-    if spawned < start {
-        let waited = start.duration_since(spawned).as_millis();
-        report.prewarmed_ms = Some(u64::try_from(waited).unwrap_or(u64::MAX));
+    let (mut child, mut input, mut output, _launcher) = if let Some(guest) = guest {
+        let PreparedGuest {
+            launcher,
+            child,
+            input,
+            output,
+            spawned,
+        } = *guest;
+        if spawned < start {
+            let waited = start.duration_since(spawned).as_millis();
+            report.prewarmed_ms = Some(u64::try_from(waited).unwrap_or(u64::MAX));
+        } else {
+            event(&mut report, start, None, "guest_spawned");
+        }
+        (Some(child), Some(input), Some(output), Some(launcher))
     } else {
-        event(&mut report, start, None, "guest_spawned");
-    }
+        (None, None, None, None)
+    };
     let provider = Arc::new(provider);
     let (facts, mut fact_receiver) = FactSink::new();
     let mut fact_counts = HashMap::new();
@@ -1075,10 +1220,12 @@ async fn execute(
     let mut task_calls = HashMap::new();
     let mut queue: VecDeque<usize> = VecDeque::new();
     let mut guest_ids = HashSet::new();
-    let mut responses: VecDeque<(Option<usize>, Vec<u8>)> = VecDeque::from([(None, initial)]);
+    let mut responses: VecDeque<(Option<usize>, Vec<u8>)> =
+        initial.into_iter().map(|bytes| (None, bytes)).collect();
     let mut write_offset = 0;
     let mut response_bytes = 0usize;
     let mut guest_done = false;
+    let mut source_exhausted = false;
     let mut input_closed = false;
     let mut partial_frame = Vec::new();
     let mut io_failure = None;
@@ -1112,8 +1259,13 @@ async fn execute(
             DispatchPolicy::Rolling => true,
             DispatchPolicy::Batch => {
                 running.is_empty()
-                    && (guest_done
-                        || !frame_ready(&mut output, &mut partial_frame, FRAME_BYTES).await)
+                    && (source_exhausted
+                        || guest_done
+                        || if let Some(output) = &mut output {
+                            !frame_ready(output, &mut partial_frame, FRAME_BYTES).await
+                        } else {
+                            false
+                        })
             }
         };
         while slots_open && !guest_done && running.len() < config.max_concurrency {
@@ -1134,7 +1286,7 @@ async fn execute(
             let task = running.spawn(async move { (index, provider.execute(call, context).await) });
             task_calls.insert(task.id(), index);
         }
-        if guest_done && running.is_empty() && queue.is_empty() {
+        if (guest_done || source_exhausted) && running.is_empty() && queue.is_empty() {
             break;
         }
         if let Some((_, bytes)) = responses.front_mut() {
@@ -1146,7 +1298,12 @@ async fn execute(
             biased;
             () = cancellation.cancelled() => { stop(&mut report, start, RunStatus::Cancelled); break; }
             () = time::sleep_until(deadline) => { stop(&mut report, start, RunStatus::Deadline); break; }
-            result = input.write(responses.front().map_or(&[][..], |(_, bytes)| &bytes[write_offset..])), if !responses.is_empty() && !guest_done && !input_closed => {
+            result = async {
+                match &mut input {
+                    Some(input) => input.write(responses.front().map_or(&[][..], |(_, bytes)| &bytes[write_offset..])).await,
+                    None => std::future::pending().await,
+                }
+            }, if !responses.is_empty() && !guest_done && !input_closed => {
                 match result {
                     Ok(0) => { input_closed = true; responses.clear(); write_offset = 0; }
                     Ok(count) => {
@@ -1187,12 +1344,19 @@ async fn execute(
                 let record = &mut report.calls[index];
                 record.finished_ms = Some(elapsed(start));
                 let kind = if result.is_ok() { "succeeded" } else { "provider_failed" };
-                let response = Reply {
-                    frame_type: "result", id: record.guest_id, ok: result.is_ok(),
-                    value: result.as_ref().ok(), error: result.as_ref().err(),
+                let remaining = config.max_output_bytes.saturating_sub(response_bytes);
+                let bytes = if let Some(id) = record.guest_id {
+                    let response = Reply {
+                        frame_type: "result", id, ok: result.is_ok(),
+                        value: result.as_ref().ok(), error: result.as_ref().err(),
+                    };
+                    bounded_json(&response, (REPLY_FRAME_BYTES - 1).min(remaining))
+                } else {
+                    match &result {
+                        Ok(value) => bounded_json(value, remaining),
+                        Err(error) => bounded_json(error, remaining),
+                    }
                 };
-                let limit = (REPLY_FRAME_BYTES - 1).min(config.max_output_bytes.saturating_sub(response_bytes));
-                let bytes = bounded_json(&response, limit);
                 let call_id = record.call.id;
                 record.result_bytes = Some(match &result { Ok(value) => json_len(value), Err(error) => json_len(error) });
                 if bytes.is_some() {
@@ -1206,34 +1370,44 @@ async fn execute(
                 event(&mut report, start, Some(call_id), kind);
                 let Some(bytes) = bytes else { report.status = RunStatus::OutputLimit; break; };
                 response_bytes += bytes.len();
-                if !guest_done {
+                if !native && !guest_done {
                     report.calls[index].reply_bytes = Some(bytes.len() as u64 + 1);
                     responses.push_back((Some(index), bytes));
                 }
             }
-            result = frame(&mut output, &mut partial_frame, FRAME_BYTES), if !guest_done => {
-                let bytes = match result {
-                    Ok(Some(bytes)) => { report.bytes.from_guest += bytes.len() as u64; bytes }
-                    Ok(None) => {
-                        report.status = RunStatus::GuestError;
-                        report.diagnostic = Some("child stdout closed without returning output; stderr discarded".into());
-                        event_because(&mut report, start, None, "guest_finished", Some("exited"));
-                        guest_done = true;
-                        responses.clear();
-                        if let Err(error) = child.start_kill() { io_failure = Some(error); break; }
-                        continue;
+            result = async {
+                if let Some(output) = &mut output {
+                    let bytes = match frame(output, &mut partial_frame, FRAME_BYTES).await? {
+                        Some(bytes) => bytes,
+                        None => return Ok::<_, io::Error>((Submission::Exhausted, 0)),
+                    };
+                    let message = match serde_json::from_slice::<GuestFrame>(&bytes) {
+                        Ok(GuestFrame::Call { id, tool, arguments }) => Submission::Call { guest_id: Some(id), tool, arguments },
+                        Ok(GuestFrame::Output { value }) => Submission::Output(value),
+                        Ok(GuestFrame::Error { message }) => Submission::Error(message),
+                        Err(_) => Submission::InvalidFrame,
+                    };
+                    Ok((message, bytes.len() as u64))
+                } else {
+                    // Ready native input must still let provider and cancellation tasks run.
+                    tokio::task::consume_budget().await;
+                    match native_calls.next() {
+                        Some(call) => Ok((Submission::Call { guest_id: None, tool: call.tool.clone(), arguments: call.arguments.clone() }, 0)),
+                        None => Ok((Submission::Exhausted, 0)),
                     }
+                }
+            }, if !guest_done && !source_exhausted => {
+                let message = match result {
+                    Ok((message, bytes)) => { report.bytes.from_guest += bytes; message }
                     Err(error) if error.kind() == io::ErrorKind::InvalidData => { report.status = RunStatus::ProtocolError; report.diagnostic = Some(error.to_string()); break; }
                     Err(error) => { io_failure = Some(error); break; }
                 };
-                let message: GuestFrame = match serde_json::from_slice(&bytes) {
-                    Ok(message) => message,
-                    Err(_) => { report.status = RunStatus::ProtocolError; report.diagnostic = Some("invalid child stdout frame".into()); break; }
-                };
                 match message {
-                    GuestFrame::Call { id, tool, arguments } => {
-                        if id > MAX_GUEST_ID { report.status = RunStatus::ProtocolError; report.diagnostic = Some("guest correlation token exceeds the JavaScript safe integer range".into()); break; }
-                        if !guest_ids.insert(id) { report.status = RunStatus::ProtocolError; report.diagnostic = Some("duplicate guest correlation token".into()); break; }
+                    Submission::Call { guest_id, tool, arguments } => {
+                        if let Some(id) = guest_id {
+                            if id > MAX_GUEST_ID { report.status = RunStatus::ProtocolError; report.diagnostic = Some("guest correlation token exceeds the JavaScript safe integer range".into()); break; }
+                            if !guest_ids.insert(id) { report.status = RunStatus::ProtocolError; report.diagnostic = Some("duplicate guest correlation token".into()); break; }
+                        }
                         let call = ToolCall { id: report.calls.len() as u64 + 1, tool, arguments };
                         let over_limit = report.calls.len() >= config.max_calls;
                         let rejection = if over_limit {
@@ -1245,27 +1419,30 @@ async fn execute(
                         let call_id = call.id;
                         let argument_bytes = json_len(&call.arguments);
                         report.calls.push(CallRecord {
-                            call, guest_id: id, outcome: CallOutcome::Queued, admitted_ms: Some(elapsed(start)), started_ms: None,
+                            call, guest_id, outcome: CallOutcome::Queued, admitted_ms: Some(elapsed(start)), started_ms: None,
                             finished_ms: None, delivered_ms: None, argument_bytes, result_bytes: None, reply_bytes: None,
                         });
                         event(&mut report, start, Some(call_id), "admitted");
                         if let Some(error) = rejection {
                             report.calls[index].result_bytes = Some(json_len(&error));
-                            // The run stops at the first call over the allowance, so it gets no reply.
-                            let reply = if over_limit { None } else {
-                                Some(serde_json::to_vec(&json!({"type":"result", "id":id, "ok":false, "error":error})).map_err(io::Error::other)?)
-                            };
+                            let reply = guest_id.filter(|_| !over_limit).map(|id| {
+                                serde_json::to_vec(&json!({"type":"result", "id":id, "ok":false, "error":error})).map_err(io::Error::other)
+                            }).transpose()?;
+                            let error_bytes = json_len(&error);
                             report.calls[index].outcome = CallOutcome::Rejected { error };
                             report.calls[index].finished_ms = Some(elapsed(start));
                             event(&mut report, start, Some(call_id), "rejected");
-                            let Some(bytes) = reply else { report.status = RunStatus::CallLimit; break; };
-                            if bytes.len() > config.max_output_bytes.saturating_sub(response_bytes) { report.status = RunStatus::OutputLimit; break; }
-                            response_bytes += bytes.len();
-                            report.calls[index].reply_bytes = Some(bytes.len() as u64 + 1);
-                            responses.push_back((Some(index), bytes));
+                            if over_limit { report.status = RunStatus::CallLimit; break; }
+                            let counted = reply.as_ref().map_or(error_bytes as usize, Vec::len);
+                            if counted > config.max_output_bytes.saturating_sub(response_bytes) { report.status = RunStatus::OutputLimit; break; }
+                            response_bytes += counted;
+                            if let Some(bytes) = reply {
+                                report.calls[index].reply_bytes = Some(bytes.len() as u64 + 1);
+                                responses.push_back((Some(index), bytes));
+                            }
                         } else { queue.push_back(index); }
                     }
-                    GuestFrame::Output { value } => {
+                    Submission::Output(value) => {
                         event_because(&mut report, start, None, "guest_finished", Some("output"));
                         let Some(bytes) = bounded_json(&value, config.max_output_bytes.saturating_sub(response_bytes)) else {
                             report.bytes.omitted += json_len(&value);
@@ -1277,14 +1454,41 @@ async fn execute(
                         report.bytes.retained += bytes.len() as u64;
                         guest_done = true;
                         responses.clear();
-                        if let Err(error) = child.start_kill() { io_failure = Some(error); break; }
+                        if let Some(child) = &mut child {
+                            if let Err(error) = child.start_kill() { io_failure = Some(error); break; }
+                        }
                     }
-                    GuestFrame::Error { message } => { report.status = RunStatus::GuestError; report.diagnostic = Some(message); event_because(&mut report, start, None, "guest_finished", Some("error")); guest_done = true; responses.clear(); if let Err(error) = child.start_kill() { io_failure = Some(error); break; } }
+                    Submission::Error(message) => { report.status = RunStatus::GuestError; report.diagnostic = Some(message); event_because(&mut report, start, None, "guest_finished", Some("error")); guest_done = true; responses.clear(); if let Some(child) = &mut child {
+                            if let Err(error) = child.start_kill() { io_failure = Some(error); break; }
+                        } }
+                    Submission::InvalidFrame => {
+                        report.status = RunStatus::ProtocolError;
+                        report.diagnostic = Some("invalid child stdout frame".into());
+                        break;
+                    }
+                    Submission::Exhausted => {
+                        if native {
+                            source_exhausted = true;
+                            event(&mut report, start, None, "input_exhausted");
+                        } else {
+                            report.status = RunStatus::GuestError;
+                            report.diagnostic = Some("child stdout closed without returning output; stderr discarded".into());
+                            event_because(&mut report, start, None, "guest_finished", Some("exited"));
+                            guest_done = true;
+                            responses.clear();
+                            if let Some(child) = &mut child {
+                                if let Err(error) = child.start_kill() { io_failure = Some(error); break; }
+                            }
+                        }
+                    }
                 }
             }
             // Last, so a provider flooding facts cannot starve guest I/O or results.
             Some(fact) = fact_receiver.recv() => record_fact(&mut report, start, &mut fact_counts, fact),
         }
+    }
+    if native {
+        event(&mut report, start, None, "execution_finished");
     }
     // Stop producers first, so this drain ends after at most the buffered facts.
     fact_receiver.close();
@@ -1325,13 +1529,18 @@ async fn execute(
     running.abort_all();
     // Wait until every provider task has stopped, so none still runs after the report.
     while running.join_next().await.is_some() {}
-    let _ = child.start_kill();
-    let wait_result = child.wait().await;
+    let wait_result = if let Some(child) = &mut child {
+        let _ = child.start_kill();
+        let result = child.wait().await;
+        event(&mut report, start, None, "guest_terminated");
+        result.map(|_| ())
+    } else {
+        Ok(())
+    };
     if let Some(error) = io_failure {
         return Err(RunError::Io(error));
     }
     wait_result?;
-    event(&mut report, start, None, "guest_terminated");
     report.provider_facts_dropped += facts.dropped.load(Ordering::Relaxed);
     report.elapsed_ms = elapsed(start);
     event(&mut report, start, None, "run_finished");

@@ -13,7 +13,7 @@ use std::fmt::Write as _;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{CallOutcome, CallRecord, ProviderFactKind, RunReport, RunStatus};
+use crate::{CallOutcome, CallRecord, ExecutionBackend, ProviderFactKind, RunReport, RunStatus};
 
 const MAX_KEYS: usize = 6;
 const MAX_KEY_CHARS: usize = 24;
@@ -45,6 +45,8 @@ impl Default for InspectOptions {
 pub struct Inspection {
     /// The report's schema version.
     pub schema_version: u32,
+    /// Execution source, including the historical default of Deno.
+    pub backend: ExecutionBackend,
     /// Terminal run status.
     pub status: RunStatus,
     /// Whole run, in Rust milliseconds.
@@ -308,6 +310,7 @@ pub fn inspect(report: &RunReport, options: &InspectOptions) -> Inspection {
         .collect();
     Inspection {
         schema_version: report.schema_version,
+        backend: report.backend,
         status: report.status,
         elapsed_ms: report.elapsed_ms,
         diagnostic: report
@@ -426,7 +429,17 @@ struct Span {
 fn timing(report: &RunReport, options: &InspectOptions) -> Timing {
     let end = report.elapsed_ms;
     let guest_finished = run_event(report, &["guest_finished"]);
-    let stopped = run_event(report, &["deadline_reached", "cancellation_observed"]);
+    let native = report.backend == ExecutionBackend::Native;
+    let stop_events: &[&str] = if native {
+        &[
+            "deadline_reached",
+            "cancellation_observed",
+            "execution_finished",
+        ]
+    } else {
+        &["deadline_reached", "cancellation_observed"]
+    };
+    let stopped = run_event(report, stop_events);
     let spans: Vec<Span> = report
         .calls
         .iter()
@@ -437,14 +450,18 @@ fn timing(report: &RunReport, options: &InspectOptions) -> Timing {
             finished: r.finished_ms,
         })
         .collect();
-    let first_frame = spans
-        .iter()
-        .filter_map(|span| span.admitted)
-        .chain(guest_finished)
-        .chain(stopped)
-        .min()
-        .unwrap_or(end)
-        .min(end);
+    let first_frame = if native {
+        0
+    } else {
+        spans
+            .iter()
+            .filter_map(|span| span.admitted)
+            .chain(guest_finished)
+            .chain(stopped)
+            .min()
+            .unwrap_or(end)
+            .min(end)
+    };
     let cap = report.limits.max_concurrency;
     let mut points: Vec<u64> = vec![0, first_frame, end];
     points.extend(guest_finished);
@@ -495,11 +512,21 @@ fn timing(report: &RunReport, options: &InspectOptions) -> Timing {
         };
         ms[phase] = ms[phase].saturating_add(next - at);
     }
-    let phases: Vec<Phase> = PHASES
-        .iter()
-        .zip(ms)
-        .map(|((name, meaning), ms)| Phase { name, ms, meaning })
-        .collect();
+    let phases: Vec<Phase> = if native {
+        [
+            ("scheduler", ms[0].saturating_add(ms[1]), "host admission and scheduling with no provider call active"),
+            ("tools", ms[2], "provider calls running and none waiting to start"),
+            ("queued_at_cap", ms[3], "calls waiting because every concurrency slot was busy"),
+            ("queued_by_policy", ms[4], "calls waiting while a slot was free: a batch barrier, or dispatch latency"),
+            ("shutdown", ms[5].saturating_add(ms[6]), "after native execution stopped: settling calls, stopping provider tasks, and finishing the report"),
+        ].into_iter().map(|(name, ms, meaning)| Phase { name, ms, meaning }).collect()
+    } else {
+        PHASES
+            .iter()
+            .zip(ms)
+            .map(|((name, meaning), ms)| Phase { name, ms, meaning })
+            .collect()
+    };
 
     let mut slowest: Vec<CallTiming> = report
         .calls
@@ -761,6 +788,12 @@ impl Inspection {
             self.elapsed_ms,
             self.schema_version
         );
+        let backend = match self.backend {
+            ExecutionBackend::Native => "native",
+            ExecutionBackend::Deno => "deno",
+            ExecutionBackend::EmbeddedV8 => "embedded_v8",
+        };
+        let _ = writeln!(out, "backend {backend}");
         if self.schema_version < 2 {
             let _ = writeln!(
                 out,
