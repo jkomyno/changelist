@@ -209,6 +209,12 @@ pub struct FactSink {
 }
 
 impl FactSink {
+    /// A sink whose facts go nowhere, for calling a provider outside a run.
+    #[cfg(test)]
+    pub(crate) fn detached() -> Self {
+        Self::new().0
+    }
+
     fn new() -> (Self, mpsc::Receiver<PendingFact>) {
         let (sender, receiver) = mpsc::channel(FACT_CHANNEL_CAPACITY);
         let sink = Self {

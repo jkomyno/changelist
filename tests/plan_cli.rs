@@ -255,6 +255,9 @@ fn statuses(scratch: &Scratch) -> Vec<(String, Conclusion, NextStep)> {
 
 /// Every request that reached the provider with an attempt key had its intent
 /// journaled first: the journal knows every key the ledger saw.
+/// Every request the fixture received has a journaled intent. This checks
+/// membership after the fact; the order (intent committed before the provider is
+/// entered) is proved in the executor's unit tests.
 fn assert_intent_preceded_every_request(scratch: &Scratch) {
     let journal = Journal::open(scratch.journal(), Durability::Process).expect("journal opens");
     let keys: std::collections::HashSet<String> = journal

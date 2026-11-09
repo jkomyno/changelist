@@ -333,6 +333,38 @@ pub struct Journal {
     path: PathBuf,
     id: String,
     plan: FrozenPlan,
+    #[cfg(test)]
+    hook: Option<test_hook::CommitHook>,
+}
+
+/// Which fact a write records; only test hooks look at it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WriteKind<'a> {
+    /// A dispatch intent for this attempt key.
+    Intent(&'a str),
+    /// Any other fact.
+    Other,
+}
+
+/// Test-only control over commits, so tests can hold or fail a write before it
+/// commits and observe when it has committed.
+#[cfg(test)]
+pub(crate) mod test_hook {
+    use std::sync::Arc;
+
+    use super::WriteKind;
+
+    /// When a hook runs: inside the open transaction, or after a successful commit.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum Point {
+        BeforeCommit,
+        Committed,
+    }
+
+    /// Called at each [`Point`] of every write. An error before the commit rolls
+    /// the write back and is returned as a storage error.
+    pub(crate) type CommitHook =
+        Arc<dyn Fn(Point, WriteKind<'_>) -> Result<(), String> + Send + Sync>;
 }
 
 impl fmt::Debug for Journal {
@@ -483,6 +515,8 @@ impl Journal {
             path,
             id,
             plan: plan.clone(),
+            #[cfg(test)]
+            hook: None,
         })
     }
 
@@ -505,6 +539,8 @@ impl Journal {
             path,
             id,
             plan,
+            #[cfg(test)]
+            hook: None,
         })
     }
 
@@ -526,8 +562,15 @@ impl Journal {
         &self.plan
     }
 
+    /// Install a hook that runs before and after every commit.
+    #[cfg(test)]
+    pub(crate) fn set_commit_hook(&mut self, hook: test_hook::CommitHook) {
+        self.hook = Some(hook);
+    }
+
     fn write<T>(
         &mut self,
+        kind: WriteKind<'_>,
         body: impl FnOnce(&Transaction<'_>, i64) -> rusqlite::Result<T>,
     ) -> Result<T, JournalError> {
         let transaction = self.connection.transaction().map_err(storage)?;
@@ -539,7 +582,18 @@ impl Journal {
             )
             .map_err(storage)?;
         let value = body(&transaction, ordinal).map_err(storage)?;
+        #[cfg(test)]
+        if let Some(hook) = &self.hook {
+            // Dropping the transaction rolls it back.
+            hook(test_hook::Point::BeforeCommit, kind).map_err(JournalError::Storage)?;
+        }
         transaction.commit().map_err(storage)?;
+        #[cfg(test)]
+        if let Some(hook) = &self.hook {
+            let _ = hook(test_hook::Point::Committed, kind);
+        }
+        #[cfg(not(test))]
+        let _ = kind;
         Ok(value)
     }
 
@@ -558,7 +612,7 @@ impl Journal {
         }
         let record = serde_json::to_string(approval)
             .map_err(|error| JournalError::Storage(error.to_string()))?;
-        self.write(|transaction, ordinal| {
+        self.write(WriteKind::Other, |transaction, ordinal| {
             transaction.execute(
                 "INSERT INTO approvals VALUES (?1, ?2, ?3)",
                 params![ordinal, approval.binding.as_str(), record],
@@ -572,7 +626,7 @@ impl Journal {
     /// # Errors
     /// Returns a storage error.
     pub fn begin_session(&mut self, kind: SessionKind) -> Result<u64, JournalError> {
-        self.write(|transaction, ordinal| {
+        self.write(WriteKind::Other, |transaction, ordinal| {
             transaction.execute(
                 "INSERT INTO sessions (ordinal, kind, pid, started_unix_ms) VALUES (?1, ?2, ?3, ?4)",
                 params![ordinal, kind.as_str(), std::process::id(), now_ms() as i64],
@@ -597,7 +651,7 @@ impl Journal {
             .transpose()
             .map_err(|error| JournalError::Storage(error.to_string()))?;
         let detail = detail.map(bounded);
-        self.write(|transaction, ordinal| {
+        self.write(WriteKind::Other, |transaction, ordinal| {
             transaction.execute(
                 "INSERT INTO session_ends VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
@@ -625,7 +679,7 @@ impl Journal {
         session: u64,
         call_id: Option<u64>,
     ) -> Result<(), JournalError> {
-        self.write(|transaction, ordinal| {
+        self.write(WriteKind::Intent(key), |transaction, ordinal| {
             transaction.execute(
                 "INSERT INTO attempts VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
@@ -653,7 +707,7 @@ impl Journal {
     ) -> Result<(), JournalError> {
         let record = serde_json::to_string(&bounded_observation(observed))
             .map_err(|error| JournalError::Storage(error.to_string()))?;
-        self.write(|transaction, ordinal| {
+        self.write(WriteKind::Other, |transaction, ordinal| {
             transaction.execute(
                 "INSERT INTO observations VALUES (?1, ?2, ?3, ?4)",
                 params![key, ordinal, now_ms() as i64, record],
@@ -717,7 +771,7 @@ impl Journal {
     ) -> Result<u64, JournalError> {
         let keys = serde_json::to_string(keys)
             .map_err(|error| JournalError::Storage(error.to_string()))?;
-        self.write(|transaction, ordinal| {
+        self.write(WriteKind::Other, |transaction, ordinal| {
             transaction.execute(
                 "INSERT INTO probes VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![ordinal, operation, session as i64, keys, now_ms() as i64],
@@ -751,7 +805,7 @@ impl Journal {
                 Some(bounded(&error.message)),
             ),
         };
-        self.write(|transaction, ordinal| {
+        self.write(WriteKind::Other, |transaction, ordinal| {
             transaction.execute(
                 "INSERT INTO reconciliations VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
@@ -788,7 +842,7 @@ impl Journal {
         let resolution = resolution.as_str();
         let reviewer = bounded(reviewer);
         let note = note.map(bounded);
-        self.write(|transaction, ordinal| {
+        self.write(WriteKind::Other, |transaction, ordinal| {
             transaction.execute(
                 "INSERT INTO reviews VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![

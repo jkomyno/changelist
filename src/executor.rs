@@ -818,3 +818,396 @@ impl<P: RecoverableProvider> ToolProvider for JournalingProvider<P> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Commit-before-dispatch, proved on [`JournalingProvider::execute`] with a
+    //! journal hook that holds or fails the intent's transaction before it commits.
+    //! The execute future is polled by hand, so "the provider has not been entered"
+    //! is checked after every step that could reach it, never after a sleep.
+
+    use std::pin::pin;
+    use std::sync::mpsc;
+    use std::task::{Context, Poll, Waker};
+
+    use super::*;
+    use crate::journal::test_hook::{CommitHook, Point};
+    use crate::journal::{Durability, WriteKind};
+    use crate::plan::{Plan, Scope};
+    use crate::recovery::{AttemptError, Reconciliation};
+    use crate::runtime::FactSink;
+
+    /// Fails a test that would otherwise wait forever.
+    const BOUND: Duration = Duration::from_secs(10);
+
+    /// What happened, in order, across the journal and the provider.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Event {
+        IntentHeld(String),
+        IntentCommitted(String),
+        ProviderEntered(String),
+    }
+
+    type Events = Arc<Mutex<Vec<Event>>>;
+
+    fn events(log: &Events) -> Vec<Event> {
+        log.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// A provider that records when it is entered and succeeds.
+    struct Recording(Events);
+
+    impl RecoverableProvider for Recording {
+        fn declaration(&self) -> crate::recovery::ProviderDeclaration {
+            unreachable!("not used by these tests")
+        }
+
+        async fn authorize(&self, _: &Scope, _: ProbeContext) -> Result<(), ProviderError> {
+            Ok(())
+        }
+
+        async fn execute(&self, attempt: Attempt, _: CallContext) -> Result<Value, AttemptError> {
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(Event::ProviderEntered(attempt.key));
+            Ok(json!({"ok": true}))
+        }
+
+        async fn reconcile(
+            &self,
+            _: Operation,
+            _: Vec<String>,
+            _: ProbeContext,
+        ) -> Result<Reconciliation, ProviderError> {
+            unreachable!("not used by these tests")
+        }
+    }
+
+    struct Harness {
+        provider: JournalingProvider<Recording>,
+        events: Events,
+        held: mpsc::Receiver<String>,
+        release: mpsc::Sender<Result<(), String>>,
+        _dir: Scratch,
+    }
+
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn harness(name: &str) -> Harness {
+        let dir =
+            std::env::temp_dir().join(format!("codemode-executor-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let plan = Plan::parse(
+            r#"{"version":1,"operations":[{"id":"op","tool":"t",
+                "scope":{"provider":"p","account":"x"},"arguments":{}}]}"#,
+        )
+        .expect("plan");
+        let mut journal =
+            Journal::create(dir.join("journal.db"), &plan, Durability::Process).expect("journal");
+        let session = journal.begin_session(SessionKind::Run).expect("session");
+
+        let events = Events::default();
+        let (held_sender, held) = mpsc::channel();
+        let (release, release_receiver) = mpsc::channel();
+        // The intent's transaction waits here until the test releases it with `Ok` or a failure.
+        let release_receiver = Mutex::new(release_receiver);
+        let log = Arc::clone(&events);
+        let hook: CommitHook = Arc::new(move |point, kind| {
+            let WriteKind::Intent(key) = kind else {
+                return Ok(());
+            };
+            let mut log = log.lock().unwrap_or_else(PoisonError::into_inner);
+            match point {
+                Point::BeforeCommit => {
+                    log.push(Event::IntentHeld(key.to_string()));
+                    drop(log);
+                    let _ = held_sender.send(key.to_string());
+                    release_receiver
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .recv_timeout(BOUND)
+                        .unwrap_or_else(|_| Err("the test never released the write".into()))
+                }
+                Point::Committed => {
+                    log.push(Event::IntentCommitted(key.to_string()));
+                    Ok(())
+                }
+            }
+        });
+        journal.set_commit_hook(hook);
+
+        let operation = plan.operation("op").expect("op").clone();
+        let entries = HashMap::from([("op".to_string(), (operation, 1, "key-op-1".to_string()))]);
+        let provider = JournalingProvider {
+            journal: Shared::new(journal),
+            provider: Arc::new(Recording(Arc::clone(&events))),
+            entries,
+            dispatched: Mutex::new(HashSet::new()),
+            session,
+            attempt_timeout: BOUND,
+            cancellation: RunCancellation::default(),
+        };
+        Harness {
+            provider,
+            events,
+            held,
+            release,
+            _dir: Scratch(dir),
+        }
+    }
+
+    fn call() -> ToolCall {
+        ToolCall {
+            id: 1,
+            tool: "t".into(),
+            arguments: json!({"operation": "op"}),
+        }
+    }
+
+    fn context(deadline: Instant, cancellation: RunCancellation) -> CallContext {
+        CallContext {
+            deadline,
+            cancellation,
+            facts: FactSink::detached(),
+        }
+    }
+
+    fn poll_once<F: Future>(future: std::pin::Pin<&mut F>) -> Poll<F::Output> {
+        future.poll(&mut Context::from_waker(Waker::noop()))
+    }
+
+    /// Wait until the intent's transaction is held open, polling `future` so any
+    /// code path that could reach the provider without the commit runs first.
+    fn wait_until_held<F: Future>(harness: &Harness, mut future: std::pin::Pin<&mut F>) {
+        let deadline = std::time::Instant::now() + BOUND;
+        loop {
+            assert!(
+                poll_once(future.as_mut()).is_pending(),
+                "execute finished while its intent was held"
+            );
+            match harness.held.try_recv() {
+                Ok(key) => {
+                    assert_eq!(key, "key-op-1");
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) if std::time::Instant::now() < deadline => {
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("the intent write was never held: {error}"),
+            }
+        }
+        // Everything the future can do without the commit, it has now done.
+        for _ in 0..8 {
+            assert!(poll_once(future.as_mut()).is_pending());
+        }
+    }
+
+    fn queued_writes(harness: &Harness) -> usize {
+        *harness
+            .provider
+            .journal
+            .writes
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_provider_is_entered_only_after_the_intent_commits() {
+        let harness = harness("commit");
+        let far = Instant::now() + BOUND;
+        let mut execute = pin!(
+            harness
+                .provider
+                .execute(call(), context(far, RunCancellation::default()))
+        );
+        wait_until_held(&harness, execute.as_mut());
+        assert_eq!(
+            events(&harness.events),
+            [Event::IntentHeld("key-op-1".into())]
+        );
+
+        harness.release.send(Ok(())).expect("release");
+        let reply = time::timeout(BOUND, execute).await.expect("bounded");
+        assert_eq!(reply, Ok(json!({"operation": "op", "attempt": 1})));
+        assert_eq!(
+            events(&harness.events),
+            [
+                Event::IntentHeld("key-op-1".into()),
+                Event::IntentCommitted("key-op-1".into()),
+                Event::ProviderEntered("key-op-1".into()),
+            ]
+        );
+        let history = harness
+            .provider
+            .journal
+            .journal
+            .lock()
+            .expect("journal")
+            .history()
+            .expect("history");
+        assert_eq!(history.attempts.len(), 1);
+        assert_eq!(history.attempts[0].key, "key-op-1");
+        assert!(matches!(
+            history.attempts[0]
+                .observation
+                .as_ref()
+                .map(|o| &o.observed),
+            Some(Observed::Succeeded { .. })
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_intent_commit_never_reaches_the_provider() {
+        let harness = harness("failed");
+        let far = Instant::now() + BOUND;
+        let mut execute = pin!(
+            harness
+                .provider
+                .execute(call(), context(far, RunCancellation::default()))
+        );
+        wait_until_held(&harness, execute.as_mut());
+
+        harness
+            .release
+            .send(Err("disk full".into()))
+            .expect("release");
+        let reply = time::timeout(BOUND, execute).await.expect("bounded");
+        let error = reply.expect_err("the intent was not recorded");
+        assert_eq!(error.code, "journal_unavailable");
+        assert!(
+            harness.provider.cancellation.is_cancelled(),
+            "the run is stopped"
+        );
+        assert_eq!(
+            events(&harness.events),
+            [Event::IntentHeld("key-op-1".into())]
+        );
+        let history = harness
+            .provider
+            .journal
+            .journal
+            .lock()
+            .expect("journal")
+            .history()
+            .expect("history");
+        assert!(
+            history.attempts.is_empty(),
+            "the rolled-back intent left no attempt"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancellation_or_deadline_during_the_held_write_withdraws_the_attempt() {
+        for case in ["cancelled", "deadline"] {
+            let harness = harness(case);
+            let cancellation = RunCancellation::default();
+            let deadline = if case == "deadline" {
+                Instant::now() + Duration::from_millis(50)
+            } else {
+                Instant::now() + BOUND
+            };
+            let mut execute = pin!(
+                harness
+                    .provider
+                    .execute(call(), context(deadline, cancellation.clone()))
+            );
+            wait_until_held(&harness, execute.as_mut());
+            if case == "cancelled" {
+                cancellation.cancel();
+            } else {
+                // The condition, not a sleep: release only once the deadline has passed.
+                while Instant::now() < deadline {
+                    std::thread::yield_now();
+                }
+            }
+            harness.release.send(Ok(())).expect("release");
+            let reply = time::timeout(BOUND, execute).await.expect("bounded");
+            assert_eq!(reply.expect_err(case).code, "cancelled", "{case}");
+            let history = harness
+                .provider
+                .journal
+                .journal
+                .lock()
+                .expect("journal")
+                .history()
+                .expect("history");
+            assert_eq!(
+                history.attempts[0]
+                    .observation
+                    .as_ref()
+                    .map(|o| &o.observed),
+                Some(&Observed::Withdrawn),
+                "{case}"
+            );
+            assert!(
+                !events(&harness.events)
+                    .iter()
+                    .any(|event| matches!(event, Event::ProviderEntered(_))),
+                "{case}: the provider was entered"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_dropped_call_never_dispatches_and_its_late_intent_is_still_accounted() {
+        let harness = harness("dropped");
+        let far = Instant::now() + BOUND;
+        {
+            let mut execute = pin!(
+                harness
+                    .provider
+                    .execute(call(), context(far, RunCancellation::default()))
+            );
+            wait_until_held(&harness, execute.as_mut());
+            // The runtime drops the call on cancellation or its deadline; the write keeps running.
+        }
+        assert_eq!(
+            queued_writes(&harness),
+            1,
+            "the abandoned write is still counted"
+        );
+        let session = harness.provider.session;
+        let shared = harness.provider.journal.clone();
+        let finish = tokio::spawn(async move {
+            after_queued_writes(&shared, move |journal| {
+                journal.record_unobserved(session, "cancelled")?;
+                journal.history()
+            })
+            .await
+        });
+        harness.release.send(Ok(())).expect("release");
+        let history = time::timeout(BOUND, finish)
+            .await
+            .expect("bounded")
+            .expect("joined")
+            .expect("history");
+        assert_eq!(queued_writes(&harness), 0);
+        assert_eq!(
+            events(&harness.events),
+            [
+                Event::IntentHeld("key-op-1".into()),
+                Event::IntentCommitted("key-op-1".into()),
+            ],
+            "the provider was never entered"
+        );
+        assert_eq!(
+            history.attempts[0]
+                .observation
+                .as_ref()
+                .map(|o| &o.observed),
+            Some(&Observed::Unobserved {
+                reason: "cancelled".into()
+            }),
+            "the late intent is marked as never observed"
+        );
+    }
+}
