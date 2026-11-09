@@ -26,7 +26,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { findExecutable, type PlanReply, runPlanBridge } from "../shared/bridge-client.ts";
-import { type AccountExecute, composioPlanHost, declaration, GET_LABEL, parseConfig, target } from "./composio-plan.ts";
+import { type AccountExecute, composioPlanHost, declaration, GET_LABEL, observe, parseConfig, target } from "./composio-plan.ts";
 
 const VALUE_OPTIONS = new Set(["config", "journal", "plan", "bin", "deno", "offline", "drop-reply"]);
 
@@ -61,7 +61,7 @@ async function helper(args: Map<string, string>): Promise<AccountExecute> {
 }
 
 /** Read-only checks of every operation in a plan; prints projected facts only. */
-async function preflight(execute: AccountExecute, args: Map<string, string>): Promise<number> {
+async function preflight(execute: AccountExecute, args: Map<string, string>): Promise<void> {
   const config = parseConfig(json(args.get("config") ?? ""));
   const plan = json(args.get("plan") ?? "") as { operations?: Array<Record<string, any>> };
   const host = composioPlanHost(execute, config);
@@ -73,10 +73,8 @@ async function preflight(execute: AccountExecute, args: Map<string, string>): Pr
       const op = target(operation.tool, operation.arguments, operation.scope, operation.preconditions ?? [], config);
       const authorized = await host.authorize(operation.scope);
       row.authorized = authorized.ok ? true : authorized.error.code;
-      const label = await execute(GET_LABEL, { owner: op.owner, repo: op.repo, name: op.label }, { account: config.account }).then(
-        (result) => result.successful === true,
-        () => false,
-      );
+      const seen = await observe(execute, GET_LABEL, { owner: op.owner, repo: op.repo, name: op.label }, config.account);
+      const label = "result" in seen && seen.result.successful;
       row.label_exists = label;
       const state = await host.reconcile(
         { id: 0, operation: operation.id, tool: operation.tool, arguments: operation.arguments, keys: [], scope: operation.scope },
@@ -91,7 +89,6 @@ async function preflight(execute: AccountExecute, args: Map<string, string>): Pr
     report.push(row);
   }
   finish(process.stdout, JSON.stringify({ preflight: ready ? "ready" : "not_ready", operations: report }), ready ? 0 : 3);
-  return ready ? 0 : 3;
 }
 
 async function main(): Promise<void> {

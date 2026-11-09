@@ -150,9 +150,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
  * nothing observed. The helper throws for unsuccessful results with `result`
  * attached; any other throw means no result was observed.
  */
-type Observation = { result: ComposioResult } | { unobserved: true };
+export type Observation = { result: ComposioResult } | { unobserved: true };
 
-async function observe(execute: AccountExecute, slug: string, data: Record<string, unknown>, account: string): Promise<Observation> {
+export async function observe(execute: AccountExecute, slug: string, data: Record<string, unknown>, account: string): Promise<Observation> {
   try {
     const result = await execute(slug, data, { account });
     return isRecord(result) && typeof result.successful === "boolean" ? { result } : { unobserved: true };
@@ -229,7 +229,8 @@ export function composioPlanHost(execute: AccountExecute, config: ComposioPlanCo
         return { ok: false, error: { code: "composio_unobserved", message: "the CLI ended without a result; the label may have been added" }, effect: "unknown" };
       }
       if (!added.result.successful) {
-        const code = status(added.result) === undefined ? "composio_tool_failed" : `github_status_${status(added.result)}`;
+        const http = status(added.result);
+        const code = http === undefined ? "composio_tool_failed" : `github_status_${http}`;
         return { ok: false, error: { code, message: "Composio reported an unsuccessful execution; the label may have been added" }, effect: "unknown" };
       }
       return { ok: true, value: { label_added: true } };

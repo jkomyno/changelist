@@ -350,7 +350,8 @@ pub async fn run_session<P: RecoverableProvider>(
         &history,
         &to_probe,
         &provider,
-        (&policy, retention),
+        &policy,
+        retention,
         session,
         &cancellation,
     )
@@ -381,7 +382,8 @@ pub async fn run_session<P: RecoverableProvider>(
             &journal,
             &provider,
             dispatch,
-            (&policy, retention),
+            &policy,
+            retention,
             session,
             &options,
             &cancellation,
@@ -574,7 +576,8 @@ async fn probe<P: RecoverableProvider>(
     history: &History,
     statuses: &[&OperationStatus],
     provider: &Arc<P>,
-    (policy, retention): (&RecoveryPolicy, Retention),
+    policy: &RecoveryPolicy,
+    retention: Retention,
     session: u64,
     cancellation: &RunCancellation,
 ) -> Result<HashSet<String>, JournalError> {
@@ -664,11 +667,13 @@ pub fn dispatcher_program<'op>(
     )
 }
 
+#[expect(clippy::too_many_arguments, reason = "one internal call site")]
 async fn dispatch_run<P: RecoverableProvider>(
     journal: &Shared,
     provider: &Arc<P>,
     operations: Vec<(Operation, u32)>,
-    (policy, retention): (&RecoveryPolicy, Retention),
+    policy: &RecoveryPolicy,
+    retention: Retention,
     session: u64,
     options: &SessionOptions,
     cancellation: &RunCancellation,

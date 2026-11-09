@@ -294,7 +294,7 @@ fn build(
                         message: None,
                     };
                     let message = |text: &str| {
-                        Some(text.to_string()).filter(|text| options.messages && !text.is_empty())
+                        (options.messages && !text.is_empty()).then(|| text.to_string())
                     };
                     if let Some(observation) = &attempt.observation {
                         line.effect = None;
