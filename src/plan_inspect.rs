@@ -21,6 +21,7 @@ use crate::journal::{History, Journal, JournalError};
 use crate::plan::Digest;
 use crate::recovery::{
     Approval, Basis, Conclusion, FailureEffect, NextStep, Observed, Resolution, Retention,
+    machine_code,
 };
 
 /// Characters of a message, evidence, or note printed before truncation.
@@ -74,6 +75,9 @@ pub struct ApprovalSummary {
     pub approval: Approval,
     /// How many approvals were recorded for this plan.
     pub approvals: usize,
+    /// Whether the approval in force binds its retention policy; false for an
+    /// approval that predates retention policies, whose `retention` field is only a default.
+    pub retention_bound: bool,
     /// Approvals recorded before approvals bound a retention policy. Facts from
     /// their sessions may hold provider values and messages.
     pub approvals_without_retention: usize,
@@ -305,7 +309,7 @@ fn build(
                             }
                             Observed::Failed { error, effect } => {
                                 line.observed = "failed".into();
-                                line.code = Some(error.code.clone());
+                                line.code = Some(machine_code(&error.code).to_string());
                                 line.effect = Some(
                                     match effect {
                                         FailureEffect::Refused => "refused",
@@ -351,7 +355,7 @@ fn build(
                         session: probe.session,
                         keys: probe.keys.len(),
                         verdict: "error".into(),
-                        evidence: Some(error.code.clone()),
+                        evidence: Some(machine_code(&error.code).to_string()),
                         elapsed_ms: probe.elapsed_ms,
                     },
                 })
@@ -403,6 +407,7 @@ fn build(
                 ..approval.clone()
             },
             approvals: history.approvals.len(),
+            retention_bound: !approval.predates_retention(),
             approvals_without_retention: without_retention,
         }),
         sessions,
@@ -497,19 +502,26 @@ impl JournalInspection {
                     policy.attempt_timeout_ms,
                     policy.probe_timeout_ms
                 );
-                let _ = writeln!(
-                    out,
-                    "retention {}: {}",
-                    approval.declaration.retention,
-                    match approval.declaration.retention {
-                        Retention::Metadata => {
-                            "outcomes, effects, sizes, verdicts, and error codes; no provider text"
+                if approval.predates_retention() {
+                    let _ = writeln!(
+                        out,
+                        "retention: none bound (this approval predates retention policies)"
+                    );
+                } else {
+                    let _ = writeln!(
+                        out,
+                        "retention {}: {}",
+                        approval.declaration.retention,
+                        match approval.declaration.retention {
+                            Retention::Metadata => {
+                                "outcomes, effects, sizes, verdicts, and error codes; no provider text"
+                            }
+                            Retention::Summary => {
+                                "also the provider's error messages and probe evidence, up to 1 KiB each"
+                            }
                         }
-                        Retention::Summary => {
-                            "also the provider's error messages and probe evidence, up to 1 KiB each"
-                        }
-                    }
-                );
+                    );
+                }
                 if summary.approvals_without_retention > 0 {
                     let _ = writeln!(
                         out,

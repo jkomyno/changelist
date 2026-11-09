@@ -7,7 +7,7 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PlanCall, ReconcileRequest } from "../../shared/bridge-client.ts";
-import { ADD_LABELS, type ComposioPlanConfig, composioPlanHost } from "../composio-plan.ts";
+import { ADD_LABELS, type ComposioPlanConfig, composioPlanHost, parseConfig } from "../composio-plan.ts";
 import { fakeLabels, type LabelState } from "./fake-labels.ts";
 
 const ACCOUNT = "ca_fake_bot";
@@ -155,6 +155,18 @@ for (const [fault, code] of [["fail", "state_read_failed"], ["malformed", "state
     return expect("error" in reply ? reply.error.code : reply, code);
   });
 }
+
+await check("the config accepts only a stable connected-account id", async () => {
+  const outcomes = ["ca_fake_bot", "default", "work-alias", "ca_"].map((account) => {
+    try {
+      parseConfig({ account, destinations: ["acme/widgets"] });
+      return "ok";
+    } catch {
+      return "refused";
+    }
+  });
+  return expect(outcomes, ["ok", "refused", "refused", "refused"]);
+});
 
 await check("no reply carries Composio or GitHub text", async () =>
   JSON.stringify(replies).includes("MARK-SECRET") ? "a reply carried MARK-SECRET" : true

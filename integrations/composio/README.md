@@ -147,9 +147,11 @@ Verification status:
   then reconciled; cancellation leaves the mutation `unknown`; scope and
   precondition refusals send nothing; every call used the configured account;
   no stand-in text reaches the journal or inspection.
-- **Live, read-only:** `mise run composio-plan-preflight owner/repo 1 label`
+- **Live, read-only:** `COMPOSIO_GITHUB_ACCOUNT=ca_... mise run composio-plan-preflight owner/repo 1 label`
   checks authorization, the label, and the issue's labels with the logged-in
   CLI (verified on a public repository; a wrong account selector fails closed).
+  The account must be the `ca_...` id, never an alias or word id, which the CLI
+  would also resolve but which can be reassigned.
 - **Live writes:** not yet run. They need an explicitly authorized account,
   repository, issue, label, and cleanup plan.
 

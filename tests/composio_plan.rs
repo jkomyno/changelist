@@ -56,9 +56,10 @@ impl Scratch {
             .expect("ledger is JSON")
     }
 
-    /// Mutation requests the stand-in received, as (target, outcome).
+    /// Mutation requests the stand-in received, as (target, outcome), sorted:
+    /// concurrent attempts reach the stand-in in no fixed order.
     fn mutations(&self) -> Vec<(String, String)> {
-        self.ledger()["calls"]
+        let mut mutations: Vec<(String, String)> = self.ledger()["calls"]
             .as_array()
             .expect("calls")
             .iter()
@@ -69,7 +70,9 @@ impl Scratch {
                     call["outcome"].as_str().unwrap_or("").to_string(),
                 )
             })
-            .collect()
+            .collect();
+        mutations.sort();
+        mutations
     }
 }
 

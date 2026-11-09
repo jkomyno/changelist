@@ -630,9 +630,44 @@ async fn a_changed_or_unbound_retention_policy_needs_a_new_approval() {
     );
     assert!(inspection.render().contains("predate retention policies"));
     assert!(
+        inspection
+            .render()
+            .contains("retention: none bound (this approval predates retention policies)")
+    );
+    assert_eq!(
+        inspection
+            .approval
+            .as_ref()
+            .map(|approval| approval.retention_bound),
+        Some(false)
+    );
+    assert!(
         journal.history().expect("history").attempts.is_empty(),
         "nothing ran"
     );
     drop(journal);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn a_malformed_host_reply_is_described_without_its_values() {
+    let path = approve_retention(&retention_declaration(None), false);
+    let mut host = Host::start_as(&path, SessionKind::Run, retention_declaration(None)).await;
+    host.authorize().await;
+    let call = host.next_kept().await;
+    assert_eq!(call["type"], "call", "{call}");
+    // A verdict where a result belongs: serde would quote the unknown variant.
+    host.send(
+        json!({"type": "reconciled", "id": call["id"], "verdict": "MARK-SECRET-VERDICT",
+                     "evidence": "x"}),
+    )
+    .await;
+    let (frame, _) = finish(host).await;
+    let diagnostic = frame["diagnostic"].as_str().expect("diagnostic");
+    assert!(
+        diagnostic == "invalid host frame: data error",
+        "{diagnostic}"
+    );
+    assert!(!frame.to_string().contains("MARK-"), "{frame}");
     let _ = std::fs::remove_file(&path);
 }

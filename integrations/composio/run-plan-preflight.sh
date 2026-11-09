@@ -2,10 +2,10 @@
 # Live, read-only preflight of the Composio plan host through the logged-in
 # Composio CLI: for one issue and label, check the scope, the account's
 # permission on the repository, that the label exists, and whether the issue has
-# it. Nothing is written. Usage: run-plan-preflight.sh <owner/repo> <issue> <label>
-# The connected-account id is read from `composio connections list` (the first
-# active GitHub connection, or COMPOSIO_GITHUB_ACCOUNT) and kept in a temporary
-# directory; output names no account.
+# it. Nothing is written. Usage:
+#   COMPOSIO_GITHUB_ACCOUNT=<ca_...> run-plan-preflight.sh <owner/repo> <issue> <label>
+# The account is the stable connected-account id from `composio connections list`;
+# there is no default. It is kept in a temporary directory; output names no account.
 set -eu
 
 [ $# -eq 3 ] || { echo "usage: $0 <owner/repo> <issue> <label>" >&2; exit 2; }
@@ -18,11 +18,8 @@ deno=$(mise which deno)
 work=$(mktemp -d "${TMPDIR:-/tmp}/codemode-composio-plan.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
-account=${COMPOSIO_GITHUB_ACCOUNT:-$(composio connections list 2>/dev/null | "$deno" eval '
-const text = await new Response(Deno.stdin.readable).text();
-const active = (JSON.parse(text).github ?? []).find((c) => c.status === "ACTIVE");
-if (active) console.log(active.id);')}
-[ -n "$account" ] || { echo "no active GitHub connection; run composio link github" >&2; exit 2; }
+account=${COMPOSIO_GITHUB_ACCOUNT:-}
+[ -n "$account" ] || { echo "set COMPOSIO_GITHUB_ACCOUNT to a connected-account id (ca_...); see composio connections list" >&2; exit 2; }
 
 "$deno" eval '
 const [work, account, destination, issue, label] = Deno.args;

@@ -1367,6 +1367,36 @@ mod tests {
     }
 
     #[test]
+    fn a_summary_keeps_at_most_one_kib_and_metadata_keeps_none() {
+        let path = scratch("retention");
+        let mut journal = Journal::create(&path, &plan(), Durability::Process).expect("create");
+        let session = journal.begin_session(SessionKind::Resume).expect("session");
+        let long = "e".repeat(3 * MAX_TEXT_BYTES);
+        for retention in [Retention::Summary, Retention::Metadata] {
+            let probe = journal
+                .record_probe_start("a", session, &[])
+                .expect("probe start");
+            let answer = Ok(Reconciliation {
+                verdict: Verdict::Unknown,
+                evidence: long.clone(),
+            });
+            journal
+                .record_probe(probe, 1, &answer, retention)
+                .expect("probe");
+        }
+        let kept: Vec<usize> = journal
+            .history()
+            .expect("history")
+            .probes
+            .iter()
+            .map(|probe| probe.outcome.as_ref().expect("answered").evidence.len())
+            .collect();
+        assert_eq!(kept, [MAX_TEXT_BYTES, 0]);
+        drop(journal);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn opening_a_foreign_database_leaves_it_unchanged() {
         let path = scratch("foreign");
         let foreign = Connection::open(&path).expect("create");

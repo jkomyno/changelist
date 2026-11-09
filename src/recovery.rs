@@ -912,6 +912,23 @@ mod tests {
     }
 
     #[test]
+    fn only_short_ascii_codes_are_machine_codes() {
+        let longest = "a".repeat(64);
+        for code in [
+            "rate_limited",
+            "github_status_404",
+            "v1.2:x-y",
+            longest.as_str(),
+        ] {
+            assert_eq!(machine_code(code), code);
+        }
+        let too_long = "a".repeat(65);
+        for code in ["", "two words", "token=abc", "é", too_long.as_str()] {
+            assert_eq!(machine_code(code), UNRECOGNIZED_CODE, "{code:?}");
+        }
+    }
+
+    #[test]
     fn a_missing_acknowledgment_or_generic_error_stays_unknown() {
         let generic = Observed::Failed {
             error: ProviderError {

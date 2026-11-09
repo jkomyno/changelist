@@ -332,6 +332,17 @@ impl RecoverableProvider for HostPlanProvider {
     }
 }
 
+/// Describe a host frame that did not parse, by position only: serde's messages
+/// can quote the frame's values, and the diagnostic is printed by hosts.
+fn unparsable(error: &serde_json::Error) -> String {
+    let kind = format!("{:?} error", error.classify()).to_lowercase();
+    match error.line() {
+        // serde reports no position for some errors, such as an unknown enum value.
+        0 => kind,
+        line => format!("{kind} at line {line} column {}", error.column()),
+    }
+}
+
 /// What the router should do after one host frame.
 enum Flow {
     Continue,
@@ -437,7 +448,7 @@ async fn route<R: AsyncRead + Unpin>(
         };
         let parsed = match serde_json::from_slice::<HostFrame>(&bytes) {
             Ok(parsed) => parsed,
-            Err(error) => break format!("invalid host frame: {error}"),
+            Err(error) => break format!("invalid host frame: {}", unparsable(&error)),
         };
         match deliver(parsed, &pending) {
             Ok(Flow::Continue) => {}
@@ -579,7 +590,8 @@ where
         }
         Err(error) => {
             return Err(PlanBridgeError::Protocol(format!(
-                "invalid start frame: {error}"
+                "invalid start frame: {}",
+                unparsable(&error)
             )));
         }
     };

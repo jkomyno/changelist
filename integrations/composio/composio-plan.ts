@@ -77,8 +77,9 @@ export function parseConfig(value: unknown): ComposioPlanConfig {
   const record = value as Record<string, unknown> | null;
   const account = record?.account;
   const destinations = record?.destinations;
-  if (typeof account !== "string" || !/^[A-Za-z0-9_-]{4,128}$/.test(account)) {
-    throw new Error("config.account must be a connected-account id");
+  // The CLI also resolves aliases and word ids, which can be reassigned; only the id is stable.
+  if (typeof account !== "string" || !/^ca_[A-Za-z0-9_-]{4,124}$/.test(account)) {
+    throw new Error("config.account must be a connected-account id (ca_...), not an alias or word id");
   }
   if (!Array.isArray(destinations) || destinations.length === 0 || !destinations.every((item) => typeof item === "string" && canonical(item) !== undefined)) {
     throw new Error("config.destinations must list repositories as owner/repo");
