@@ -3,21 +3,19 @@
 set -eu
 
 usage() {
-  echo 'Usage: scripts/install.sh --revision <full-commit-sha> --prefix <directory> [--backend deno|embedded-v8] [--source <local-repository>]'
+  echo 'Usage: scripts/install.sh --revision <full-commit-sha> --prefix <directory> [--source <local-repository>]'
 }
 
 source_repo=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
 revision=
 prefix=
-backend=deno
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --revision|--prefix|--backend|--source)
+    --revision|--prefix|--source)
       [ "$#" -ge 2 ] || { usage >&2; exit 2; }
       case "$1" in
         --revision) revision=$2 ;;
         --prefix) prefix=$2 ;;
-        --backend) backend=$2 ;;
         --source) source_repo=$2 ;;
       esac
       shift 2 ;;
@@ -27,7 +25,6 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$prefix" ] && [ "${#revision}" -eq 40 ] || { usage >&2; exit 2; }
 case "$revision" in *[!0-9a-f]*) echo 'revision must be a full lowercase commit SHA' >&2; exit 2 ;; esac
-case "$backend" in deno|embedded-v8) ;; *) usage >&2; exit 2 ;; esac
 case "$(uname -s)" in Linux|Darwin) ;; *) echo 'source installation supports Linux and macOS shell tools' >&2; exit 2 ;; esac
 resolved=$(git -C "$source_repo" rev-parse --verify "$revision^{commit}")
 [ "$resolved" = "$revision" ] || { echo 'revision must identify an existing commit in the local repository' >&2; exit 2; }
@@ -54,7 +51,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' HUP TERM
 mkdir -p "$prefix/versions"
-version="$revision-$backend"
+version="$revision"
 destination="$prefix/versions/$version"
 # The installed files: the production binary, its adapters, declarations, user
 # docs, and the installed-workflow check. Fixtures, mock tools, test harnesses,
@@ -87,14 +84,13 @@ validate_bundle() {
   bundle=$1
   [ -d "$bundle" ] && [ ! -L "$bundle" ] || return 1
   # Keep these required public entrypoints and their imports together on reuse.
-  for asset in REVISION BUILD_BACKEND BUILD_COMPILER $ASSETS; do
+  for asset in REVISION BUILD_COMPILER $ASSETS; do
     [ -f "$bundle/$asset" ] && [ ! -L "$bundle/$asset" ] || {
       echo "missing installed asset: $bundle/$asset" >&2
       return 1
     }
   done
   [ "$(cat "$bundle/REVISION")" = "$revision" ] &&
-    [ "$(cat "$bundle/BUILD_BACKEND")" = "$backend" ] &&
     [ -x "$bundle/bin/codemode" ] && [ -x "$bundle/scripts/install-check.sh" ]
 }
 if [ -e "$destination" ] || [ -L "$destination" ]; then
@@ -114,11 +110,7 @@ else
     # Trust only this archived commit for this process; do not alter mise trust state.
     export MISE_TRUSTED_CONFIG_PATHS="$snapshot/source"
     unset CARGO_TARGET_DIR
-    if [ "$backend" = embedded-v8 ]; then
-      mise exec -- cargo build --release --locked --features embedded-v8 --bin codemode
-    else
-      mise exec -- cargo build --release --locked --bin codemode
-    fi
+    mise exec -- cargo build --release --locked --bin codemode
     mkdir "$stage/bin"
     cp target/release/codemode "$stage/bin/"
     for asset in $ASSETS; do
@@ -132,7 +124,6 @@ else
     mise exec -- rustc --version > "$stage/BUILD_COMPILER"
   )
   printf '%s\n' "$revision" > "$stage/REVISION"
-  printf '%s\n' "$backend" > "$stage/BUILD_BACKEND"
   validate_bundle "$stage" || { echo 'refusing to activate an incomplete installation' >&2; exit 1; }
   mv "$stage" "$destination"
   stage=

@@ -1,22 +1,89 @@
-//! Public runtime contracts exercised through the real guest subprocess.
+//! Public runtime contracts exercised through the real worker subprocess.
 #![cfg(feature = "testkit")]
 
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use codemode::{
-    CallContext, CallOutcome, MockProvider, ProviderError, RunCancellation, RunConfig, RunStatus,
-    ToolCall, ToolProvider, run,
+    CallContext, CallOutcome, ExecutionBackend, MockProvider, ProviderError, RunCancellation,
+    RunConfig, RunStatus, ToolCall, ToolProvider, run,
 };
 use serde_json::{Value, json};
 
 fn config() -> RunConfig {
     RunConfig {
-        deno: std::env::var_os("CODEMODE_TEST_DENO").map_or_else(|| "deno".into(), Into::into),
+        worker: Some(env!("CARGO_BIN_EXE_codemode").into()),
         timeout_ms: 5_000,
         ..MockProvider::config()
     }
+}
+
+/// A stand-in worker that writes the stdout frame named by its program, then
+/// waits for input to close, as a compromised guest could.
+#[cfg(unix)]
+fn forging_worker() -> RunConfig {
+    static SCRIPT: OnceLock<PathBuf> = OnceLock::new();
+    let script = SCRIPT.get_or_init(|| {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = std::env::temp_dir().join(format!(
+            "codemode-forging-worker-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).expect("script directory");
+        let path = directory.join("worker.sh");
+        // Builtins only: the worker starts with an empty environment.
+        std::fs::write(
+            &path,
+            r#"#!/bin/sh
+read -r frame
+case "$frame" in
+  *forged-event*) printf '%s\n' '{"type":"event","id":77,"kind":"succeeded"}' ;;
+  *duplicate-token*)
+    line='{"type":"call","id":44,"tool":"mock.wait","arguments":{"ms":1000}}'
+    printf '%s\n%s\n' "$line" "$line" ;;
+  *unsafe-token*) printf '%s\n' '{"type":"call","id":9007199254740993,"tool":"mock.echo","arguments":null}' ;;
+  *oversized-line*) printf '%70000s' x ;;
+esac
+while read -r frame; do :; done
+"#,
+        )
+        .expect("script written");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("script is executable");
+        path
+    });
+    RunConfig {
+        worker: Some(script.clone()),
+        ..config()
+    }
+}
+
+/// A real worker started through a link unique to `name`, so a test can find its
+/// process by command line while other tests run their own workers.
+#[cfg(unix)]
+fn traceable_worker(name: &str) -> PathBuf {
+    let directory =
+        std::env::temp_dir().join(format!("codemode-worker-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("link directory");
+    let link = directory.join("codemode");
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_codemode"), &link).expect("worker link");
+    link
+}
+
+/// Process ids whose command line starts with `worker`.
+#[cfg(unix)]
+fn worker_pids(worker: &Path) -> Vec<u32> {
+    let output = std::process::Command::new("pgrep")
+        .args(["-f", &format!("^{} ", worker.display())])
+        .output()
+        .expect("pgrep runs");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect()
 }
 
 #[tokio::test]
@@ -28,7 +95,7 @@ async fn typescript_and_concurrent_tools_return_json() {
         RunCancellation::default(),
     )
     .await
-    .expect("Deno executes TypeScript");
+    .expect("the worker executes TypeScript");
     assert_eq!(report.status, RunStatus::Success, "{report:?}");
     assert_eq!(report.output, Some(json!({"answer":42})));
     assert_eq!(report.calls.len(), 1);
@@ -176,10 +243,13 @@ async fn exhausted_call_budget_distinguishes_queued_and_running_calls() {
     assert_eq!(kinds, ["admitted", "rejected"]);
 }
 
+#[cfg(unix)]
 #[tokio::test]
-async fn deadline_terminates_a_cpu_loop() {
+async fn deadline_terminates_a_cpu_loop_and_its_worker() {
+    let worker = traceable_worker("cpu-loop");
     let mut options = config();
     options.timeout_ms = 300;
+    options.worker = Some(worker.clone());
     let report = tokio::time::timeout(
         Duration::from_secs(3),
         run(
@@ -193,6 +263,16 @@ async fn deadline_terminates_a_cpu_loop() {
     .expect("host deadline remains responsive")
     .expect("deadline produces a report");
     assert_eq!(report.status, RunStatus::Deadline, "{report:?}");
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|event| event.kind == "guest_terminated")
+    );
+    assert!(
+        worker_pids(&worker).is_empty(),
+        "the worker outlived its run"
+    );
 }
 
 #[derive(Clone)]
@@ -318,39 +398,62 @@ async fn oversized_provider_results_are_omitted_from_report() {
     assert_eq!(report.calls[0].outcome, CallOutcome::ResultTooLarge);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn forged_trace_frames_are_rejected_without_dispatch() {
     let dispatches = Arc::new(AtomicUsize::new(0));
     let report = run(
-        "Deno.stdout.writeSync(new TextEncoder().encode(JSON.stringify({type:'event',id:77,kind:'succeeded'})+'\\n')); await new Promise(() => {});",
-        config(), CountDispatches(Arc::clone(&dispatches)), RunCancellation::default(),
-    ).await.expect("invalid protocol produces a report");
+        "forged-event",
+        forging_worker(),
+        CountDispatches(Arc::clone(&dispatches)),
+        RunCancellation::default(),
+    )
+    .await
+    .expect("invalid protocol produces a report");
     assert_eq!(report.status, RunStatus::ProtocolError, "{report:?}");
     assert!(report.calls.is_empty());
     assert_eq!(dispatches.load(Ordering::SeqCst), 0);
     assert!(!report.events.iter().any(|event| event.kind == "succeeded"));
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn duplicate_guest_tokens_cannot_reuse_host_identity() {
     let report = run(
-        "const frame=JSON.stringify({type:'call',id:44,tool:'mock.wait',arguments:{ms:1000}})+'\\n'; Deno.stdout.writeSync(new TextEncoder().encode(frame+frame)); await new Promise(() => {});",
-        config(), MockProvider, RunCancellation::default(),
-    ).await.expect("duplicate correlation produces a report");
+        "duplicate-token",
+        forging_worker(),
+        MockProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("duplicate correlation produces a report");
     assert_eq!(report.status, RunStatus::ProtocolError, "{report:?}");
+    assert_eq!(
+        report.diagnostic.as_deref(),
+        Some("duplicate guest correlation token")
+    );
     assert_eq!(report.calls.len(), 1);
     assert_eq!(report.calls[0].call.id, 1);
     assert_eq!(report.calls[0].guest_id, Some(44));
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn unsafe_javascript_tokens_never_reach_provider() {
     let dispatches = Arc::new(AtomicUsize::new(0));
     let report = run(
-        "Deno.stdout.writeSync(new TextEncoder().encode('{\"type\":\"call\",\"id\":9007199254740993,\"tool\":\"mock.echo\",\"arguments\":null}\\n')); await new Promise(() => {});",
-        config(), CountDispatches(Arc::clone(&dispatches)), RunCancellation::default(),
-    ).await.expect("invalid correlation produces a report");
+        "unsafe-token",
+        forging_worker(),
+        CountDispatches(Arc::clone(&dispatches)),
+        RunCancellation::default(),
+    )
+    .await
+    .expect("invalid correlation produces a report");
     assert_eq!(report.status, RunStatus::ProtocolError, "{report:?}");
+    assert_eq!(
+        report.diagnostic.as_deref(),
+        Some("guest correlation token exceeds the JavaScript safe integer range")
+    );
     assert!(report.calls.is_empty());
     assert_eq!(dispatches.load(Ordering::SeqCst), 0);
 }
@@ -385,43 +488,75 @@ async fn provider_task_failure_keeps_origin_and_call_identity() {
     );
 }
 
+/// Kills the run's worker while its call runs, then answers or never does.
 #[cfg(unix)]
-struct KillGuest;
+struct KillWorker {
+    worker: PathBuf,
+    answer: bool,
+}
 #[cfg(unix)]
-impl ToolProvider for KillGuest {
-    async fn execute(&self, call: ToolCall, _: CallContext) -> Result<Value, ProviderError> {
-        let pid = call.arguments["pid"]
-            .as_u64()
-            .expect("guest supplied its process id");
+impl ToolProvider for KillWorker {
+    async fn execute(&self, _: ToolCall, _: CallContext) -> Result<Value, ProviderError> {
+        let pids = worker_pids(&self.worker);
+        assert_eq!(pids.len(), 1, "one running worker: {pids:?}");
         let status = tokio::process::Command::new("/bin/kill")
-            .args(["-KILL", &pid.to_string()])
+            .args(["-KILL", &pids[0].to_string()])
             .status()
             .await
-            .expect("terminate this test's guest");
+            .expect("terminate this test's worker");
         assert!(status.success());
         tokio::time::sleep(Duration::from_millis(100)).await;
-        Ok(json!("observed after guest exit"))
+        if !self.answer {
+            std::future::pending::<()>().await;
+        }
+        Ok(json!("observed after worker exit"))
     }
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn abrupt_guest_exit_preserves_later_observable_provider_result() {
+async fn abrupt_worker_exit_keeps_a_later_result_and_otherwise_unknown() {
+    let worker = traceable_worker("abrupt-exit-observed");
     let report = run(
-        "return await tools.call('mock.echo', {pid:Deno.pid});",
-        config(),
-        KillGuest,
+        "return await tools.call('mock.echo', {});",
+        RunConfig {
+            worker: Some(worker.clone()),
+            ..config()
+        },
+        KillWorker {
+            worker,
+            answer: true,
+        },
         RunCancellation::default(),
     )
     .await
-    .expect("guest exit produces a report");
+    .expect("worker exit produces a report");
     assert_eq!(report.status, RunStatus::GuestError, "{report:?}");
     assert_eq!(
         report.calls[0].outcome,
         CallOutcome::Succeeded {
-            value: json!("observed after guest exit")
+            value: json!("observed after worker exit")
         }
     );
+
+    let worker = traceable_worker("abrupt-exit-unknown");
+    let report = run(
+        "return await tools.call('mock.echo', {});",
+        RunConfig {
+            worker: Some(worker.clone()),
+            timeout_ms: 1_000,
+            ..config()
+        },
+        KillWorker {
+            worker,
+            answer: false,
+        },
+        RunCancellation::default(),
+    )
+    .await
+    .expect("worker exit produces a report");
+    assert_eq!(report.status, RunStatus::Deadline, "{report:?}");
+    assert_eq!(report.calls[0].outcome, CallOutcome::Unknown);
 }
 
 #[tokio::test]
@@ -448,23 +583,59 @@ async fn returned_null_is_distinct_from_absent_output_in_json() {
     assert!(absent.get("output").is_none());
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn stdout_frame_size_is_bounded_without_a_newline() {
     let report = run(
-        "Deno.stdout.writeSync(new TextEncoder().encode('x'.repeat(70000))); await new Promise(() => {});",
-        config(), MockProvider, RunCancellation::default(),
-    ).await.expect("oversized frame produces a report");
+        "oversized-line",
+        forging_worker(),
+        MockProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("oversized frame produces a report");
     assert_eq!(report.status, RunStatus::ProtocolError, "{report:?}");
+    assert_eq!(
+        report.diagnostic.as_deref(),
+        Some("frame exceeds 65536 bytes")
+    );
 }
 
 #[tokio::test]
-async fn guest_cannot_read_host_environment_or_files() {
+async fn typed_composition_runs_without_host_capabilities_or_imports() {
     let report = run(
-        "const denied=[]; for (const fn of [() => Deno.env.get('HOME'), () => Deno.readTextFileSync('/etc/hosts'), () => new Deno.Command('/bin/echo').spawn()]) { try { fn(); denied.push(false); } catch { denied.push(true); } } return denied;",
-        config(), MockProvider, RunCancellation::default(),
-    ).await.expect("permission errors can be caught");
+        r#"
+        const values: number[] = await Promise.all([1, 2, 3].map(n => tools.call('mock.echo', n)));
+        const denied = await tools.call('private.write').catch(error => error.code);
+        const globals = [typeof Deno, typeof process, typeof require, typeof fetch];
+        const imports = await Promise.all(['./local.ts', 'node:fs', 'data:text/javascript,export default 1']
+          .map(name => import(name).then(() => 'allowed', () => 'denied')));
+        return {sum: values.reduce((a, b) => a + b, 0), denied, globals, imports};
+        "#,
+        config(),
+        MockProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("program runs");
     assert_eq!(report.status, RunStatus::Success, "{report:?}");
-    assert_eq!(report.output, Some(json!([true, true, true])));
+    assert_eq!(
+        report.output,
+        Some(json!({
+            "sum": 6,
+            "denied": "tool_denied",
+            "globals": ["undefined", "undefined", "undefined", "undefined"],
+            "imports": ["denied", "denied", "denied"],
+        }))
+    );
+    assert_eq!(report.backend, ExecutionBackend::EmbeddedV8);
+    assert!(report.bytes.to_guest > 0 && report.bytes.from_guest > 0);
+    assert!(
+        report
+            .calls
+            .iter()
+            .all(|call| call.guest_id.is_some() && call.delivered_ms.is_some())
+    );
 }
 
 #[tokio::test]
@@ -541,7 +712,7 @@ async fn trace_separates_admission_dispatch_result_and_delivery_with_byte_accoun
     .await
     .expect("run completes");
     assert_eq!(report.status, RunStatus::Success, "{report:?}");
-    assert_eq!(report.schema_version, 3);
+    assert_eq!(report.schema_version, 4);
     for record in &report.calls {
         let admitted = record.admitted_ms.expect("admitted");
         let started = record.started_ms.expect("dispatched");
@@ -711,36 +882,6 @@ async fn oversized_output_is_counted_as_omitted_after_the_guest_finished() {
         report.events.iter().any(
             |event| event.kind == "guest_finished" && event.reason.as_deref() == Some("output")
         )
-    );
-}
-
-#[tokio::test]
-async fn a_guest_started_ahead_of_time_runs_with_its_own_deadline_and_says_so() {
-    let mut options = config();
-    options.timeout_ms = 400;
-    let guest = codemode::PreparedGuest::start(&options.deno).expect("guest starts");
-    // Longer than the run's whole deadline: startup must not count against it.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let report = codemode::run_prepared(
-        guest,
-        "const x: number = await tools.call('mock.wait', {ms: 100, value: 41}); return x + 1;",
-        options,
-        MockProvider,
-        RunCancellation::default(),
-    )
-    .await
-    .expect("run completes");
-    assert_eq!(report.status, RunStatus::Success, "{report:?}");
-    assert_eq!(report.output, Some(json!(42)));
-    assert!(
-        report.prewarmed_ms.is_some_and(|ms| ms >= 450),
-        "{report:?}"
-    );
-    assert!(
-        report
-            .events
-            .iter()
-            .all(|event| event.kind != "guest_spawned")
     );
 }
 

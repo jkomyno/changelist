@@ -1,10 +1,10 @@
 //! Execute bounded TypeScript programs or finite host-owned tool calls.
 //!
-//! The Deno subprocess receives no host environment and denies guest filesystem,
-//! network, environment, and process permissions. Its stdout is untrusted protocol
-//! input; Rust validates every call and owns call identities, provider execution,
-//! limits, and the resulting trace.
-//! Built-in and inline data modules and raw child stdio remain accessible.
+//! [`run`] executes each program in a fresh worker process embedding V8, named by
+//! [`RunConfig::worker`]. The worker receives no host environment, refuses every
+//! import, and exposes no filesystem, network, environment, process, or FFI APIs.
+//! Its stdout is untrusted protocol input; Rust validates every call and owns call
+//! identities, provider execution, limits, and the resulting trace.
 //!
 //! [`run_calls`] submits finite host-owned requests without a guest process.
 //! [`run`] takes any [`ToolProvider`]. [`serve_bridge`] supplies one whose calls
@@ -20,7 +20,6 @@
 //! tools, for tests, demos, and evaluations. Neither is part of the default API.
 
 mod bridge;
-#[cfg(feature = "embedded-v8")]
 mod embedded;
 mod executor;
 #[cfg(feature = "testkit")]
@@ -35,7 +34,6 @@ mod recovery;
 mod runtime;
 
 pub use bridge::{BRIDGE_FRAME_BYTES, BRIDGE_PROTOCOL_VERSION, BridgeError, serve_bridge};
-#[cfg(feature = "embedded-v8")]
 pub use embedded::{EmbeddedWorkerError, run_embedded_worker};
 pub use executor::{
     OperationStatus, SessionError, SessionOptions, SessionOutcome, SessionTiming, assess_history,
@@ -70,7 +68,7 @@ pub use recovery::{
 pub use runtime::MockProvider;
 pub use runtime::{
     BridgeTotals, ByteTotals, CallContext, CallOutcome, CallRecord, ClockInfo, ExecutionBackend,
-    FactSink, GuestBackend, NativeCall, PreparedGuest, ProviderError, ProviderFact,
-    ProviderFactKind, REPORT_SCHEMA_VERSION, RunCancellation, RunConfig, RunError, RunEvent,
-    RunLimits, RunReport, RunStatus, ToolCall, ToolProvider, run, run_calls, run_prepared,
+    FactSink, NativeCall, ProviderError, ProviderFact, ProviderFactKind, REPORT_SCHEMA_VERSION,
+    RunCancellation, RunConfig, RunError, RunEvent, RunLimits, RunReport, RunStatus, ToolCall,
+    ToolProvider, run, run_calls,
 };

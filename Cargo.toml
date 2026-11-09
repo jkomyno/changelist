@@ -2,7 +2,7 @@
 name = "codemode"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.91"
 description = "A local Rust execution runtime for bounded agent-written tool workflows."
 repository = "https://github.com/jkomyno/codemode"
 license = "MIT"
@@ -20,7 +20,6 @@ unimplemented = "warn"
 
 [features]
 default = []
-embedded-v8 = ["dep:deno_core", "dep:deno_ast", "dep:deno_error"]
 # Offline fixtures, mock tools, and fault injection for tests, demos, and evaluations.
 # Never part of the production binary or the default library API.
 testkit = []
@@ -36,9 +35,9 @@ path = "src/bin/codemode-recovery-eval.rs"
 required-features = ["testkit"]
 
 [dependencies]
-deno_core = { version = "=0.413.0", optional = true }
-deno_ast = { version = "=0.53.3", features = ["transpiling"], optional = true }
-deno_error = { version = "=0.7.1", optional = true }
+deno_core = "=0.413.0"
+deno_ast = { version = "=0.53.3", features = ["transpiling"] }
+deno_error = "=0.7.1"
 rusqlite = { version = "0.37", default-features = false, features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }

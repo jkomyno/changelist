@@ -2,8 +2,7 @@
 import { type ProviderDeclaration, runBridge, runPlanBridge } from "../integrations/shared/bridge-client.ts";
 import { codemode } from "../integrations/opencode/codemode-bridge.ts";
 
-const [installation, backend, deno] = Deno.args;
-if (backend !== "deno" && backend !== "embedded-v8") throw new Error("unknown backend");
+const [installation] = Deno.args;
 const bin = `${installation}/bin/codemode`;
 const cwd = Deno.cwd();
 function assert(condition: boolean, message: string): asserts condition {
@@ -17,7 +16,7 @@ async function command(executable: string, args: string[]): Promise<string> {
 
 // A real trusted host uses the delivered shared adapter to execute an offline tool.
 const report = await runBridge({
-  bin, backend, deno, cwd, timeoutMs: 10_000, concurrency: 1, maxCalls: 1,
+  bin, cwd, timeoutMs: 10_000, concurrency: 1, maxCalls: 1,
   code: 'return await tools.call("installed.echo", {message: "outside-checkout"});',
   tools: ["installed.echo"],
   async execute(call) { return { ok: true, value: { tool: call.tool, arguments: call.arguments } }; },
@@ -36,7 +35,7 @@ await Deno.writeTextFile("trace-inspection.txt", await command(bin, ["inspect", 
 // The separate pinned-host CI lane tests OpenCode's real permission service.
 const permissions: string[] = [];
 const plugin = await codemode({
-  bin, backend, deno, trace: "opencode-trace.json",
+  bin, trace: "opencode-trace.json",
   tools: { echo: { description: "Offline installed tool", args: {}, async execute() { return "installed-opencode"; } } },
 })({ directory: cwd });
 const pluginResult = await plugin.tool.rust_codemode.execute({ code: 'return await tools.call("echo", {});' }, {
@@ -94,4 +93,4 @@ assert(effects.length === 1, `resume repeated or lost the effect: ${effects.leng
 await Deno.writeTextFile("plan-inspection.txt", await command(bin, ["plan", "inspect", "--journal", "journal.db"]));
 await Deno.writeTextFile("native-trace.json", await command(bin, ["plan", "trace", "--journal", "journal.db", "--session", "1"]));
 await command(bin, ["inspect", "native-trace.json"]);
-console.log(JSON.stringify({ status: "success", backend, installed: installation, work: cwd }));
+console.log(JSON.stringify({ status: "success", installed: installation, work: cwd }));

@@ -12,11 +12,14 @@ mise run check
 ```
 
 Use mise for both development and CI. Nix is not part of the toolchain.
-`mise.toml` selects stable Rust, a specific Mr Boxington release, and the
-prototype's Deno execution backend.
-`Cargo.toml` declares the default build's minimum supported Rust version, currently
-1.85. The optional `embedded-v8` feature uses newer Deno embedding dependencies;
-it is tested on Rust 1.99.1, with no complete minimum claimed for that feature.
+`mise.toml` selects stable Rust, a specific Mr Boxington release, and the Deno
+release that runs the TypeScript host tests and scripts; codemode itself does not use Deno.
+`Cargo.toml` declares the minimum supported Rust version, currently 1.91, which the
+embedded V8 dependencies require.
+
+Every build compiles V8: the `v8` build script downloads a prebuilt `rusty_v8` static
+library (tens of MiB) from GitHub releases on first use. Offline or mirrored builds
+can set `RUSTY_V8_ARCHIVE` to a local file or URL, or `RUSTY_V8_MIRROR` to a mirror.
 
 ## Make a change
 
@@ -37,14 +40,12 @@ Before submitting a code or build change, run:
 
 ```sh
 mise run check
-mise run embedded-check
 mise run typecheck
 ```
 
 The task checks formatting, runs Clippy on all targets and features, runs tests
 including doc tests, and builds documentation. Clippy and rustdoc warnings fail
-the check. `embedded-check` executes the real embedded-worker and backend tests;
-CI runs it after `check`. To fix formatting, run `mise exec -- cargo fmt --all`.
+the check. To fix formatting, run `mise exec -- cargo fmt --all`.
 `typecheck` installs the locked development-only npm dependencies without install
 scripts and checks delivered adapters against the pinned Pi and OpenCode APIs.
 Node is managed by mise; it is not needed to use the installed Rust CLI.
@@ -64,13 +65,9 @@ tools; report its result separately from offline checks.
 For compatibility changes, also test the declared MSRV:
 
 ```sh
-mise exec -- rustup toolchain install 1.85.0 --profile minimal
-mise exec -- cargo +1.85.0 test --locked
+mise exec -- rustup toolchain install 1.91.0 --profile minimal
+mise exec -- cargo +1.91.0 test --locked --all-features
 ```
-
-Keep that MSRV run on default features. Use the current mise compiler for
-`--features embedded-v8` or `--all-features`; enabling the optional engine does
-not change the compatibility promise of the default library and native plans.
 
 The [CI workflow](.github/workflows/ci.yml) installs tools with mise and runs Cargo
 through Mr Boxington. It also installs the exact CI commit and exercises its

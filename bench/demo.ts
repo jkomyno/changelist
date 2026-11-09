@@ -2,9 +2,8 @@
  * A short demonstration on the benchmark fixtures, offline and without accounts:
  *
  * 1. the triage workflow under mixed latency, and why it took as long as it did;
- * 2. the same workflow with a guest started ahead of the run;
- * 3. a permission denial, and which calls ran;
- * 4. a simulated effect whose response is lost, and what needs reconciliation.
+ * 2. a permission denial, and which calls ran;
+ * 3. a simulated effect whose response is lost, and what needs reconciliation.
  *
  * Each step saves the execution record and prints `codemode inspect` on it.
  *
@@ -22,12 +21,10 @@ const dir = index === -1 ? mkdtempSync(join(tmpdir(), "codemode-demo-")) : proce
 mkdirSync(dir, { recursive: true });
 const bin = process.env.CODEMODE_BIN ?? join(ROOT, "target/release/codemode");
 
-async function step(title: string, engine: string, name: string, profile: Profile, inspect: string[], runs = 1) {
+async function step(title: string, engine: string, name: string, profile: Profile, inspect: string[]) {
   const mod = await loadEngine(engine);
   const s = scenario(name);
-  // Later runs of a prewarmed engine use the guest started after the previous one.
-  let record = await runOnce(engine, mod, s, profile, program(s));
-  for (let run = 1; run < runs; run++) record = await runOnce(engine, mod, s, profile, program(s));
+  const record = await runOnce(engine, mod, s, profile, program(s));
   const trace = join(dir, `${name}-${engine}.json`);
   writeFileSync(trace, JSON.stringify(record.raw.engineTrace, null, 2) + "\n");
   const ledger = record.ledger;
@@ -46,8 +43,7 @@ async function step(title: string, engine: string, name: string, profile: Profil
 }
 
 await step("1. A composed workflow", "codemode", "triage", "mixed", ["--why-slow", "--limit", "3"]);
-await step("2. The same workflow, guest started ahead of the run", "codemode-prewarm", "triage", "mixed", ["--why-slow", "--limit", "3"], 2);
-await step("3. A permission denial", "codemode", "denied", "equal", ["--calls", "--limit", "4"]);
-await step("4. A response lost after its effect", "codemode", "lost-response", "mixed", ["--reconcile"]);
+await step("2. A permission denial", "codemode", "denied", "equal", ["--calls", "--limit", "4"]);
+await step("3. A response lost after its effect", "codemode", "lost-response", "mixed", ["--reconcile"]);
 console.log(`\nRecords are in ${dir}`);
 process.exit(0);

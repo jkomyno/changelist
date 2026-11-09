@@ -12,7 +12,6 @@
  * - `wait` is slow and reports when OpenCode aborts it.
  */
 import { appendFileSync, readFileSync } from "node:fs";
-import { parseBackend } from "../../shared/bridge-client.ts";
 import { codemode, type HostTool } from "../codemode-bridge.ts";
 
 const audit = (entry: Record<string, unknown>) => {
@@ -74,8 +73,6 @@ const wait: HostTool = {
 const bridge = codemode({
   tools: { lookup, publish, purge, wait },
   bin: process.env.CODEMODE_OC_BIN,
-  backend: parseBackend(process.env.CODEMODE_OC_BACKEND ?? "deno"),
-  deno: process.env.CODEMODE_OC_DENO,
   trace: process.env.CODEMODE_OC_TRACE,
   timeoutMs: 20_000,
 });

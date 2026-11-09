@@ -13,7 +13,7 @@ const SECRET: &str = "codemode-inspect-secret-value";
 #[cfg(feature = "testkit")]
 fn config() -> RunConfig {
     RunConfig {
-        deno: std::env::var_os("CODEMODE_TEST_DENO").map_or_else(|| "deno".into(), Into::into),
+        worker: Some(env!("CARGO_BIN_EXE_codemode").into()),
         timeout_ms: 5_000,
         ..MockProvider::config()
     }
@@ -92,7 +92,7 @@ fn evidence_report() -> RunReport {
     };
     let fact = |id: u64, kind: &str, at: u64| json!({"call_id": id, "kind": kind, "received_ms": at, "provider_ms": 1.5});
     serde_json::from_value(json!({
-        "schema_version": 3, "backend": "deno", "code": "...", "status": "deadline",
+        "schema_version": 4, "backend": "embedded_v8", "code": "...", "status": "deadline",
         "limits": {"timeout_ms": 300, "max_calls": 32, "max_concurrency": 4, "max_output_bytes": 1000},
         "calls": [
             call(1, json!({"status": "unknown"}), Some(11)),
@@ -265,7 +265,7 @@ fn inspect_reads_a_record_from_stdin_and_refuses_other_json() {
 
 fn minimal(status: &str, elapsed: u64, calls: Value, events: Value) -> RunReport {
     serde_json::from_value(json!({
-        "schema_version": 3, "backend": "deno", "code": "", "status": status,
+        "schema_version": 4, "backend": "embedded_v8", "code": "", "status": status,
         "limits": {"timeout_ms": 10, "max_calls": 32, "max_concurrency": 4, "max_output_bytes": 1000},
         "calls": calls, "events": events, "provider_facts": [], "provider_facts_dropped": 0,
         "elapsed_ms": elapsed, "clock": clock(), "bytes": bytes(), "diagnostic": null
@@ -340,7 +340,7 @@ async fn native_inspection_has_exclusive_host_phases_and_roundtrips_without_gues
         &calls,
         RunConfig {
             max_concurrency: 1,
-            deno: "/nonexistent/native-inspect-deno".into(),
+            worker: Some("/nonexistent/native-inspect-worker".into()),
             ..config()
         },
         MockProvider,
@@ -349,7 +349,7 @@ async fn native_inspection_has_exclusive_host_phases_and_roundtrips_without_gues
     .await
     .expect("native run completes");
     let saved = serde_json::to_value(&report).expect("native report serializes");
-    assert_eq!(saved["schema_version"], 3);
+    assert_eq!(saved["schema_version"], 4);
     assert_eq!(saved["backend"], "native");
     assert!(saved.get("output").is_none());
     assert!(

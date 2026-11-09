@@ -2,7 +2,7 @@
  * Offline check of `sdkExecutor` against a stand-in for `@composio/core`'s client:
  * request shape, abort-signal forwarding, result mapping, and an unobserved request
  * error that cancels the run. Prints one JSON line.
- * Usage: deno run --allow-run --allow-read --allow-env sdk-check.ts <codemode> <deno>
+ * Usage: deno run --allow-run --allow-read --allow-env sdk-check.ts <codemode>
  */
 import { type ComposioSdk, runComposio, sdkExecutor } from "../composio-provider.ts";
 
@@ -23,7 +23,6 @@ const sdk: ComposioSdk = {
 
 const { report } = await runComposio({
   bin: Deno.args[0],
-  deno: Deno.args[1],
   cwd: Deno.cwd(),
   code: `const out = [];
 for (const [slug, args] of [["GITHUB_GET_THE_AUTHENTICATED_USER", {}], ["SLACK_TEST_AUTH", {}], ["GITHUB_GET_A_REPOSITORY", {}], ["GITHUB_GET_THE_AUTHENTICATED_USER", [1]]]) {
@@ -38,7 +37,6 @@ return out;`,
 });
 const crashed = await runComposio({
   bin: Deno.args[0],
-  deno: Deno.args[1],
   cwd: Deno.cwd(),
   code: `return await tools.call("GITHUB_GET_THE_AUTHENTICATED_USER", {});`,
   tools: ["GITHUB_GET_THE_AUTHENTICATED_USER"],

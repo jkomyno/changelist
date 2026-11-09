@@ -1055,7 +1055,7 @@ fn render_markdown(
     );
     let _ = writeln!(
         out,
-        "- Backend: native for every dispatch. Guest startup is absent (—); execution is the full native dispatch run. No Deno executable is discovered or launched."
+        "- Backend: native for every dispatch. Guest startup is absent (—); execution is the full native dispatch run. No program worker is started."
     );
     let _ = writeln!(
         out,

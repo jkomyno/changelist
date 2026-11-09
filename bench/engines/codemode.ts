@@ -15,38 +15,31 @@
  * maxOutputBytes, each reply to the guest is capped at 1 MiB and each call frame from
  * it at 64 KiB.
  *
- * Paths: CODEMODE_BIN (default target/release/codemode) and CODEMODE_DENO (default
- * `mise which deno`, resolved only for Deno runs). The optional embedded-v8 backend
- * uses the same bridge and limits without resolving or launching Deno.
+ * Paths: CODEMODE_BIN (default target/release/codemode). Each run starts one bridge,
+ * which starts one fresh embedded V8 worker for the program.
  */
-import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   type BridgeCall,
   type BridgeLimits,
-  bridgeKey,
   type HostReply,
   type RunReport,
   runBridge,
-  type StartedBridge,
-  startBridge,
 } from "../../integrations/shared/bridge-client.ts";
 import type { EngineInfo, EngineInput, EngineResult, ErrorKind } from "./types.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const BIN = resolve(process.env.CODEMODE_BIN ?? join(ROOT, "target/release/codemode"));
-let deno: string | undefined;
-const denoPath = () => deno ??= process.env.CODEMODE_DENO ?? execFileSync("mise", ["which", "deno"], { cwd: ROOT, encoding: "utf8" }).trim();
 
 export const info: EngineInfo = {
   name: "codemode",
-  version: "Deno backend; bridge protocol 2 (this checkout)",
+  version: "embedded V8 worker; bridge protocol 2 (this checkout)",
   limits: {
-    timeoutMs: "enforced by Rust; one absolute deadline that includes bridge and Deno startup",
+    timeoutMs: "enforced by Rust; one absolute deadline that includes worker startup",
     maxCalls: "enforced by Rust; the first call beyond the allowance is rejected and ends the run",
     concurrency: "enforced by Rust's rolling scheduler (8, or 4 for codemode-c4)",
-    maxOutputBytes: "enforced by Rust; shared budget for tool replies and final output (default 262144, set to 1048576 here); separately, each reply to the Deno guest is capped at 1 MiB",
+    maxOutputBytes: "enforced by Rust; shared budget for tool replies and final output (default 262144, set to 1048576 here); separately, each reply to the guest is capped at 1 MiB",
   },
   shim: "none in the guest; host shim maps bridge calls to tool functions and errors to {code, message}",
 };
@@ -59,75 +52,18 @@ const KINDS: Record<string, ErrorKind> = {
   cancelled: "cancelled",
 };
 
-/**
- * With `prewarm`, the adapter keeps one started bridge (and its selected guest) ready
- * for the next run with the same limits, started just after the previous run
- * returned. Each bridge serves one run. A run that finds no ready bridge, such as
- * the first in a process, starts one itself.
- */
-export function createEngine(options: { prewarm: boolean; backend?: BridgeLimits["backend"] }): { info: EngineInfo; runEngine: (input: EngineInput) => Promise<EngineResult> } {
-  const backend = options.backend ?? "deno";
-  const embedded = backend === "embedded-v8";
-  const guest = embedded ? "embedded V8 worker" : "Deno guest";
-  const engineInfo: EngineInfo = embedded
-    ? {
-        ...info,
-        name: "codemode-embedded",
-        version: "embedded-v8 backend; bridge protocol 2 (this checkout)",
-        limits: {
-          ...info.limits,
-          timeoutMs: "enforced by Rust; one absolute deadline that includes bridge and embedded worker startup",
-          maxOutputBytes: "enforced by Rust; shared budget for tool replies and final output (default 262144, set to 1048576 here); separately, each reply to the embedded guest is capped at 1 MiB",
-        },
-      }
-    : info;
-  let ready: StartedBridge | undefined;
-  const take = (limits: BridgeLimits): StartedBridge | undefined => {
-    const found = ready;
-    ready = undefined;
-    if (found && !found.exited && found.key === bridgeKey(limits)) return found;
-    found?.child.kill();
-    return undefined;
-  };
-  const prepareNext = (limits: BridgeLimits) => {
-    // After this run has returned, so starting the next bridge is not part of it.
-    setTimeout(() => {
-      ready?.child.kill();
-      ready = startBridge(limits);
-    }, 0);
-  };
-  return {
-    info: options.prewarm
-      ? {
-          ...engineInfo,
-          name: `${engineInfo.name}-prewarm`,
-          shim: `${engineInfo.shim}; one bridge and ${guest} started ahead of each run, outside its measured time; one fresh guest per run`,
-        }
-      : engineInfo,
-    runEngine: async (input) => {
-      const limits: BridgeLimits = {
-        bin: BIN,
-        backend,
-        ...(embedded ? {} : { deno: denoPath() }),
-        cwd: ROOT,
-        timeoutMs: input.limits.timeoutMs,
-        concurrency: input.limits.concurrency,
-        maxCalls: input.limits.maxCalls,
-        maxOutputBytes: input.limits.maxOutputBytes,
-      };
-      const started = options.prewarm ? take(limits) : undefined;
-      try {
-        return await runOnce(input, limits, started);
-      } finally {
-        if (options.prewarm) prepareNext(limits);
-      }
-    },
-  };
+export async function runEngine(input: EngineInput): Promise<EngineResult> {
+  return runOnce(input, {
+    bin: BIN,
+    cwd: ROOT,
+    timeoutMs: input.limits.timeoutMs,
+    concurrency: input.limits.concurrency,
+    maxCalls: input.limits.maxCalls,
+    maxOutputBytes: input.limits.maxOutputBytes,
+  });
 }
 
-export const runEngine = createEngine({ prewarm: false }).runEngine;
-
-async function runOnce(input: EngineInput, limits: BridgeLimits, started: StartedBridge | undefined): Promise<EngineResult> {
+async function runOnce(input: EngineInput, limits: BridgeLimits): Promise<EngineResult> {
   const setupStart = performance.now();
   const execute = async (call: BridgeCall, signal: AbortSignal, report?: (kind: string) => void): Promise<HostReply> => {
     const tool = input.tools[call.tool];
@@ -157,7 +93,6 @@ async function runOnce(input: EngineInput, limits: BridgeLimits, started: Starte
       tools: Object.keys(input.tools),
       signal: input.signal,
       execute,
-      started,
     });
   } catch (error) {
     return {

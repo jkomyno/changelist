@@ -20,7 +20,7 @@ expected='{"environment":"denied","github":true,"refused":["composio_tool_failed
 composio run --file integrations/composio/host.ts -- \
   --program integrations/composio/demo/workflow.ts \
   --tools GITHUB_GET_THE_AUTHENTICATED_USER,SLACK_TEST_AUTH,GITHUB_GET_A_REPOSITORY \
-  --bin target/debug/codemode --deno "$deno" --trace "$work/trace.json" </dev/null \
+  --bin target/debug/codemode --trace "$work/trace.json" </dev/null \
   >"$work/summary.json" 2>"$work/stderr" || status=$?
 grep -v '^RUN_LOG_FILE=' "$work/stderr" >&2 || true
 cat "$work/summary.json"

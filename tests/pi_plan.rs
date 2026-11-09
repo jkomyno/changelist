@@ -149,7 +149,6 @@ fn pi(scratch: &Scratch, action: &str) -> Command {
         ])
         .arg(scratch.file("declaration.json"))
         .stdin(Stdio::null());
-    command.args(["--codemode-deno", "/codemode-test-no-deno/deno"]);
     command.arg(format!(
         "Use rust_codemode_plan to {action} the approved plan."
     ));

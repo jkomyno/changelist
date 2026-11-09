@@ -292,7 +292,7 @@ impl Sections {
 /// ```
 /// use codemode::{InspectOptions, RunReport, Sections, inspect};
 /// let report: RunReport = serde_json::from_str(r#"{
-///   "schema_version": 3, "backend": "deno", "code": "return 1;", "status": "success",
+///   "schema_version": 4, "backend": "embedded_v8", "code": "return 1;", "status": "success",
 ///   "limits": {"timeout_ms": 5000, "max_calls": 32, "max_concurrency": 4,
 ///              "max_output_bytes": 262144},
 ///   "output": 1, "calls": [], "events": [], "provider_facts": [],
@@ -783,7 +783,6 @@ impl Inspection {
         );
         let backend = match self.backend {
             ExecutionBackend::Native => "native",
-            ExecutionBackend::Deno => "deno",
             ExecutionBackend::EmbeddedV8 => "embedded_v8",
         };
         let _ = writeln!(out, "backend {backend}");

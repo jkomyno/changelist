@@ -1,4 +1,4 @@
-//! Restricted engine worker for the optional embedded backend.
+//! Restricted V8 worker process that runs one program.
 
 use std::cell::RefCell;
 use std::fmt;

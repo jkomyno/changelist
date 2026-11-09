@@ -50,8 +50,6 @@ fn host(program: &str, trace: &Path) -> Command {
         .arg("integrations/composio/testing/offline-host.ts")
         .args(["--program", program, "--tools", TOOLS])
         .args(["--bin", env!("CARGO_BIN_EXE_codemode")])
-        .arg("--deno")
-        .arg(deno())
         .arg("--trace")
         .arg(trace)
         .stdin(Stdio::null());
@@ -258,7 +256,6 @@ fn sdk_executor_forwards_abort_signals_and_maps_results() {
         .args(["run", "--allow-run", "--allow-read", "--allow-env"])
         .arg("integrations/composio/demo/sdk-check.ts")
         .arg(env!("CARGO_BIN_EXE_codemode"))
-        .arg(deno())
         .stdin(Stdio::null())
         .output()
         .expect("Deno runs the check");

@@ -1,5 +1,5 @@
 //! Command-line contracts: removed surfaces, plan previews, the bridge over
-//! process stdio, and signal and guest-process handling.
+//! process stdio, and signal and worker-process handling.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -12,6 +12,11 @@ fn removed_commands_and_options_are_unknown() {
         (&["run", "--code", "-"], "unknown command 'run'"),
         (&["bridge", "--code", "x.ts"], "unknown option '--code'"),
         (&["bridge", "--trace", "x.json"], "unknown option '--trace'"),
+        (&["bridge", "--deno", "x"], "unknown option '--deno'"),
+        (
+            &["bridge", "--backend", "embedded-v8"],
+            "unknown option '--backend'",
+        ),
         (&["plan", "run", "--deno", "x"], "unknown option '--deno'"),
         (
             &["plan", "resume", "--deno", "x"],
@@ -279,7 +284,7 @@ fn sigterm_cancels_the_run_and_still_reports() {
     drop(input);
 }
 
-/// A bridge waiting for its program, as a prewarmed one does, still stops on SIGTERM.
+/// A bridge waiting for its program still stops on SIGTERM.
 #[cfg(unix)]
 #[test]
 fn an_idle_bridge_stops_on_sigterm() {
@@ -305,72 +310,108 @@ fn an_idle_bridge_stops_on_sigterm() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("cancelled before the start frame"));
 }
 
-/// A bridge whose guest dies while waiting reports it instead of waiting forever.
-#[cfg(unix)]
+/// The bridge starts its worker from its own executable, without a PATH.
 #[test]
-fn a_bridge_whose_guest_exits_before_its_program_reports_it() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_codemode"))
-        .args(["bridge", "--deno", "/usr/bin/true"])
+fn a_bridge_runs_its_program_with_an_empty_environment() {
+    use std::io::{BufRead, BufReader};
+
+    let mut bridge = Command::new(env!("CARGO_BIN_EXE_codemode"))
+        .arg("bridge")
+        .env_clear()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()
         .expect("bridge starts");
-    // Keep the input open, so only the guest's exit can stop the bridge.
-    let _input = child.stdin.take();
-    let output = child.wait_with_output().expect("bridge exits");
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("guest exited before the start frame"),
-        "{output:?}"
-    );
+    let mut input = bridge.stdin.take().expect("bridge stdin");
+    let mut output = BufReader::new(bridge.stdout.take().expect("bridge stdout"));
+    writeln!(
+        input,
+        "{}",
+        json!({"type":"start","version":2,"tools":["host.echo"],
+        "code":"const n: number = 42; return await tools.call('host.echo', n);"})
+    )
+    .expect("start");
+    let mut line = String::new();
+    output.read_line(&mut line).expect("call");
+    let call: Value = serde_json::from_str(&line).expect("call JSON");
+    assert_eq!(call["tool"], "host.echo");
+    writeln!(
+        input,
+        "{}",
+        json!({"type":"result","id":call["id"],"ok":true,"value":42})
+    )
+    .expect("reply");
+    line.clear();
+    output.read_line(&mut line).expect("report");
+    let report: Value = serde_json::from_str(&line).expect("report JSON");
+    assert_eq!(report["report"]["backend"], "embedded_v8");
+    assert_eq!(report["report"]["output"], 42);
+    assert!(bridge.wait().expect("bridge exits").success());
 }
 
-/// Guest cleanup still applies to programs after approved plans stop using guests.
+/// Killing a program host leaves no worker running, even one spinning on CPU.
 #[cfg(unix)]
 #[test]
-fn killing_a_program_host_does_not_leave_its_deno_guest_running() {
+fn killing_a_program_host_does_not_leave_its_worker_running() {
     use std::io::{BufRead, BufReader};
     use std::time::{Duration, Instant};
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_codemode"))
+    let mut bridge = Command::new(env!("CARGO_BIN_EXE_codemode"))
         .args(["bridge", "--timeout-ms", "20000"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .expect("program host starts");
-    let mut input = child.stdin.take().expect("host stdin");
-    let mut output = BufReader::new(child.stdout.take().expect("host stdout"));
+        .expect("bridge starts");
+    let mut input = bridge.stdin.take().expect("bridge stdin");
+    let mut output = BufReader::new(bridge.stdout.take().expect("bridge stdout"));
     writeln!(
         input,
         "{}",
-        json!({"type":"start","version":2,"tools":["host.wait"],
-        "code":"return await tools.call('host.wait');"})
+        json!({"type":"start","version":2,"tools":["ready"],
+        "code":"await tools.call('ready'); for (;;) {}"})
     )
-    .expect("send program");
+    .expect("start");
     let mut line = String::new();
-    output.read_line(&mut line).expect("guest submitted a call");
-    let call: Value = serde_json::from_str(&line).expect("call frame");
+    output.read_line(&mut line).expect("ready call");
+    let call: Value = serde_json::from_str(&line).expect("call");
     assert_eq!(call["type"], "call");
-
-    let pattern = format!("codemode-{}-[0-9]+\\.ts", child.id());
-    let guest_running = || {
-        Command::new("pgrep")
-            .args(["-f", &pattern])
-            .status()
-            .expect("find this host's guest")
-            .success()
-    };
+    let children = Command::new("pgrep")
+        .args(["-P", &bridge.id().to_string()])
+        .output()
+        .expect("find worker");
     assert!(
-        guest_running(),
-        "guest must exist before the host is killed"
+        children.status.success(),
+        "worker must exist before killing its parent"
     );
-    child.kill().expect("SIGKILL program host");
-    child.wait().expect("reap program host");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while guest_running() {
-        assert!(Instant::now() < deadline, "guest outlived its killed host");
+    let pid: u32 = String::from_utf8(children.stdout)
+        .expect("worker pid")
+        .trim()
+        .parse()
+        .expect("one direct worker child");
+    writeln!(
+        input,
+        "{}",
+        json!({"type":"result","id":call["id"],"ok":true,"value":null})
+    )
+    .expect("reply");
+    bridge.kill().expect("SIGKILL bridge");
+    bridge.wait().expect("reap bridge");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let status = Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .expect("worker status");
+        let state = String::from_utf8_lossy(&status.stdout);
+        if !status.status.success() || state.trim().is_empty() || state.trim().starts_with('Z') {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "worker {pid} outlived its killed bridge"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 }

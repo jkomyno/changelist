@@ -8,15 +8,13 @@
  *
  * Boundaries:
  * - Rust owns admission, the deadline, call allowance, concurrency, output budget,
- *   call identities, and the execution record. The selected worker executes the guest.
+ *   call identities, and the execution record. A fresh V8 worker process, started
+ *   by the `codemode` executable itself, runs each program.
  * - The bridge starts with an empty environment and explicit executable paths, so
  *   the host's credentials and other environment variables never reach Rust or the guest.
  * - Each call frame is acknowledged with a `received` fact; `execute` can report
  *   later milestones (permission decisions, executor entry). Rust records them as
  *   host claims stamped with the host's `performance.now()` clock.
- * - `startBridge` starts a bridge, and its guest, before the program is known; pass
- *   it to `runBridge` as `started` to take that startup off the run's critical path.
- *   A started bridge serves one run; close its stdin, or kill it, to discard it.
  * - Aborting `signal` sends `cancel` to Rust and aborts outstanding host calls; the
  *   bridge is killed if it has not exited two seconds later. Calls already
  *   dispatched are recorded as unknown; their effects may remain.
@@ -25,7 +23,7 @@
  *   reconciliation probes, while Rust keeps the journal. A failed attempt without
  *   a stated effect is recorded as `unknown`.
  */
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 
@@ -67,10 +65,6 @@ export interface BridgeCall {
 export interface BridgeLimits {
   /** Absolute path of the `codemode` executable. */
   bin: string;
-  /** Deno path, or resolve it on the host PATH when omitted; unused by embedded-v8. */
-  deno?: string;
-  /** Program engine; defaults to deno. The binary must include embedded-v8 to select it. */
-  backend?: "deno" | "embedded-v8";
   cwd: string;
   timeoutMs: number;
   concurrency: number;
@@ -79,25 +73,10 @@ export interface BridgeLimits {
   maxOutputBytes?: number;
 }
 
-/** A bridge started ahead of a run by `startBridge`. */
-export interface StartedBridge {
-  readonly child: ChildProcessWithoutNullStreams;
-  /** The bridge's command line, compared with the run's limits. */
-  readonly key: string;
-  /** Set once the process has exited; it can no longer serve a run. */
-  exited: boolean;
-  /** The end of the bridge's stderr. */
-  stderr: string;
-  /** Set if the process could not be started or failed while waiting. */
-  error?: Error;
-}
-
 export interface BridgeRun extends BridgeLimits {
   code: string;
   /** The host's authorization list, sent in the start frame. */
   tools: readonly string[];
-  /** A bridge from `startBridge` with the same limits; one is started otherwise. */
-  started?: StartedBridge;
   /** Aborting it cancels the run. */
   signal?: AbortSignal;
   /**
@@ -122,12 +101,6 @@ export function findExecutable(name: string, cwd: string): string {
     }
   }
   throw new Error(`${name} was not found on PATH; set it explicitly`);
-}
-
-/** Parse an engine option at the host configuration boundary. */
-export function parseBackend(value: string): "deno" | "embedded-v8" {
-  if (value === "deno" || value === "embedded-v8") return value;
-  throw new Error("backend must be deno or embedded-v8");
 }
 
 /** Parse a positive integer option; `name` appears in the error. */
@@ -155,8 +128,6 @@ function reportLimit(maxCalls: number, outputBytes: number): number {
 }
 
 function bridgeArgs(limits: BridgeLimits): string[] {
-  const backend = limits.backend ?? "deno";
-  const deno = backend === "deno" ? limits.deno ?? resolve(findExecutable("deno", limits.cwd)) : undefined;
   return [
     "bridge",
     "--timeout-ms",
@@ -167,37 +138,7 @@ function bridgeArgs(limits: BridgeLimits): string[] {
     String(limits.maxCalls),
     "--max-output-bytes",
     String(limits.maxOutputBytes ?? OUTPUT_BYTES),
-    "--backend",
-    backend,
-    ...(deno === undefined ? [] : ["--deno", deno]),
   ];
-}
-
-/** Identifies a bridge's command line, so a started bridge matches only runs with its limits. */
-export const bridgeKey = (limits: BridgeLimits) => JSON.stringify([limits.bin, limits.cwd, ...bridgeArgs(limits)]);
-
-/**
- * Start a bridge and its guest now, before the program is known. The bridge waits
- * for its program until its stdin closes; the run's deadline starts when
- * `runBridge` sends it.
- */
-export function startBridge(limits: BridgeLimits): StartedBridge {
-  const child = spawn(limits.bin, bridgeArgs(limits), { cwd: limits.cwd, env: {}, stdio: ["pipe", "pipe", "pipe"] });
-  const started: StartedBridge = { child, key: bridgeKey(limits), exited: false, stderr: "" };
-  child.once("close", () => {
-    started.exited = true;
-  });
-  // Kept for runBridge, so a failed spawn of an unused bridge cannot crash the host.
-  child.on("error", (error) => {
-    started.error ??= error;
-    started.exited = true;
-  });
-  child.stdin.on("error", () => {
-  });
-  child.stderr.on("data", (chunk: Buffer) => {
-    started.stderr = (started.stderr + chunk.toString("utf8")).slice(-STDERR_TAIL);
-  });
-  return started;
 }
 
 /**
@@ -248,11 +189,13 @@ function readFrames(
 export async function runBridge(run: BridgeRun): Promise<RunReport> {
   const outputBytes = run.maxOutputBytes ?? OUTPUT_BYTES;
   const frameLimit = reportLimit(run.maxCalls, outputBytes);
-  if (run.started && run.started.key !== bridgeKey(run)) {
-    throw new Error("the started bridge has different limits than this run");
-  }
-  const bridge = run.started ?? startBridge(run);
-  const child = bridge.child;
+  const child = spawn(run.bin, bridgeArgs(run), { cwd: run.cwd, env: {}, stdio: ["pipe", "pipe", "pipe"] });
+  let stderr = "";
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr = (stderr + chunk.toString("utf8")).slice(-STDERR_TAIL);
+  });
+  child.stdin.on("error", () => {
+  });
 
   const authorized = new Set(run.tools);
   const outstanding = new Map<number, AbortController>();
@@ -371,13 +314,10 @@ export async function runBridge(run: BridgeRun): Promise<RunReport> {
       const ended = (code: number | null, killSignal: NodeJS.Signals | null) => {
         if (finished) return;
         abortOutstanding();
-        const reason = bridgeError ?? (bridge.stderr.trim() || `exit ${code ?? killSignal}`);
+        const reason = bridgeError ?? (stderr.trim() || `exit ${code ?? killSignal}`);
         reject(new Error(`codemode bridge ended without a report: ${reason}`));
       };
       child.on("close", ended);
-      // A started bridge may have failed or exited while it waited.
-      if (bridge.error) fail(bridge.error);
-      else if (bridge.exited) ended(child.exitCode, child.signalCode);
     });
   } finally {
     run.signal?.removeEventListener("abort", onAbort);

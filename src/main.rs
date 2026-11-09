@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use codemode::{
-    BridgeError, GuestBackend, InspectOptions, RunCancellation, RunConfig, RunReport, Sections,
-    inspect, serve_bridge,
+    BridgeError, InspectOptions, RunCancellation, RunConfig, RunReport, Sections, inspect,
+    serve_bridge,
 };
 
 mod plan_cli;
@@ -30,12 +30,11 @@ Options:
 bridge lets a parent host execute tools: stdin and stdout carry protocol
 version 2 frames (start, call, result, fact, cancel, report). The host's start
 frame supplies the source and authorized tool names. Credentials stay with the host.
+Each program runs in a fresh V8 worker process started from this executable.
   --timeout-ms <n>        Total run deadline, including startup (default: 5000)
   --max-calls <n>         Maximum helper-call attempts (default: 32)
   --concurrency <n>       Maximum active provider calls (default: 4)
   --max-output-bytes <n>  Cumulative JSON response/output bytes (default: 262144)
-  --deno <executable>     Deno executable (default: deno from PATH)
-  --backend <engine>      deno (default) or embedded-v8 (optional build feature)
 
 inspect reads a saved execution record and answers: why was this slow, which
 calls ran, and which outcomes require reconciliation. It prints tool names,
@@ -131,7 +130,14 @@ fn parse_arguments() -> Result<Command, CliError> {
         }
     }
 
-    let mut config = RunConfig::default();
+    let mut config = RunConfig {
+        worker: Some(env::current_exe().map_err(|error| {
+            CliError(format!(
+                "cannot locate this executable for the worker: {error}"
+            ))
+        })?),
+        ..RunConfig::default()
+    };
     while let Some(flag) = args.next() {
         let flag = flag
             .to_str()
@@ -141,48 +147,28 @@ fn parse_arguments() -> Result<Command, CliError> {
         }
         if !matches!(
             flag,
-            "--deno"
-                | "--backend"
-                | "--timeout-ms"
-                | "--max-calls"
-                | "--concurrency"
-                | "--max-output-bytes"
+            "--timeout-ms" | "--max-calls" | "--concurrency" | "--max-output-bytes"
         ) {
             return Err(CliError(format!("unknown option '{flag}'")));
         }
         let value = args
             .next()
             .ok_or_else(|| CliError(format!("missing value for {flag}")))?;
+        let number = value
+            .to_str()
+            .and_then(|value| value.parse::<u64>().ok())
+            .ok_or_else(|| CliError(format!("{flag} requires a nonnegative integer")))?;
+        if flag == "--timeout-ms" {
+            config.timeout_ms = number;
+            continue;
+        }
+        let number = usize::try_from(number)
+            .map_err(|_| CliError(format!("{flag} is too large on this platform")))?;
         match flag {
-            "--deno" => config.deno = PathBuf::from(value),
-            "--backend" => {
-                config.backend = match value.to_str() {
-                    Some("deno") => GuestBackend::Deno,
-                    Some("embedded-v8") => GuestBackend::EmbeddedV8 {
-                        executable: env::current_exe()
-                            .map_err(|error| CliError(error.to_string()))?,
-                    },
-                    _ => return Err(CliError("--backend must be deno or embedded-v8".into())),
-                };
-            }
-            _ => {
-                let number = value
-                    .to_str()
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .ok_or_else(|| CliError(format!("{flag} requires a nonnegative integer")))?;
-                if flag == "--timeout-ms" {
-                    config.timeout_ms = number;
-                    continue;
-                }
-                let number = usize::try_from(number)
-                    .map_err(|_| CliError(format!("{flag} is too large on this platform")))?;
-                match flag {
-                    "--max-calls" => config.max_calls = number,
-                    "--concurrency" => config.max_concurrency = number,
-                    "--max-output-bytes" => config.max_output_bytes = number,
-                    _ => unreachable!("numeric flags were checked above"),
-                }
-            }
+            "--max-calls" => config.max_calls = number,
+            "--concurrency" => config.max_concurrency = number,
+            "--max-output-bytes" => config.max_output_bytes = number,
+            _ => unreachable!("numeric flags were checked above"),
         }
     }
     Ok(Command::Bridge(config))
@@ -270,7 +256,6 @@ async fn execute() -> Result<u8, Box<dyn Error>> {
 
 fn main() -> ExitCode {
     if env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--internal-embedded-guest")) {
-        #[cfg(feature = "embedded-v8")]
         return match codemode::run_embedded_worker() {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -278,11 +263,6 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         };
-        #[cfg(not(feature = "embedded-v8"))]
-        {
-            eprintln!("codemode: embedded backend requires the embedded-v8 build feature");
-            return ExitCode::from(2);
-        }
     }
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,

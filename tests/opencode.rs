@@ -142,9 +142,6 @@ fn opencode(scratch: &Scratch, program: &str, args: &[&str]) -> Command {
         .env("CODEMODE_OC_BIN", env!("CARGO_BIN_EXE_codemode"))
         .env("CODEMODE_DEMO_TOKEN", TOKEN)
         .args(args);
-    if let Some(deno) = std::env::var_os("CODEMODE_TEST_DENO") {
-        command.env("CODEMODE_OC_DENO", deno);
-    }
     command
 }
 
@@ -236,6 +233,7 @@ fn opencode_permissions_gate_nested_calls_under_rust_scheduling() {
 
     let trace = scratch.json("trace.json");
     assert_eq!(trace["status"], "success");
+    assert_eq!(trace["backend"], "embedded_v8");
     assert_eq!(
         trace["output"],
         json!({"stock": [3, 0], "environment": "denied",
@@ -628,28 +626,4 @@ return errors;
         scratch.audit()
     );
     assert!(facts(&trace).iter().all(|(_, kind)| kind == "received"));
-}
-
-#[cfg(feature = "embedded-v8")]
-#[test]
-#[ignore = "requires OpenCode 1.19.5; run `mise run opencode-check` with embedded-v8"]
-fn opencode_embedded_backend_does_not_resolve_deno() {
-    let scratch = Scratch::new();
-    let output = output_within(
-        opencode(
-            &scratch,
-            "integrations/opencode/demo/workflow.ts",
-            &["run", "--model", "codemode-demo/scripted"],
-        )
-        .env("CODEMODE_OC_BACKEND", "embedded-v8")
-        .env("CODEMODE_OC_DENO", "/codemode-test-no-deno/deno")
-        .arg("Run the embedded backend workflow.")
-        .stdin(Stdio::null()),
-        Duration::from_secs(30),
-    );
-    assert!(output.status.success(), "{output:?}");
-    let trace = scratch.json("trace.json");
-    assert_eq!(trace["status"], "success", "{trace}");
-    assert_eq!(trace["backend"], "embedded_v8");
-    assert_eq!(trace["output"]["stock"], json!([3, 0]));
 }

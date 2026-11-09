@@ -1,4 +1,4 @@
-//! Shared host-client engine selection through real cleared-environment subprocesses.
+//! The shared host client through real cleared-environment subprocesses.
 
 #![cfg(unix)]
 
@@ -19,10 +19,9 @@ fn deno() -> PathBuf {
 
 const PROGRAM: &str = r#"
 const { pathToFileURL } = await import('node:url');
-const { runBridge } = await import(pathToFileURL(Deno.args[3]).href);
+const { runBridge } = await import(pathToFileURL(Deno.args[2]).href);
 const report = await runBridge({
   bin: Deno.args[0], cwd: Deno.args[1], timeoutMs: 5000, concurrency: 2, maxCalls: 1,
-  ...(Deno.args[2] === 'embedded-v8' ? { backend: 'embedded-v8' } : {}),
   code: "return await tools.call('host.echo', 42);", tools: ['host.echo'],
   execute: async call => ({ok:true, value:call.arguments}),
 });
@@ -30,18 +29,18 @@ if (report.status !== 'success' || report.output !== 42) throw new Error('unexpe
 console.log(report.backend);
 "#;
 
-fn run_client(backend: &str, path: &std::ffi::OsStr) {
+#[test]
+fn the_client_needs_no_executable_on_the_host_path() {
     let output = Command::new(deno())
         .args(["eval", "--no-config", PROGRAM])
         .arg(env!("CARGO_BIN_EXE_codemode"))
         .arg(env!("CARGO_MANIFEST_DIR"))
-        .arg(backend)
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/integrations/shared/bridge-client.ts"
         ))
         .env_clear()
-        .env("PATH", path)
+        .env("PATH", "")
         .output()
         .expect("TypeScript host starts");
     assert!(
@@ -51,19 +50,8 @@ fn run_client(backend: &str, path: &std::ffi::OsStr) {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        backend.replace('-', "_")
+        "embedded_v8"
     );
-}
-
-#[test]
-fn an_omitted_deno_path_is_resolved_in_the_trusted_host() {
-    run_client("deno", deno().parent().expect("Deno directory").as_os_str());
-}
-
-#[cfg(feature = "embedded-v8")]
-#[test]
-fn embedded_selection_needs_no_deno_on_the_host_path() {
-    run_client("embedded-v8", std::ffi::OsStr::new(""));
 }
 
 #[test]

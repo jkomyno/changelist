@@ -4,7 +4,7 @@
  *
  * Verified against Pi 1.4.0. Boundaries:
  * - Rust owns admission, the deadline, call allowance, concurrency, output budget,
- *   call identities, and the execution record. The guest runs in restricted Deno.
+ *   call identities, and the execution record. The guest runs in a restricted V8 worker.
  * - Pi owns tool execution. Each call goes through `ctx.executeTool()`, so argument
  *   validation, `tool_call` permission and approval handlers, and `tool_result`
  *   handlers run exactly as for model-issued calls.
@@ -36,7 +36,6 @@ import {
   type PlanScope,
   type ProviderDeclaration,
   positive,
-  parseBackend,
   type ReconcileRequest,
   type Authorized,
   type Reconciled,
@@ -131,11 +130,8 @@ async function runPi(
     return typeof value === "string" && value !== "" ? value : fallback;
   };
   const { allowed, unavailable } = authorizedTools(flag("codemode-tools", ""), ctx.tools);
-  const backend = parseBackend(flag("codemode-backend", "deno"));
   const report = await runBridge({
     bin: findExecutable(flag("codemode-bin", "codemode"), ctx.cwd),
-    backend,
-    deno: backend === "deno" ? findExecutable(flag("codemode-deno", "deno"), ctx.cwd) : undefined,
     cwd: ctx.cwd,
     code,
     tools: allowed,
@@ -277,8 +273,6 @@ function summarizePlan(outcome: PlanOutcome, diagnostic: string | undefined): Re
 
 export default function codemodeBridge(pi: ExtensionAPI) {
   pi.registerFlag("codemode-bin", { type: "string", description: "codemode executable (default: codemode on PATH)" });
-  pi.registerFlag("codemode-backend", { type: "string", description: "Program engine: deno (default) or embedded-v8" });
-  pi.registerFlag("codemode-deno", { type: "string", description: "Deno executable for the guest (default: deno on PATH)" });
   pi.registerFlag("codemode-tools", {
     type: "string",
     description: "Comma-separated Pi tools that rust_codemode programs may call (default: none)",

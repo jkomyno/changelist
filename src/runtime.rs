@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
-use std::fs::OpenOptions;
 use std::future::Future;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -19,16 +18,15 @@ use tokio::time::{self, Instant};
 
 /// Largest frame from the guest (source and call frames), including its LF.
 pub(crate) const FRAME_BYTES: usize = 64 * 1024;
-/// Largest reply frame to the guest, including its LF; the launcher accepts up to 1 MiB.
+/// Largest reply frame to the guest, including its LF; the worker accepts up to 1 MiB.
 pub(crate) const REPLY_FRAME_BYTES: usize = 1024 * 1024;
 /// Version of the serialized [`RunReport`] format written by this build.
-pub const REPORT_SCHEMA_VERSION: u32 = 3;
+pub const REPORT_SCHEMA_VERSION: u32 = 4;
 /// Provider facts kept per call; later facts for that call are counted as dropped.
 const MAX_FACTS_PER_CALL: usize = 8;
 /// Provider facts buffered between the provider and the run loop.
 const FACT_CHANNEL_CAPACITY: usize = 1024;
 const MAX_GUEST_ID: u64 = 9_007_199_254_740_991;
-static LAUNCHER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Passive limits and executable selection for one run.
 #[derive(Debug, Clone)]
@@ -44,31 +42,15 @@ pub struct RunConfig {
     /// Cumulative serialized response and final-output bytes, not a process memory limit.
     /// Guest responses include their protocol envelopes; native results do not.
     pub max_output_bytes: usize,
-    /// Deno executable; use an absolute path when executable selection must be fixed.
-    pub deno: PathBuf,
-    /// Program engine and, for embedding, the dedicated worker executable.
-    /// Native [`run_calls`] does not use this setting.
-    pub backend: GuestBackend,
+    /// Worker executable that runs each program in a fresh process embedding V8,
+    /// preferably an absolute path. It must call [`crate::run_embedded_worker`] when
+    /// started with the single argument `--internal-embedded-guest`, as the `codemode`
+    /// binary does; a library caller's own executable need not. Required by [`run`]
+    /// and [`crate::serve_bridge`]; native [`run_calls`] starts no worker.
+    pub worker: Option<PathBuf>,
     /// Tool names authorized by this host, independently of guest requests.
     /// Empty by default: every call is denied until the host authorizes its tool.
     pub allowed_tools: Vec<String>,
-}
-
-/// Engine used by an isolated arbitrary-program guest.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum GuestBackend {
-    /// External Deno executable selected by [`RunConfig::deno`].
-    #[default]
-    Deno,
-    /// The `codemode` executable built with the `embedded-v8` feature.
-    ///
-    /// Library consumers must supply the worker path explicitly; their own
-    /// executable need not implement codemode's internal worker entry point.
-    EmbeddedV8 {
-        /// Dedicated worker executable, preferably an absolute path.
-        executable: PathBuf,
-    },
 }
 
 /// The host-chosen limits a run executed under, recorded with its trace.
@@ -91,8 +73,7 @@ impl Default for RunConfig {
             max_calls: 32,
             max_concurrency: 4,
             max_output_bytes: 256 * 1024,
-            deno: PathBuf::from("deno"),
-            backend: GuestBackend::Deno,
+            worker: None,
             allowed_tools: Vec::new(),
         }
     }
@@ -154,9 +135,7 @@ pub struct NativeCall {
 pub enum ExecutionBackend {
     /// Host-owned finite calls, with no JavaScript guest.
     Native,
-    /// A restricted Deno subprocess.
-    Deno,
-    /// A restricted subprocess embedding V8.
+    /// A program in a restricted worker subprocess embedding V8.
     EmbeddedV8,
 }
 
@@ -567,10 +546,6 @@ pub struct RunReport {
     pub clock: ClockInfo,
     /// Bytes moved, retained, and omitted, as Rust observed them.
     pub bytes: ByteTotals,
-    /// How long the guest had been running before the run started, when it was
-    /// started ahead of time with [`PreparedGuest`]; absent when the run started it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prewarmed_ms: Option<u64>,
     /// Bridge stdio accounting, present when the run was served over the bridge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge: Option<BridgeTotals>,
@@ -590,9 +565,9 @@ pub struct BridgeTotals {
 /// Failure to configure execution, launch a guest, or communicate with it.
 #[derive(Debug)]
 pub enum RunError {
-    /// Invalid host limits, oversized source, or an oversized native request.
+    /// Invalid host limits, oversized source, a missing worker, or an oversized native request.
     Config(String),
-    /// Launcher creation, process spawning, or pipe I/O failed.
+    /// Worker process spawning or pipe I/O failed.
     Io(io::Error),
 }
 impl fmt::Display for RunError {
@@ -687,57 +662,6 @@ fn bounded_json(value: &impl Serialize, limit: usize) -> Option<Vec<u8>> {
     };
     serde_json::to_writer(&mut writer, value).ok()?;
     Some(writer.bytes)
-}
-
-fn resolve_executable(path: &Path) -> io::Result<PathBuf> {
-    if path.is_absolute() {
-        return Ok(path.to_owned());
-    }
-    let current = std::env::current_dir()?;
-    if path.components().count() > 1 {
-        return Ok(current.join(path));
-    }
-    if let Some(search_path) = std::env::var_os("PATH") {
-        for directory in std::env::split_paths(&search_path) {
-            let candidate = directory.join(path);
-            if candidate.is_file() {
-                return Ok(if candidate.is_absolute() {
-                    candidate
-                } else {
-                    current.join(candidate)
-                });
-            }
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "Deno executable was not found on the host PATH",
-    ))
-}
-
-struct Launcher(PathBuf);
-impl Launcher {
-    fn create() -> io::Result<Self> {
-        loop {
-            let sequence = LAUNCHER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let path =
-                std::env::temp_dir().join(format!("codemode-{}-{sequence}.ts", std::process::id()));
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(mut file) => {
-                    let launcher = Self(path);
-                    file.write_all(include_str!("guest.ts").as_bytes())?;
-                    return Ok(launcher);
-                }
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error),
-            }
-        }
-    }
-}
-impl Drop for Launcher {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
 }
 
 /// Whole milliseconds, saturating.
@@ -851,103 +775,18 @@ pub(crate) async fn frame(
     }
 }
 
-/// A restricted guest process started ahead of a run, waiting for its program.
-///
-/// It serves exactly one run and is killed when dropped. Starting it early takes
-/// Deno and worker startup off a run's critical path; the run's deadline then
-/// starts when [`run_prepared`] is called, and the report records how long the
-/// guest had been waiting.
-pub struct PreparedGuest {
-    launcher: Option<Launcher>,
+/// A fresh worker process for one program, killed when dropped.
+struct Guest {
     child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
-    spawned: Instant,
-    backend: ExecutionBackend,
 }
 
-impl fmt::Debug for PreparedGuest {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("PreparedGuest")
-            .field("backend", &self.backend)
-            .finish_non_exhaustive()
-    }
-}
-
-impl PreparedGuest {
-    /// Wait until the guest process exits, for example while it waits for a program.
-    pub(crate) async fn exited(&mut self) -> io::Result<std::process::ExitStatus> {
-        self.child.wait().await
-    }
-
-    /// Start the guest with `deno`, before its program is known.
-    ///
-    /// Requires a Tokio runtime with I/O enabled.
-    ///
-    /// # Errors
-    /// Returns [`RunError::Io`] if the launcher cannot be written or Deno cannot start.
-    pub fn start(deno: &Path) -> Result<Self, RunError> {
-        let launcher = Launcher::create()?;
-        let deno = resolve_executable(deno)?;
-        let spawned = Instant::now();
-        let mut command = Command::new(deno);
-        command
-            .args([
-                "run",
-                "--no-config",
-                "--no-lock",
-                "--no-npm",
-                "--no-remote",
-                "--cached-only",
-                "--no-prompt",
-                "--deny-read",
-                "--deny-write",
-                "--deny-net",
-                "--deny-env",
-                "--deny-run",
-                "--deny-sys",
-                "--deny-ffi",
-                "--deny-import",
-                "--unstable-worker-options",
-            ])
-            .arg(&launcher.0);
-        Self::spawn(command, Some(launcher), spawned, ExecutionBackend::Deno)
-    }
-
-    /// Start a fresh embedded worker before its program is known.
-    ///
-    /// `executable` must implement codemode's internal worker entry point and be
-    /// built with `embedded-v8`. Requires a Tokio runtime with I/O enabled.
-    ///
-    /// # Errors
-    /// Returns [`RunError::Config`] when this library lacks the build feature,
-    /// or [`RunError::Io`] when the executable cannot start.
-    pub fn start_embedded(executable: &Path) -> Result<Self, RunError> {
-        if !cfg!(feature = "embedded-v8") {
-            return Err(RunError::Config(
-                "embedded backend requires the embedded-v8 build feature".into(),
-            ));
-        }
-        let mut command = Command::new(executable);
-        command.arg("--internal-embedded-guest");
-        Self::spawn(command, None, Instant::now(), ExecutionBackend::EmbeddedV8)
-    }
-
-    pub(crate) fn from_config(config: &RunConfig) -> Result<Self, RunError> {
-        match &config.backend {
-            GuestBackend::Deno => Self::start(&config.deno),
-            GuestBackend::EmbeddedV8 { executable } => Self::start_embedded(executable),
-        }
-    }
-
-    fn spawn(
-        mut command: Command,
-        launcher: Option<Launcher>,
-        spawned: Instant,
-        backend: ExecutionBackend,
-    ) -> Result<Self, RunError> {
-        let mut child = command
+impl Guest {
+    /// Start `executable` as a worker with an empty environment and discarded stderr.
+    fn start(executable: &Path) -> Result<Self, RunError> {
+        let mut child = Command::new(executable)
+            .arg("--internal-embedded-guest")
             .env_clear()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -965,23 +804,22 @@ impl PreparedGuest {
                 .ok_or_else(|| io::Error::other("child stdout missing"))?,
         );
         Ok(Self {
-            launcher,
             child,
             input,
             output,
-            spawned,
-            backend,
         })
     }
 }
 
-/// Execute TypeScript with the selected isolated guest and host-side scheduler.
+/// Execute TypeScript in a fresh V8 worker process with the host-side scheduler.
 ///
+/// The worker named by [`RunConfig::worker`] starts with an empty environment,
+/// strips TypeScript types without checking them, refuses every import, and exposes
+/// only `tools.call`, `console`, and standard JavaScript built-ins.
 /// Provider failures can be caught by guest code and remain visible in the trace.
-/// A deadline or cancellation drops pending provider futures; an already dispatched
-/// external effect may still have occurred. This is not an OS sandbox or RSS limit.
-/// Requires a Tokio runtime with I/O and time enabled. The default engine uses
-/// Deno 2.9.8-compatible flags; embedded execution requires `embedded-v8`.
+/// A deadline or cancellation kills the worker and drops pending provider futures;
+/// an already dispatched external effect may still have occurred. This is not an
+/// OS sandbox or RSS limit. Requires a Tokio runtime with I/O and time enabled.
 ///
 /// # Examples
 ///
@@ -998,7 +836,11 @@ impl PreparedGuest {
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// // The host authorizes each tool; the default configuration authorizes none.
-/// let config = RunConfig { allowed_tools: vec!["host.echo".into()], ..RunConfig::default() };
+/// let config = RunConfig {
+///     worker: Some("/usr/local/bin/codemode".into()),
+///     allowed_tools: vec!["host.echo".into()],
+///     ..RunConfig::default()
+/// };
 /// let report = run("return await tools.call(\"host.echo\", {answer: 42});", config,
 ///                  Echo, RunCancellation::default()).await?;
 /// assert!(report.status.is_success());
@@ -1007,7 +849,8 @@ impl PreparedGuest {
 /// ```
 ///
 /// # Errors
-/// Returns [`RunError`] for invalid configuration, startup failure, or pipe I/O.
+/// Returns [`RunError::Config`] for invalid limits, oversized source, or a missing
+/// [`RunConfig::worker`], and [`RunError::Io`] for worker startup failure or pipe I/O.
 /// Guest errors, protocol violations, cancellation, and exceeded budgets return a report.
 pub async fn run(
     code: &str,
@@ -1016,9 +859,13 @@ pub async fn run(
     cancellation: RunCancellation,
 ) -> Result<RunReport, RunError> {
     let initial = validate(code, &config)?;
-    // The deadline includes guest startup.
+    let worker = config
+        .worker
+        .as_deref()
+        .ok_or_else(|| RunError::Config("no worker executable is configured".into()))?;
+    // The deadline includes worker startup.
     let start = Instant::now();
-    let guest = PreparedGuest::from_config(&config)?;
+    let guest = Guest::start(worker)?;
     execute(
         ExecutionInput::Guest {
             guest: Box::new(guest),
@@ -1026,36 +873,6 @@ pub async fn run(
             code,
         },
         start,
-        config,
-        provider,
-        cancellation,
-    )
-    .await
-}
-
-/// Execute TypeScript in a guest started earlier with [`PreparedGuest::start`].
-///
-/// Behaves like [`run`], except that the deadline starts now rather than when the
-/// guest was started, and the report's `prewarmed_ms` says how long the guest had
-/// been waiting. The guest's `deno` is the one it was started with.
-///
-/// # Errors
-/// Returns [`RunError`] for invalid configuration or pipe I/O, as [`run`] does.
-pub async fn run_prepared(
-    guest: PreparedGuest,
-    code: &str,
-    config: RunConfig,
-    provider: impl ToolProvider,
-    cancellation: RunCancellation,
-) -> Result<RunReport, RunError> {
-    let initial = validate(code, &config)?;
-    execute(
-        ExecutionInput::Guest {
-            guest: Box::new(guest),
-            initial,
-            code,
-        },
-        Instant::now(),
         config,
         provider,
         cancellation,
@@ -1092,7 +909,7 @@ fn validate(code: &str, config: &RunConfig) -> Result<Vec<u8>, RunError> {
 
 /// Execute finite host-owned requests through the program runtime's controls.
 ///
-/// Deno is never resolved or started. Input exhaustion waits for queued and
+/// No worker is started. Input exhaustion waits for queued and
 /// running calls; successful runs have no final output value. Authorization,
 /// dispatch policy, deadlines, cancellation, provider facts, and cumulative
 /// serialized-result limits match program execution. Results are budgeted as
@@ -1157,7 +974,7 @@ pub async fn run_calls(
 
 enum ExecutionInput<'a> {
     Guest {
-        guest: Box<PreparedGuest>,
+        guest: Box<Guest>,
         initial: Vec<u8>,
         code: &'a str,
     },
@@ -1188,10 +1005,13 @@ async fn execute(
             guest,
             initial,
             code,
-        } => {
-            let backend = guest.backend;
-            (Some(guest), Some(initial), code, &[][..], backend)
-        }
+        } => (
+            Some(guest),
+            Some(initial),
+            code,
+            &[][..],
+            ExecutionBackend::EmbeddedV8,
+        ),
         ExecutionInput::Native(calls) => (None, None, "", calls, ExecutionBackend::Native),
     };
     let native = backend == ExecutionBackend::Native;
@@ -1218,28 +1038,19 @@ async fn execute(
         elapsed_ms: 0,
         clock: ClockInfo::default(),
         bytes: ByteTotals::default(),
-        prewarmed_ms: None,
         bridge: None,
         diagnostic: None,
     };
-    let (mut child, mut input, mut output, _launcher) = if let Some(guest) = guest {
-        let PreparedGuest {
-            launcher,
+    let (mut child, mut input, mut output) = if let Some(guest) = guest {
+        let Guest {
             child,
             input,
             output,
-            spawned,
-            backend: _,
         } = *guest;
-        if spawned < start {
-            let waited = start.duration_since(spawned).as_millis();
-            report.prewarmed_ms = Some(u64::try_from(waited).unwrap_or(u64::MAX));
-        } else {
-            event(&mut report, start, None, "guest_spawned");
-        }
-        (Some(child), Some(input), Some(output), launcher)
+        event(&mut report, start, None, "guest_spawned");
+        (Some(child), Some(input), Some(output))
     } else {
-        (None, None, None, None)
+        (None, None, None)
     };
     let provider = Arc::new(provider);
     let (facts, mut fact_receiver) = FactSink::new();
@@ -1607,6 +1418,22 @@ mod tests {
             CallOutcome::Rejected { error } if error.code == "tool_denied"
         )));
         assert_eq!(dispatches.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_program_needs_a_named_worker() {
+        let error = super::run(
+            "return 1;",
+            RunConfig::default(),
+            Counting(Arc::new(AtomicUsize::new(0))),
+            RunCancellation::default(),
+        )
+        .await
+        .expect_err("no worker is configured by default");
+        assert!(
+            matches!(&error, super::RunError::Config(message) if message.contains("worker")),
+            "{error}"
+        );
     }
 
     #[tokio::test]

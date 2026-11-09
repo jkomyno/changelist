@@ -9,7 +9,7 @@ use serde_json::json;
 
 fn config() -> RunConfig {
     RunConfig {
-        deno: "/nonexistent/codemode-native-must-not-start-deno".into(),
+        worker: Some("/nonexistent/codemode-native-must-not-start-a-worker".into()),
         ..MockProvider::config()
     }
 }
@@ -41,7 +41,6 @@ async fn finite_input_drains_and_reports_only_native_evidence() {
     assert!(report.output.is_none());
     assert_eq!(report.bytes.to_guest, 0);
     assert_eq!(report.bytes.from_guest, 0);
-    assert!(report.prewarmed_ms.is_none());
     for (index, record) in report.calls.iter().enumerate() {
         assert_eq!(record.call.id, index as u64 + 1);
         assert_eq!(

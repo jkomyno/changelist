@@ -10,7 +10,7 @@
  *       --tools GITHUB_GET_THE_AUTHENTICATED_USER,SLACK_TEST_AUTH,GITHUB_GET_A_REPOSITORY
  *
  * Options: --program <file> (required), --tools <slug,...> (required),
- * --trace <file>, --bin <codemode> (codemode on PATH), --deno <deno>, --backend deno|embedded-v8, --timeout-ms <n> (30000),
+ * --trace <file>, --bin <codemode> (codemode on PATH), --timeout-ms <n> (30000),
  * --concurrency <n> (4), --max-calls <n> (16).
  * stdout receives one compact JSON summary; the exit status is 0 only on success.
  * The host exits after the report, abandoning any call Rust recorded as unknown.
@@ -22,10 +22,10 @@
  */
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { findExecutable, positive, parseBackend, summarize } from "../shared/bridge-client.ts";
+import { findExecutable, positive, summarize } from "../shared/bridge-client.ts";
 import { type RunHelperExecute, runComposio, runHelperExecutor } from "./composio-provider.ts";
 
-const VALUE_OPTIONS = new Set(["program", "tools", "trace", "bin", "deno", "backend", "timeout-ms", "concurrency", "max-calls"]);
+const VALUE_OPTIONS = new Set(["program", "tools", "trace", "bin", "timeout-ms", "concurrency", "max-calls"]);
 
 /** Strict parsing: an unknown option or a missing value never selects an executor. */
 function options(argv: string[]): Map<string, string> {
@@ -58,14 +58,11 @@ async function main(): Promise<void> {
   const execute = (globalThis as { execute?: RunHelperExecute }).execute;
   if (!execute) throw new Error("run under `composio run`, which supplies the execute helper");
 
-  const backend = parseBackend(args.get("backend") ?? "deno");
   const controller = new AbortController();
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => controller.abort());
 
   const { report, hostDiagnostic } = await runComposio({
     bin: findExecutable(args.get("bin") ?? "codemode", cwd),
-    backend,
-    deno: backend === "deno" ? findExecutable(args.get("deno") ?? "deno", cwd) : undefined,
     cwd,
     code: readFileSync(resolve(cwd, program), "utf8"),
     tools,

@@ -43,7 +43,7 @@ shell also wraps plain Cargo commands. Do not add an `mbx setup` hook or `rustc-
 `target/` is managed by mbx: use `mise exec -- mbx clean` for this project's build state,
 never `rm -rf target/` or `cargo clean`. Let mbx manage its shared cache budget.
 
-For compatibility changes, also run `mise exec -- cargo +1.85.0 test --locked`
+For compatibility changes, also run `mise exec -- cargo +1.91.0 test --locked --all-features`
 (the declared MSRV; install that toolchain with rustup first).
 If dependencies change, update `Cargo.lock` deliberately before using `--locked`.
 Add tests for changed behavior, regressions, and public contracts. Prefer existing tests;

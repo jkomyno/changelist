@@ -50,11 +50,10 @@ use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::runtime::{PreparedGuest, REPLY_FRAME_BYTES, frame};
+use crate::runtime::{REPLY_FRAME_BYTES, frame};
 use crate::{
     BridgeTotals, CallContext, CallOutcome, FactSink, ProviderError, ProviderFactKind,
-    RunCancellation, RunConfig, RunError, RunReport, RunStatus, ToolCall, ToolProvider,
-    run_prepared,
+    RunCancellation, RunConfig, RunError, RunReport, RunStatus, ToolCall, ToolProvider, run,
 };
 
 /// The bridge protocol version this build speaks; start frames for any other version are refused.
@@ -406,8 +405,9 @@ async fn route<R: AsyncRead + Unpin>(
 
 /// Serve one run whose tools are executed by the host on the other end of `input` and `output`.
 ///
-/// `config` supplies limits and the Deno executable; its `allowed_tools` are replaced
-/// by the start frame's list. Cancelling `cancellation` behaves like a host `cancel`
+/// `config` supplies limits and the worker executable; its `allowed_tools` are replaced
+/// by the start frame's list. The worker starts after the start frame, and the run's
+/// deadline, which includes worker startup, starts with it. Cancelling `cancellation` behaves like a host `cancel`
 /// frame. Dispatched calls without an observed host reply are recorded as unknown.
 ///
 /// # Examples
@@ -415,8 +415,9 @@ async fn route<R: AsyncRead + Unpin>(
 /// ```no_run
 /// use codemode::{RunCancellation, RunConfig, serve_bridge};
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let config = RunConfig { worker: Some("/usr/local/bin/codemode".into()), ..RunConfig::default() };
 /// let report = serve_bridge(tokio::io::stdin(), tokio::io::stdout(),
-///                           RunConfig::default(), RunCancellation::default()).await?;
+///                           config, RunCancellation::default()).await?;
 /// println!("{:?}", report.status);
 /// # Ok(())
 /// # }
@@ -466,21 +467,13 @@ async fn start_and_run<R>(
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
-    // Start the guest while waiting for the program. A waiting bridge still stops
-    // on cancellation (SIGTERM) or when its guest dies, so an unused one cannot linger.
-    let mut guest = PreparedGuest::from_config(config).map_err(BridgeError::Run)?;
+    // A waiting bridge still stops on cancellation (SIGTERM), so an unused one cannot linger.
     let mut input = BufReader::new(input);
     let mut partial = Vec::new();
     let first = tokio::select! {
         first = frame(&mut input, &mut partial, BRIDGE_FRAME_BYTES) => first,
         () = cancellation.cancelled() => {
             return Err(BridgeError::Protocol("cancelled before the start frame".into()));
-        }
-        status = guest.exited() => {
-            let status = status.map_or_else(|error| error.to_string(), |status| status.to_string());
-            return Err(BridgeError::Run(RunError::Io(io::Error::other(format!(
-                "guest exited before the start frame: {status}"
-            )))));
         }
     };
     let bytes = match first {
@@ -530,7 +523,7 @@ where
         pending,
         counters: Arc::clone(&counters),
     };
-    let result = run_prepared(guest, &code, config.clone(), provider, cancellation).await;
+    let result = run(&code, config.clone(), provider, cancellation).await;
     router.abort();
     let mut report = result.map_err(BridgeError::Run)?;
     report.bridge = Some(BridgeTotals {

@@ -4,7 +4,7 @@
  *
  * Verified against OpenCode 1.19.5. Boundaries:
  * - Rust owns admission, the deadline, call allowance, concurrency, output budget,
- *   call identities, and the execution record. The guest runs in restricted Deno.
+ *   call identities, and the execution record. The guest runs in a restricted V8 worker.
  * - OpenCode 1.19.5 gives plugin tools no way to call its registered tools (built-in,
  *   plugin, or MCP). Guest calls therefore reach only the OpenCode custom tool
  *   definitions passed to `codemode({ tools })`. Nothing is exposed implicitly.
@@ -34,7 +34,6 @@ import {
   type HostFact,
   type HostReply,
   positive,
-  parseBackend,
   type RunReport,
   runBridge,
   summarize,
@@ -61,10 +60,6 @@ export interface CodemodeOptions {
   tools: Record<string, HostTool>;
   /** `codemode` executable (default: `codemode` on PATH). */
   bin?: string;
-  /** Deno executable for the guest (default: `deno` on PATH). */
-  deno?: string;
-  /** Program engine (default deno); embedded-v8 requires a binary built with that feature. */
-  backend?: "deno" | "embedded-v8";
   /** Run deadline in milliseconds, including time waiting for approvals (default 30000). */
   timeoutMs?: number;
   /** Maximum concurrent host calls (default 4). */
@@ -114,7 +109,6 @@ function describe(allowed: readonly string[]): string {
 export function codemode(options: CodemodeOptions) {
   const tools = new Map(Object.entries(options.tools));
   const allowed = [...tools.keys()];
-  const backend = parseBackend(options.backend ?? "deno");
   const timeoutMs = positive("timeoutMs", options.timeoutMs ?? 30_000);
   const concurrency = positive("concurrency", options.concurrency ?? 4);
   const maxCalls = positive("maxCalls", options.maxCalls ?? 32);
@@ -185,8 +179,6 @@ export function codemode(options: CodemodeOptions) {
           try {
             report = await runBridge({
               bin: findExecutable(options.bin ?? "codemode", cwd),
-              backend,
-              deno: backend === "deno" ? findExecutable(options.deno ?? "deno", cwd) : undefined,
               cwd,
               code: args.code,
               tools: allowed,

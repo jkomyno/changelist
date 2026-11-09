@@ -22,7 +22,6 @@ mise exec npm:@earendil-works/pi-coding-agent@1.4.0 -- pi \
   --tools rust_codemode,read,ls,bash,write \
   --codemode-tools read,ls,bash \
   --codemode-bin target/debug/codemode \
-  --codemode-deno "$(mise which deno)" \
   --codemode-trace "$work/trace.json" \
   "Run the codemode demo workflow." </dev/null
 

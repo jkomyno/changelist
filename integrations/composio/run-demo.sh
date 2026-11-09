@@ -14,7 +14,7 @@ status=0
 "$deno" run --allow-run --allow-read --allow-write --allow-env integrations/composio/testing/offline-host.ts \
   --program "${1:-integrations/composio/demo/workflow.ts}" \
   --tools GITHUB_GET_THE_AUTHENTICATED_USER,SLACK_TEST_AUTH,GITHUB_GET_A_REPOSITORY \
-  --bin target/debug/codemode --deno "$deno" --trace "$work/trace.json" || status=$?
+  --bin target/debug/codemode --trace "$work/trace.json" || status=$?
 [ -f "$work/trace.json" ] || exit "$status"
 
 echo "--- call outcomes recorded by Rust"

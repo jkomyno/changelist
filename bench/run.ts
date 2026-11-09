@@ -89,10 +89,6 @@ for (const s of selected) {
 }
 
 process.env.CODEMODE_BIN = resolve(process.env.CODEMODE_BIN ?? join(ROOT, "target/release/codemode"));
-const usesDeno = engines.some((engine) => ["codemode", "codemode-c4", "codemode-prewarm"].includes(engine));
-if (usesDeno) {
-  process.env.CODEMODE_DENO ??= execFileSync("mise", ["which", "deno"], { cwd: ROOT, encoding: "utf8" }).trim();
-}
 mkdirSync(out, { recursive: true });
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -129,7 +125,6 @@ function environment() {
     runtimes: {
       bun: tryRun("bun", ["--version"]),
       node: tryRun("node", ["--version"]),
-      deno: usesDeno ? tryRun(process.env.CODEMODE_DENO!, ["--version"])?.split("\n")[0] ?? null : null,
     },
     cpu: { model: os.cpus()[0]?.model, logical: os.cpus().length },
     os: {
@@ -155,7 +150,6 @@ function environment() {
       buildFeatures: process.env.CODEMODE_BUILD_FEATURES ?? null,
     },
     toolchainRustc: tryRun("mise", ["exec", "--", "rustc", "--version", "--verbose"]),
-    deno: usesDeno ? process.env.CODEMODE_DENO : null,
     pins: JSON.parse(readFileSync(join(BENCH, "engines/pins.json"), "utf8")),
   };
 }
@@ -429,7 +423,7 @@ async function memoryPass() {
     `- **Driver ps peak over baseline**: the same process's RSS as sampled by \`ps\` from the parent, minus the median ps peak of the fixture-only processes (${psBaseline ? (psBaseline.p50 / 1024).toFixed(1) : "?"} MiB). Under Bun on macOS, \`maxRSS\` reads 8-23 MiB lower than \`ps\` RSS for the same process (checked by hand; Node agrees with ps), so both are shown.`,
     "- **Bridge / worker / Deno peak**: codemode controller directly under the driver, embedded codemode worker directly under a controller, and Deno guest RSS, distinguished by process ancestry. Pi and OpenCode spawn no processes.",
     "- **Whole tree peak**: maximum simultaneous driver plus all descendant RSS in one ps snapshot. Children total peak likewise sums descendants in each snapshot; neither is a sum of independent process peaks.",
-    "- ps sampling starts every 10 ms; short-lived processes and peaks between snapshots can be missed (see observed interval). Fresh-process memory samples include the 100 ms post-run observation, which can include prewarming the next guest.",
+    "- ps sampling starts every 10 ms; short-lived processes and peaks between snapshots can be missed (see observed interval). Fresh-process memory samples include the 100 ms post-run observation.",
     "- RSS counts shared pages (e.g. the Deno and Bun binaries) in full; it is not a measure of unique memory.",
     "",
     "| Scenario | Engine | Succeeded/N | Driver maxRSS over baseline | Driver ps peak over baseline | Bridge peak | Worker peak | Deno peak | Children total peak | Whole tree peak | ps interval p50 | ps samples p50 |",

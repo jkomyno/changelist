@@ -33,7 +33,7 @@ OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_DEFAULT_PLUGINS=1 OPENCODE_DISA
 OPENCODE_DISABLE_EXTERNAL_SKILLS=1 OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_AUTH_CONTENT='{}' OPENCODE_DB=':memory:' \
 HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 NO_PROXY=127.0.0.1,localhost \
 CODEMODE_OC_PROGRAM="$program" CODEMODE_OC_AUDIT="$work/audit.jsonl" \
-CODEMODE_OC_TRACE="$work/trace.json" CODEMODE_OC_BIN="$root/target/debug/codemode" CODEMODE_OC_DENO="$deno" \
+CODEMODE_OC_TRACE="$work/trace.json" CODEMODE_OC_BIN="$root/target/debug/codemode" \
 CODEMODE_DEMO_TOKEN=demo-inventory-token \
 "$opencode" run --model codemode-demo/scripted "Run the codemode demo workflow." </dev/null || true
 

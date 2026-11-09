@@ -1,7 +1,5 @@
 //! The restricted embedded worker is tested through its real process protocol.
 
-#![cfg(feature = "embedded-v8")]
-
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -153,7 +151,8 @@ fn forbidden_capabilities_and_imports_are_unavailable() {
       const globals = [typeof Deno, typeof process, typeof require, typeof fetch,
         typeof WebSocket, typeof Worker];
       const imports = await Promise.all(['file:///etc/passwd', 'https://example.com/x.js',
-        'node:fs', 'data:text/javascript,export default 1', 'ext:core/ops', 'ext:core/mod.js'].map(async name => {
+        'node:fs', 'data:text/javascript,export default 1', 'ext:core/ops', 'ext:core/mod.js',
+        './local.ts'].map(async name => {
           try { await import(name); return 'allowed'; } catch { return 'denied'; }
         }));
       return {globals, imports};
@@ -162,7 +161,7 @@ fn forbidden_capabilities_and_imports_are_unavailable() {
         worker.receive(),
         json!({"type":"output","value":{
             "globals":["undefined","undefined","undefined","undefined","undefined","undefined"],
-        "imports":["denied","denied","denied","denied","denied","denied"]
+        "imports":["denied","denied","denied","denied","denied","denied","denied"]
           }})
     );
 }

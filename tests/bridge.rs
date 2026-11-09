@@ -1,4 +1,4 @@
-//! Host bridge contracts exercised with a real guest and an in-process fake host.
+//! Host bridge contracts exercised with a real worker and an in-process fake host.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 
 fn config() -> RunConfig {
     RunConfig {
-        deno: std::env::var_os("CODEMODE_TEST_DENO").map_or_else(|| "deno".into(), Into::into),
+        worker: Some(env!("CARGO_BIN_EXE_codemode").into()),
         timeout_ms: 5_000,
         ..RunConfig::default()
     }
@@ -465,12 +465,12 @@ async fn a_size_without_too_large_is_a_protocol_error() {
 }
 
 #[tokio::test]
-async fn a_bridge_started_ahead_of_its_program_waits_and_times_the_run_from_start() {
+async fn a_bridge_waits_for_its_program_and_times_the_run_from_start() {
     let mut options = config();
-    options.timeout_ms = 300;
+    options.timeout_ms = 1_000;
     let mut host = Host::start(options, RunCancellation::default());
     // Idle for longer than the run's deadline before sending the program.
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
     host.send(json!({"type":"start","version":2,"code":"return await tools.call('host.read', {});","tools":["host.read"]}))
         .await;
     let call = host.next().await;
@@ -478,8 +478,4 @@ async fn a_bridge_started_ahead_of_its_program_waits_and_times_the_run_from_star
     let (_, report) = host.report().await;
     assert_eq!(report.status, RunStatus::Success, "{report:?}");
     assert_eq!(report.output, Some(json!("ready")));
-    assert!(
-        report.prewarmed_ms.is_some_and(|ms| ms >= 350),
-        "{report:?}"
-    );
 }

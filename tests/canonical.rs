@@ -91,30 +91,24 @@ async fn literal_marker_objects_survive_native_and_program_protocols() {
         matches!(&native.calls[0].outcome, codemode::CallOutcome::Succeeded {value} if value == &expected)
     );
 
-    let mut configs = vec![MockProvider::config()];
-    #[cfg(feature = "embedded-v8")]
-    configs.push(codemode::RunConfig {
-        backend: codemode::GuestBackend::EmbeddedV8 {
-            executable: env!("CARGO_BIN_EXE_codemode").into(),
-        },
+    let config = codemode::RunConfig {
+        worker: Some(env!("CARGO_BIN_EXE_codemode").into()),
         ..MockProvider::config()
-    });
-    for config in configs.drain(..) {
-        let report = codemode::run(
-            "return await tools.call('mock.echo', {'$serde_json::private::RawValue':'not JSON'});",
-            config,
-            MockProvider,
-            RunCancellation::default(),
-        )
-        .await
-        .expect("program run");
-        assert_eq!(report.status, RunStatus::Success, "{report:?}");
-        assert_eq!(report.output.as_ref(), Some(&expected));
-        let reopened: codemode::RunReport =
-            serde_json::from_str(&serde_json::to_string(&report).expect("report JSON"))
-                .expect("literal saved report");
-        assert_eq!(reopened.output.as_ref(), Some(&expected));
-    }
+    };
+    let report = codemode::run(
+        "return await tools.call('mock.echo', {'$serde_json::private::RawValue':'not JSON'});",
+        config,
+        MockProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("program run");
+    assert_eq!(report.status, RunStatus::Success, "{report:?}");
+    assert_eq!(report.output.as_ref(), Some(&expected));
+    let reopened: codemode::RunReport =
+        serde_json::from_str(&serde_json::to_string(&report).expect("report JSON"))
+            .expect("literal saved report");
+    assert_eq!(reopened.output.as_ref(), Some(&expected));
 }
 
 #[test]
