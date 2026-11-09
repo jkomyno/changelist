@@ -1,0 +1,154 @@
+{
+  "version": 1,
+  "summary": "Triage ten issues and note one reproduction",
+  "operations": [
+    {
+      "id": "label-101",
+      "tool": "issues.add_label",
+      "scope": {
+        "provider": "fixture.issues",
+        "account": "triage-bot",
+        "destination": "acme/widgets"
+      },
+      "arguments": {
+        "issue": 101,
+        "label": "triage"
+      }
+    },
+    {
+      "id": "label-102",
+      "tool": "issues.add_label",
+      "scope": {
+        "provider": "fixture.issues",
+        "account": "triage-bot",
+        "destination": "acme/widgets"
+      },
+      "arguments": {
+        "issue": 102,
+        "label": "triage"
+      }
+    },
+    {
+      "id": "label-103",
+      "tool": "issues.remove_label",
+      "scope": {
+        "provider": "fixture.issues",
+        "account": "triage-bot",
+        "destination": "acme/widgets"
+      },
+      "arguments": {
+        "issue": 103,
+        "label": "needs-info"
+      }
+    },
+    {
+      "id": "label-104",
+      "tool": "issues.add_label",
+      "scope": {
+        "provider": "fixture.issues",
+        "account": "triage-bot",
+        "destination": "acme/widgets"
+      },
+      "arguments": {
+        "issue": 104,
+        "label": "triage"
+      }
+    },
+    {
+      "id": "label-105",
+      "tool": "issues.add_label",
+      "scope": {
+        "provider": "fixture.issues",
+        "account": "triage-bot",
+        "destination": "acme/widgets"
+      },
+      "arguments": {
+        "issue": 105,
+        "label": "triage"
+      }
+    },
+    {
+      "id": "label-106",
+      "tool": "issues.add_label",
+      "scope": {
+        "provider": "fixture.issues",
+        "account": "triage-bot",
+        "destination": "acme/widgets"
+      },
+      "arguments": {
+        "issue": 106,
+        "label": "triage"
+      }
+    },
+    {
+      "id": "label-107",
+      "tool": "issues.remove_label",
+      "scope": {
+        "provider": "fixture.issues",
+        "account": "triage-bot",
+        "destination": "acme/widgets"
+      },
+      "arguments": {
+        "issue": 107,
+        "label": "needs-info"
+      }
+    },
+    {
+      "id": "label-108",
+      "tool": "issues.add_label",
+      "scope": {
+        "provider": "fixture.issues",
+        "account": "triage-bot",
+        "destination": "acme/widgets"
+      },
+      "arguments": {
+        "issue": 108,
+        "label": "triage"
+      }
+    },
+    {
+      "id": "comment-105",
+      "tool": "issues.add_comment",
+      "scope": {
+        "provider": "fixture.issues",
+        "account": "triage-bot",
+        "destination": "acme/widgets"
+      },
+      "arguments": {
+        "issue": 105,
+        "body": "Triaged: reproduced on main; labelled for the next planning meeting."
+      },
+      "preconditions": [
+        {
+          "issue_state": "open"
+        }
+      ]
+    },
+    {
+      "id": "label-109",
+      "tool": "issues.add_label",
+      "scope": {
+        "provider": "fixture.issues",
+        "account": "triage-bot",
+        "destination": "acme/widgets"
+      },
+      "arguments": {
+        "issue": 109,
+        "label": "triage"
+      }
+    },
+    {
+      "id": "label-110",
+      "tool": "issues.add_label",
+      "scope": {
+        "provider": "fixture.issues",
+        "account": "triage-bot",
+        "destination": "acme/widgets"
+      },
+      "arguments": {
+        "issue": 110,
+        "label": "triage"
+      }
+    }
+  ]
+}

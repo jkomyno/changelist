@@ -13,6 +13,8 @@ use codemode::{
     RunReport, Sections, inspect, run, serve_bridge,
 };
 
+mod plan_cli;
+
 const MAX_CODE_BYTES: u64 = 64 * 1024;
 const MAX_TRACE_BYTES: u64 = 64 * 1024 * 1024;
 const HELP: &str = "codemode — bounded agent-written TypeScript/JavaScript workflows
@@ -21,6 +23,7 @@ Usage:
   codemode run --code <file.ts|file.js|-> [options]
   codemode bridge [limit options]
   codemode inspect <trace.json|-> [inspect options]
+  codemode plan <check|approve|run|resume|inspect|review|trace> ...  (see codemode plan --help)
 
 Options:
   --timeout-ms <n>        Total run deadline, including startup (default: 5000)
@@ -51,7 +54,7 @@ error codes, argument keys, and sizes, never argument or result values.
 ";
 
 #[derive(Debug)]
-struct CliError(String);
+pub(crate) struct CliError(pub(crate) String);
 
 impl fmt::Display for CliError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -83,6 +86,7 @@ enum Command {
     Run(Options),
     Bridge(RunConfig),
     Inspect(InspectArgs),
+    Plan(Vec<std::ffi::OsString>),
 }
 
 fn parse_inspect(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<Command, CliError> {
@@ -135,9 +139,10 @@ fn parse_arguments() -> Result<Command, CliError> {
         Some("run") => false,
         Some("bridge") => true,
         Some("inspect") => return parse_inspect(args),
+        Some("plan") => return Ok(Command::Plan(args.collect())),
         _ => {
             return Err(CliError(
-                "expected 'run', 'bridge', or 'inspect'; use --help for usage".into(),
+                "expected 'run', 'bridge', 'inspect', or 'plan'; use --help for usage".into(),
             ));
         }
     };
@@ -219,7 +224,7 @@ fn parse_arguments() -> Result<Command, CliError> {
 }
 
 /// Read a file or stdin (`-`), refusing more than `limit` bytes.
-fn read_input(path: &PathBuf, limit: u64, what: &str) -> Result<String, Box<dyn Error>> {
+pub(crate) fn read_input(path: &PathBuf, limit: u64, what: &str) -> Result<String, Box<dyn Error>> {
     let input: Box<dyn Read> = if path.as_os_str() == "-" {
         Box::new(io::stdin())
     } else {
@@ -235,7 +240,7 @@ fn read_input(path: &PathBuf, limit: u64, what: &str) -> Result<String, Box<dyn 
 
 /// Cancel on Ctrl-C and, on Unix, on SIGTERM, so a host that signals its whole
 /// process group still receives a report.
-fn cancel_on_interrupt(cancellation: &RunCancellation) -> tokio::task::JoinHandle<()> {
+pub(crate) fn cancel_on_interrupt(cancellation: &RunCancellation) -> tokio::task::JoinHandle<()> {
     let signal = cancellation.clone();
     tokio::spawn(async move {
         #[cfg(unix)]
@@ -267,6 +272,7 @@ async fn execute() -> Result<u8, Box<dyn Error>> {
             println!("codemode {}", env!("CARGO_PKG_VERSION"));
             Ok(0)
         }
+        Command::Plan(args) => plan_cli::execute(args).await,
         Command::Inspect(args) => {
             let text = read_input(&args.trace, MAX_TRACE_BYTES, "trace")?;
             let report: RunReport = serde_json::from_str(&text)

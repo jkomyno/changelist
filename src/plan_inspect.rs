@@ -121,6 +121,8 @@ pub struct OperationReport {
 /// One attempt.
 #[derive(Debug, Clone, Serialize)]
 pub struct AttemptLine {
+    /// Journal fact ordinal, for ordering.
+    pub ordinal: u64,
     /// Attempt number.
     pub number: u32,
     /// Session that dispatched it.
@@ -129,7 +131,7 @@ pub struct AttemptLine {
     pub call_id: Option<u64>,
     /// Attempt key given to the provider.
     pub key: String,
-    /// `succeeded`, `failed`, `timed_out`, `unobserved`, `withdrawn`, or `none` (no record).
+    /// `succeeded`, `failed`, `timed_out`, `unobserved`, `withdrawn`, or `no result`.
     pub observed: String,
     /// Error code for a failure.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -148,6 +150,8 @@ pub struct AttemptLine {
 /// One reconciliation probe.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProbeLine {
+    /// Journal fact ordinal, for ordering.
+    pub ordinal: u64,
     /// Session that probed.
     pub session: u64,
     /// Attempt keys probed.
@@ -163,6 +167,8 @@ pub struct ProbeLine {
 /// One review.
 #[derive(Debug, Clone, Serialize)]
 pub struct ReviewLine {
+    /// Journal fact ordinal, for ordering.
+    pub ordinal: u64,
     /// The finding.
     pub resolution: Resolution,
     /// Who.
@@ -249,14 +255,16 @@ fn build(
                 .filter(|attempt| attempt.operation == operation.id)
                 .map(|attempt| {
                     let mut line = AttemptLine {
+                        ordinal: attempt.ordinal,
                         number: attempt.number,
                         session: attempt.session,
                         call_id: attempt.call_id,
                         key: attempt.key.clone(),
-                        observed: "none".into(),
+                        observed: "no result".into(),
                         code: None,
                         effect: Some(
-                            "no observation recorded: it may have reached the provider".into(),
+                            "unknown: no result recorded, so it may have reached the provider"
+                                .into(),
                         ),
                         result_bytes: None,
                         message: None,
@@ -306,6 +314,7 @@ fn build(
                 .filter(|probe| probe.operation == operation.id)
                 .map(|probe| match &probe.outcome {
                     Ok(reconciliation) => ProbeLine {
+                        ordinal: probe.ordinal,
                         session: probe.session,
                         keys: probe.keys.len(),
                         verdict: reconciliation.verdict.to_string(),
@@ -313,6 +322,7 @@ fn build(
                         elapsed_ms: probe.elapsed_ms,
                     },
                     Err(error) => ProbeLine {
+                        ordinal: probe.ordinal,
                         session: probe.session,
                         keys: probe.keys.len(),
                         verdict: "error".into(),
@@ -326,6 +336,7 @@ fn build(
                 .iter()
                 .filter(|review| review.operation == operation.id)
                 .map(|review| ReviewLine {
+                    ordinal: review.ordinal,
                     resolution: review.resolution,
                     reviewer: review.reviewer.clone(),
                     unix_ms: review.unix_ms,
@@ -521,7 +532,9 @@ impl JournalInspection {
                 keys,
                 describe(operation.conclusion, operation.basis)
             );
+            let mut lines: Vec<(u64, String)> = Vec::new();
             for attempt in &operation.attempts {
+                let mut out = String::new();
                 let call = attempt
                     .call_id
                     .map(|id| format!(" call {id}"))
@@ -535,7 +548,7 @@ impl JournalInspection {
                     let _ = write!(out, " {code}");
                 }
                 if let Some(effect) = &attempt.effect {
-                    let _ = write!(out, ", effect {effect}");
+                    let _ = write!(out, "; effect {effect}");
                 }
                 if let Some(bytes) = attempt.result_bytes {
                     let _ = write!(out, ", {bytes} B result");
@@ -543,10 +556,11 @@ impl JournalInspection {
                 if let Some(message) = &attempt.message {
                     let _ = write!(out, ": {}", sanitize(message));
                 }
-                let _ = writeln!(out);
+                lines.push((attempt.ordinal, out));
             }
             for probe in &operation.probes {
-                let _ = writeln!(
+                let mut out = String::new();
+                let _ = write!(
                     out,
                     "  reconciled in session {}: {} - {} ({} ms)",
                     probe.session,
@@ -554,14 +568,16 @@ impl JournalInspection {
                     sanitize(&probe.evidence),
                     probe.elapsed_ms
                 );
+                lines.push((probe.ordinal, out));
             }
             for review in &operation.reviews {
+                let mut out = String::new();
                 let note = review
                     .note
                     .as_ref()
                     .map(|note| format!(": {}", sanitize(note)))
                     .unwrap_or_default();
-                let _ = writeln!(
+                let _ = write!(
                     out,
                     "  reviewed by {} at {}: {}{note}",
                     review.reviewer,
@@ -571,6 +587,11 @@ impl JournalInspection {
                         Resolution::NotApplied => "not applied",
                     }
                 );
+                lines.push((review.ordinal, out));
+            }
+            lines.sort_by_key(|(ordinal, _)| *ordinal);
+            for (_, line) in lines {
+                let _ = writeln!(out, "{line}");
             }
         }
 
