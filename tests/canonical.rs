@@ -11,9 +11,6 @@ fn plans_and_approvals_match_pinned_canonical_vectors() {
         concurrency: 4,
         max_attempts: 3,
         max_probes: 3,
-        attempt_timeout_ms: 10_000,
-        probe_timeout_ms: 5_000,
-        session_timeout_ms: 60_000,
     };
     // Vectors independently computed with Python sorted JSON and hashlib.sha256.
     assert_eq!(
@@ -26,7 +23,7 @@ fn plans_and_approvals_match_pinned_canonical_vectors() {
     );
     assert_eq!(
         approval_binding(plan.digest(), &declaration, &policy).as_str(),
-        "sha256:7fb639beec9ffae990c759117549bf308a8a7b7675ebde3c1f8069d28a147abd"
+        "sha256:b40e48764bc6b578c0a219ea04ce006aea5008d6f057bec67ee8a7eb2e7525dd"
     );
 }
 

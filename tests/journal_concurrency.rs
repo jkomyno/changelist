@@ -291,6 +291,7 @@ async fn a_running_session_is_inspected_without_change_and_cannot_be_taken_over(
         provider.clone(),
         SessionOptions {
             kind: SessionKind::Run,
+            ..SessionOptions::default()
         },
         RunCancellation::default(),
     ));

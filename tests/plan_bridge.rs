@@ -159,7 +159,10 @@ impl Host {
         let journal = Journal::open(path, Durability::Process).expect("open");
         let (input, bridge_input) = tokio::io::duplex(1 << 20);
         let (bridge_output, output) = tokio::io::duplex(1 << 20);
-        let options = SessionOptions { kind };
+        let options = SessionOptions {
+            kind,
+            ..SessionOptions::default()
+        };
         let bridge = tokio::spawn(serve_plan_bridge(
             bridge_input,
             bridge_output,

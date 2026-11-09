@@ -57,6 +57,22 @@ fn removed_commands_and_options_are_unknown() {
             &["plan", "trace", "--durability", "process"],
             "unknown option '--durability'",
         ),
+        (
+            &["plan", "approve", "--attempt-timeout-ms", "1"],
+            "unknown option '--attempt-timeout-ms'",
+        ),
+        (
+            &["plan", "approve", "--probe-timeout-ms", "1"],
+            "unknown option '--probe-timeout-ms'",
+        ),
+        (
+            &["plan", "approve", "--session-timeout-ms", "1"],
+            "unknown option '--session-timeout-ms'",
+        ),
+        (
+            &["plan", "run", "--bridge", "--deadline-ms", "0"],
+            "--deadline-ms must be positive",
+        ),
     ];
     for (args, expected) in cases {
         let output = Command::new(env!("CARGO_BIN_EXE_codemode"))
@@ -68,6 +84,73 @@ fn removed_commands_and_options_are_unknown() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains(expected), "{args:?}: {stderr}");
     }
+}
+
+/// Lives here, not beside the in-process bridge tests: a spawned child briefly
+/// inherits every descriptor the test process has open, including other tests'
+/// journal locks.
+#[test]
+fn the_session_deadline_ends_an_unanswered_authorization_with_exit_status_124() {
+    use std::io::BufRead;
+
+    use codemode::{Approval, Durability, Journal, Plan, ProviderDeclaration, RecoveryPolicy};
+
+    let path =
+        std::env::temp_dir().join(format!("codemode-cli-deadline-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let declaration = json!({"provider": "test", "account": "bot",
+                             "contracts": {"label": {"repeat": "safe", "reconcile": "none"}}});
+    let plan = Plan::parse(
+        &json!({"version": 1, "operations": [{"id": "a", "tool": "label",
+                "scope": {"provider": "test", "account": "bot"}, "arguments": {}}]})
+        .to_string(),
+    )
+    .expect("plan");
+    let parsed: ProviderDeclaration =
+        serde_json::from_value(declaration.clone()).expect("declaration");
+    let policy = RecoveryPolicy::default();
+    Journal::create(&path, &plan, Durability::Process)
+        .expect("journal")
+        .approve(&Approval {
+            binding: codemode::approval_binding(plan.digest(), &parsed, &policy),
+            plan: plan.digest().clone(),
+            declaration: parsed,
+            policy,
+            approver: "tester".into(),
+            note: None,
+            approved_unix_ms: 0,
+        })
+        .expect("approve");
+
+    let mut bridge = Command::new(env!("CARGO_BIN_EXE_codemode"))
+        .args(["plan", "run", "--journal"])
+        .arg(&path)
+        .args(["--bridge", "--deadline-ms", "300"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("CLI starts");
+    // The input stays open: closing it would cancel the session instead.
+    let mut input = bridge.stdin.take().expect("stdin");
+    writeln!(
+        input,
+        "{}",
+        json!({"type": "start", "version": 3, "declaration": declaration})
+    )
+    .expect("start frame");
+    let mut frames = std::io::BufReader::new(bridge.stdout.take().expect("stdout")).lines();
+    let mut next = || -> Value {
+        serde_json::from_str(&frames.next().expect("a frame").expect("readable")).expect("JSON")
+    };
+    assert_eq!(next()["type"], "authorize");
+    let outcome = next();
+    assert_eq!(outcome["type"], "outcome", "{outcome}");
+    assert_eq!(outcome["outcome"]["status"], "interrupted", "{outcome}");
+    assert_eq!(outcome["outcome"]["dispatched"], 0, "{outcome}");
+    assert_eq!(bridge.wait().expect("exits").code(), Some(124));
+    drop(input);
+    let _ = std::fs::remove_file(&path);
 }
 
 #[test]

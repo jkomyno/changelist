@@ -11,8 +11,8 @@ use codemode::{
     Approval, Attempt, AttemptError, CallContext, Conclusion, Durability, FailureEffect, Journal,
     NextStep, Operation, Plan, ProbeContext, ProviderDeclaration, ProviderError, ReconcileMethod,
     Reconciliation, RecoverableProvider, RecoveryContract, RecoveryPolicy, RepeatSafety,
-    Resolution, RunCancellation, Scope, SessionError, SessionKind, SessionOptions, Verdict,
-    approval_binding, run_session,
+    Resolution, RunCancellation, RunStatus, Scope, SessionError, SessionKind, SessionOptions,
+    Verdict, approval_binding, run_session,
 };
 use serde_json::{Value, json};
 use tokio::sync::Notify;
@@ -33,7 +33,18 @@ fn journal_path() -> PathBuf {
 }
 
 fn options(kind: SessionKind) -> SessionOptions {
-    SessionOptions { kind }
+    SessionOptions {
+        kind,
+        ..SessionOptions::default()
+    }
+}
+
+/// A session whose whole run, from authorization to dispatch, ends after `ms`.
+fn within(kind: SessionKind, ms: u64) -> SessionOptions {
+    SessionOptions {
+        kind,
+        deadline: Duration::from_millis(ms),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -229,7 +240,6 @@ async fn a_lost_response_is_reconciled_instead_of_repeated() {
     ]);
     let policy = RecoveryPolicy {
         concurrency: 4,
-        session_timeout_ms: 2_000,
         ..RecoveryPolicy::default()
     };
     approve(&path, &plan, &remote, policy);
@@ -237,10 +247,11 @@ async fn a_lost_response_is_reconciled_instead_of_repeated() {
     remote.set("c", Behavior::LoseResponse);
     remote.set("d", Behavior::Refuse);
 
+    // The session deadline drops the calls still held after their intents committed.
     let first = run_session(
         open(&path),
         remote.clone(),
-        options(SessionKind::Run),
+        within(SessionKind::Run, 500),
         RunCancellation::default(),
     )
     .await
@@ -253,6 +264,23 @@ async fn a_lost_response_is_reconciled_instead_of_repeated() {
     assert_eq!(trace.bytes.from_guest, 0);
     assert_eq!(trace.bytes.to_guest, 0);
     assert_eq!(first.status, "interrupted", "{first:?}");
+    assert_eq!(first.interruption, Some(RunStatus::Deadline));
+    assert_eq!(trace.status, RunStatus::Deadline);
+    let history = open(&path).history().expect("history");
+    for lost in ["b", "c"] {
+        let attempt = history
+            .attempts
+            .iter()
+            .find(|attempt| attempt.operation == lost)
+            .expect("intent recorded");
+        assert_eq!(
+            attempt.observation.as_ref().map(|o| &o.observed),
+            Some(&codemode::Observed::Unobserved {
+                reason: "deadline".into()
+            }),
+            "{lost}"
+        );
+    }
     assert_eq!(
         conclusions(&first),
         [
@@ -266,10 +294,11 @@ async fn a_lost_response_is_reconciled_instead_of_repeated() {
     // The executor is replaced; the provider's state is not.
     remote.set("b", Behavior::Succeed);
     remote.set("c", Behavior::Succeed);
+    // The deadline is not approved: a resume with another one needs no new approval.
     let second = run_session(
         open(&path),
         remote.clone(),
-        options(SessionKind::Resume),
+        within(SessionKind::Resume, 60_000),
         RunCancellation::default(),
     )
     .await
@@ -466,15 +495,7 @@ async fn cancellation_interrupts_authorization_without_reading_the_next_scope() 
     )
     .expect("distinct scopes");
     let provider = HeldReads::new(Remote::new(), HeldPhase::Authorization);
-    approve(
-        &path,
-        &plan,
-        &provider,
-        RecoveryPolicy {
-            probe_timeout_ms: 60_000,
-            ..RecoveryPolicy::default()
-        },
-    );
+    approve(&path, &plan, &provider, RecoveryPolicy::default());
     let cancellation = RunCancellation::default();
     let session = tokio::spawn(run_session(
         open(&path),
@@ -488,10 +509,11 @@ async fn cancellation_interrupts_authorization_without_reading_the_next_scope() 
     cancellation.cancel();
     let outcome = tokio::time::timeout(Duration::from_secs(2), session)
         .await
-        .expect("Rust cancellation must not wait for the 60-second provider timeout")
+        .expect("Rust cancellation must not wait for the session deadline")
         .expect("session task")
         .expect("cancellation interrupts rather than refusing authorization");
     assert_eq!(outcome.status, "interrupted");
+    assert_eq!(outcome.interruption, Some(RunStatus::Cancelled));
     assert_eq!((outcome.probed, outcome.dispatched), (0, 0));
     assert!(outcome.trace.is_none());
     assert_eq!(provider.scopes.lock().unwrap().len(), 1);
@@ -550,7 +572,6 @@ async fn cancellation_joins_probes_and_keeps_their_unanswered_budget_across_resu
         RecoveryPolicy {
             concurrency: 2,
             max_probes: 2,
-            probe_timeout_ms: 60_000,
             ..RecoveryPolicy::default()
         },
     );
@@ -591,7 +612,7 @@ async fn cancellation_joins_probes_and_keeps_their_unanswered_budget_across_resu
         cancellation.cancel();
         let outcome = tokio::time::timeout(Duration::from_secs(2), session)
             .await
-            .expect("Rust cancellation must not wait for the 60-second probe timeout")
+            .expect("Rust cancellation must not wait for the session deadline")
             .expect("session task")
             .expect("interrupted resume");
         assert_eq!(outcome.status, "interrupted");
@@ -699,5 +720,165 @@ async fn cancellation_joins_probes_and_keeps_their_unanswered_budget_across_resu
         outcome.operations[3].assessment.conclusion,
         Conclusion::Applied
     );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn an_unanswered_authorization_ends_the_session_at_its_deadline_without_dispatch() {
+    let path = journal_path();
+    let plan = plan(&[("a", "label")]);
+    let provider = HeldReads::new(Remote::new(), HeldPhase::Authorization);
+    approve(&path, &plan, &provider, RecoveryPolicy::default());
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(5),
+        run_session(
+            open(&path),
+            provider.clone(),
+            within(SessionKind::Run, 100),
+            RunCancellation::default(),
+        ),
+    )
+    .await
+    .expect("the session deadline bounds authorization")
+    .expect("a deadline interrupts rather than refusing");
+    assert_eq!(outcome.status, "interrupted", "{outcome:?}");
+    assert_eq!(outcome.interruption, Some(RunStatus::Deadline));
+    assert!(
+        outcome
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("deadline")),
+        "{outcome:?}"
+    );
+    assert_eq!((outcome.probed, outcome.dispatched), (0, 0));
+    assert!(outcome.trace.is_none());
+    assert_eq!(provider.dropped.load(Ordering::SeqCst), 1);
+    assert!(provider.remote.requests().is_empty());
+    let history = open(&path).history().expect("history");
+    assert!(history.attempts.is_empty());
+    assert_eq!(
+        history.sessions[0].end.as_ref().unwrap().status,
+        "interrupted"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn an_unanswered_probe_is_charged_and_recorded_at_the_deadline() {
+    let path = journal_path();
+    let plan = plan(&[("a", "label")]);
+    let mut remote = Remote::new();
+    remote.contracts.insert(
+        "label".into(),
+        RecoveryContract {
+            repeat: RepeatSafety::Unsafe,
+            reconcile: ReconcileMethod::Receipt,
+        },
+    );
+    let provider = HeldReads::new(remote, HeldPhase::Reconciliation);
+    approve(
+        &path,
+        &plan,
+        &provider,
+        RecoveryPolicy {
+            max_probes: 1,
+            ..RecoveryPolicy::default()
+        },
+    );
+    // Model a crash after a's intent.
+    let mut journal = open(&path);
+    let initial = journal.begin_session(SessionKind::Run).expect("session");
+    journal
+        .record_intent("key-a", "a", 1, initial, None)
+        .expect("intent a");
+    journal
+        .end_session(initial, "interrupted", None, None)
+        .expect("end");
+    drop(journal);
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(5),
+        run_session(
+            open(&path),
+            provider.clone(),
+            within(SessionKind::Resume, 100),
+            RunCancellation::default(),
+        ),
+    )
+    .await
+    .expect("the session deadline bounds probes")
+    .expect("interrupted resume");
+    assert_eq!(outcome.status, "interrupted", "{outcome:?}");
+    assert_eq!(outcome.interruption, Some(RunStatus::Deadline));
+    assert_eq!((outcome.probed, outcome.dispatched), (1, 0));
+    assert_eq!(provider.dropped.load(Ordering::SeqCst), 1);
+    let history = open(&path).history().expect("history");
+    assert_eq!(history.probes.len(), 1);
+    assert_eq!(
+        history.probes[0].outcome.as_ref().unwrap_err().code,
+        "probe_timeout"
+    );
+
+    // The next resume sees the charge: the probe budget is spent, so a person decides.
+    let outcome = run_session(
+        open(&path),
+        provider.remote.clone(),
+        options(SessionKind::Resume),
+        RunCancellation::default(),
+    )
+    .await
+    .expect("resume");
+    assert_eq!(outcome.status, "needs_review", "{outcome:?}");
+    assert_eq!((outcome.probed, outcome.dispatched), (0, 0));
+    assert_eq!(
+        conclusions(&outcome),
+        [("a".into(), Conclusion::Unknown, NextStep::Review)]
+    );
+    assert_eq!(provider.probes.lock().unwrap().len(), 1);
+    assert!(provider.remote.requests().is_empty());
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn concurrency_is_approved_and_the_deadline_is_not() {
+    let path = journal_path();
+    let remote = Remote::new();
+    let plan = plan(&[("a", "label")]);
+    let approved = RecoveryPolicy::default();
+    approve(&path, &plan, &remote, approved);
+    let changed = RecoveryPolicy {
+        concurrency: approved.concurrency + 1,
+        ..approved
+    };
+    let declaration = remote.declaration().for_plan(&plan);
+    assert_ne!(
+        approval_binding(plan.digest(), &declaration, &approved),
+        approval_binding(plan.digest(), &declaration, &changed),
+        "the binding covers concurrency"
+    );
+    // A record claiming another concurrency under the old binding is refused.
+    let mut journal = open(&path);
+    journal
+        .approve(&Approval {
+            binding: approval_binding(plan.digest(), &declaration, &approved),
+            plan: plan.digest().clone(),
+            declaration,
+            policy: changed,
+            approver: "tester".into(),
+            note: None,
+            approved_unix_ms: 0,
+        })
+        .expect("record");
+    drop(journal);
+    let error = run_session(
+        open(&path),
+        remote.clone(),
+        within(SessionKind::Run, 60_000),
+        RunCancellation::default(),
+    )
+    .await
+    .expect_err("refused");
+    assert!(error.to_string().contains("does not bind"), "{error}");
+    assert!(remote.requests().is_empty());
     let _ = std::fs::remove_file(&path);
 }

@@ -89,8 +89,10 @@ one digest over:
 - the plan digest;
 - the provider declaration for the plan's tools: provider name, account, and
   each tool's recovery contract;
-- the policy: concurrency, attempt and probe budgets, and attempt, probe, and
-  session deadlines.
+- the policy: concurrency and the attempt and probe budgets.
+
+The session deadline (`--deadline-ms` on `run` and `resume`) is not approved:
+stopping earlier can only reduce effects, so each session may choose its own.
 
 Before every session, the executor recomputes the binding from the journal's
 plan, the provider's *current* declaration, and the approved policy. A different
@@ -129,9 +131,9 @@ Ordering per attempt:
    intent write fails those tests. The SIGKILL tests complement them: every
    request the fixture received has a journaled intent.
 2. The provider is called once, with the attempt key and the operation's
-   preconditions, under the attempt deadline.
-3. The observation (succeeded, failed with the provider's statement about the
-   effect, timed out) is committed before the result is reported to the
+   preconditions, under the session deadline.
+3. The observation (succeeded, or failed with the provider's statement about
+   the effect) is committed before the result is reported to the
    scheduler or to anyone else. A failed observation write stops the run; the
    attempt then stays unknown.
 4. When a session's run ends with attempts still waiting (deadline,
@@ -268,14 +270,20 @@ person.
 ## 5. Execution reuses the runtime
 
 A session runs, in order: approval and declaration checks, authorization of
-every scope, reconciliation probes (at most `concurrency` at a time, each with
-the probe deadline), and one dispatch run. `codemode::run_calls` submits each
-tool and `{operation: id}` directly, and the
-existing admission, rolling scheduler, concurrency cap, session deadline,
-cancellation, and execution record apply unchanged. A journaling provider
-resolves each call to its frozen arguments, refuses anything not approved for
-this session or already dispatched in it, and wraps the trusted provider's call
-with the intent and observation commits. Scheduler requests name operation
+every scope, reconciliation probes (at most `concurrency` at a time), and one
+dispatch run. One deadline, `--deadline-ms` (default 300000), bounds all of it
+from the session's start, including host permission waits inside a provider
+call. An authorization without an answer by then ends the session
+`interrupted` before anything is probed or dispatched. A probe without an
+answer is recorded as `probe_timeout` and still counts against `--max-probes`.
+Reached before an attempt's intent commits, the deadline withdraws the attempt;
+after, the call is dropped and the attempt stays unknown (`unobserved`).
+`codemode::run_calls` submits each tool and `{operation: id}` directly, and the
+existing admission, rolling scheduler, concurrency cap, the time left before
+the session deadline, cancellation, and execution record apply unchanged. A
+journaling provider resolves each call to its frozen arguments, refuses
+anything not approved for this session or already dispatched in it, and wraps
+the trusted provider's call with the intent and observation commits. Scheduler requests name operation
 identities only; the wrapper returns small `{operation, attempt}` receipts.
 No program is generated or guest process started.
 
@@ -288,8 +296,9 @@ future does not prove that its remote request never happened; it supplies no
 new evidence about an uncertain operation. Attempts already sent stay unknown
 unless an observation has settled them. `run` refuses a journal that already has
 sessions; `resume` reconciles and continues. Exit status: 0 everything applied or satisfied, 3 work remains
-(review or another resume), 4 refused, 124 deadline, 130 cancelled, 2 usage,
-journal, or startup errors.
+(review or another resume), 4 refused, 124 deadline (in any phase), 130
+cancelled, 1 the dispatch run stopped for another reason, 2 usage, journal, or
+startup errors.
 
 ## 6. Inspection
 

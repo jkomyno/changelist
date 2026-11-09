@@ -176,7 +176,11 @@ impl ProviderDeclaration {
     }
 }
 
-/// Budgets and deadlines for executing and recovering one plan. Part of the approval.
+/// Budgets for executing and recovering one plan. Part of the approval.
+///
+/// The session deadline is not here: each `run` or `resume` chooses its own
+/// (see [`SessionOptions`](crate::SessionOptions)), because stopping earlier can
+/// only reduce effects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecoveryPolicy {
@@ -186,12 +190,6 @@ pub struct RecoveryPolicy {
     pub max_attempts: u32,
     /// Maximum reconciliation probes of one operation across all sessions.
     pub max_probes: u32,
-    /// Deadline for one attempt; an attempt without a result by then is unknown.
-    pub attempt_timeout_ms: u64,
-    /// Deadline for one reconciliation probe.
-    pub probe_timeout_ms: u64,
-    /// Deadline for one session's dispatch phase, including guest startup.
-    pub session_timeout_ms: u64,
 }
 
 impl Default for RecoveryPolicy {
@@ -200,15 +198,12 @@ impl Default for RecoveryPolicy {
             concurrency: 4,
             max_attempts: 3,
             max_probes: 3,
-            attempt_timeout_ms: 10_000,
-            probe_timeout_ms: 5_000,
-            session_timeout_ms: 60_000,
         }
     }
 }
 
 impl RecoveryPolicy {
-    /// Check that every budget and deadline is positive.
+    /// Check that every budget is positive.
     ///
     /// # Errors
     /// Returns a [`PolicyError`] naming the first field that is zero.
@@ -217,9 +212,6 @@ impl RecoveryPolicy {
             ("concurrency", self.concurrency as u64),
             ("max_attempts", u64::from(self.max_attempts)),
             ("max_probes", u64::from(self.max_probes)),
-            ("attempt_timeout_ms", self.attempt_timeout_ms),
-            ("probe_timeout_ms", self.probe_timeout_ms),
-            ("session_timeout_ms", self.session_timeout_ms),
         ];
         match fields.iter().find(|(_, value)| *value == 0) {
             Some((field, _)) => Err(PolicyError { field }),
@@ -304,7 +296,7 @@ pub struct Approval {
     pub plan: Digest,
     /// The provider identity and the contracts of the tools the plan uses.
     pub declaration: ProviderDeclaration,
-    /// Budgets and deadlines.
+    /// Concurrency and the attempt and probe budgets.
     pub policy: RecoveryPolicy,
     /// Who approved, as stated by the approver.
     pub approver: String,
@@ -390,10 +382,11 @@ pub struct Reconciliation {
     pub evidence: String,
 }
 
-/// The deadline and cancellation signal for a probe outside a dispatch run.
+/// The deadline and cancellation signal for an authorization check or a probe
+/// outside a dispatch run.
 #[derive(Debug, Clone)]
 pub struct ProbeContext {
-    /// Absolute deadline for this probe.
+    /// The session's absolute deadline.
     pub deadline: Instant,
     /// The session's cancellation signal.
     pub cancellation: RunCancellation,
@@ -418,7 +411,7 @@ pub trait RecoverableProvider: Send + Sync + 'static {
     ) -> impl Future<Output = Result<(), ProviderError>> + Send;
 
     /// Execute one attempt once, enforcing the operation's preconditions atomically
-    /// when it applies. Receives the run's shared deadline and cancellation.
+    /// when it applies. Receives the session's deadline and cancellation.
     ///
     /// # Errors
     /// Returns an [`AttemptError`] whose effect states what the provider knows.
@@ -542,8 +535,6 @@ pub enum Observed {
         /// The provider's statement about the effect.
         effect: FailureEffect,
     },
-    /// The attempt deadline elapsed without a result.
-    TimedOut,
     /// The session ended before a result was observed.
     Unobserved {
         /// The run status that ended it.
@@ -572,7 +563,6 @@ impl Observed {
                 effect: FailureEffect::Unknown,
                 ..
             }
-            | Self::TimedOut
             | Self::Unobserved { .. } => Conclusion::Unknown,
         }
     }
@@ -988,7 +978,9 @@ mod tests {
             Fact::Intent { number: 1 },
             Fact::Observation {
                 number: 1,
-                observed: &Observed::TimedOut,
+                observed: &Observed::Unobserved {
+                    reason: "deadline".into(),
+                },
             },
             Fact::Intent { number: 2 },
             Fact::Observation {

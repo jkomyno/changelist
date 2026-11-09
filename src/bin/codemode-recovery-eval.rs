@@ -647,6 +647,7 @@ async fn recover(
             let provider = FixtureProvider::open(dir.join("fx.db"), ACCOUNT)?;
             let options = SessionOptions {
                 kind: SessionKind::Resume,
+                deadline: Duration::from_millis(RUN_TIMEOUT_MS),
             };
             let outcome =
                 run_session(journal, provider, options, RunCancellation::default()).await?;
@@ -780,6 +781,7 @@ async fn overhead_run(
             let provider = FixtureProvider::open(dir.join("fx.db"), ACCOUNT)?;
             let options = SessionOptions {
                 kind: SessionKind::Run,
+                deadline: Duration::from_millis(RUN_TIMEOUT_MS),
             };
             let outcome =
                 run_session(journal, provider, options, RunCancellation::default()).await?;

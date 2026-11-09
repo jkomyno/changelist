@@ -432,7 +432,16 @@ async fn session(args: &[String]) -> Result<u8, Failure> {
     let provider = FixtureProvider::open(flags.required("db")?, flags.required("account")?)?;
     let cancellation = RunCancellation::default();
     let signal_task = cancel_on_interrupt(&cancellation);
-    let result = run_session(journal, provider, SessionOptions { kind }, cancellation).await;
+    let result = run_session(
+        journal,
+        provider,
+        SessionOptions {
+            kind,
+            ..SessionOptions::default()
+        },
+        cancellation,
+    )
+    .await;
     signal_task.abort();
     match result {
         Ok(outcome) => {
@@ -452,10 +461,9 @@ async fn session(args: &[String]) -> Result<u8, Failure> {
 fn exit_code(outcome: &SessionOutcome) -> u8 {
     match outcome.status.as_str() {
         "completed" => 0,
-        "interrupted" => match outcome.trace.as_ref().map(|trace| trace.status) {
-            Some(status) => status.exit_code().max(1),
-            None => 130,
-        },
+        "interrupted" => outcome
+            .interruption
+            .map_or(1, |status| status.exit_code().max(1)),
         _ => 3,
     }
 }

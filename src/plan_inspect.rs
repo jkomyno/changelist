@@ -169,7 +169,7 @@ pub struct AttemptLine {
     pub call_id: Option<u64>,
     /// Attempt key given to the provider.
     pub key: String,
-    /// `succeeded`, `failed`, `timed_out`, `unobserved`, `withdrawn`, or `no result`.
+    /// `succeeded`, `failed`, `unobserved`, `withdrawn`, or `no result`.
     pub observed: String,
     /// Error code for a failure.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -336,10 +336,6 @@ fn build(
                                     .into(),
                                 );
                                 line.message = message(&error.message);
-                            }
-                            Observed::TimedOut => {
-                                line.observed = "timed_out".into();
-                                line.effect = Some("unknown".into());
                             }
                             Observed::Unobserved { reason } => {
                                 line.observed = "unobserved".into();
@@ -508,15 +504,12 @@ impl JournalInspection {
                 );
                 let _ = writeln!(
                     out,
-                    "provider {} as {}; policy: concurrency {}, attempts {}, probes {}, \
-                     attempt deadline {} ms, probe deadline {} ms",
+                    "provider {} as {}; policy: concurrency {}, attempts {}, probes {}",
                     approval.declaration.provider,
                     approval.declaration.account,
                     policy.concurrency,
                     policy.max_attempts,
-                    policy.max_probes,
-                    policy.attempt_timeout_ms,
-                    policy.probe_timeout_ms
+                    policy.max_probes
                 );
                 let _ = writeln!(
                     out,

@@ -6,7 +6,7 @@ use std::error::Error;
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use codemode::{
     Approval, Durability, Journal, JournalError, JournalInspectOptions, JournalReader, Plan,
@@ -27,8 +27,8 @@ Usage:
   codemode plan check <plan.json> [--provider <declaration.json>] [--json]
   codemode plan approve <plan.json> --journal <file> --provider <declaration.json>
                         --digest <sha256:...> --approver <name> [--note <text>] [policy options]
-  codemode plan run     --journal <file> --bridge
-  codemode plan resume  --journal <file> --bridge
+  codemode plan run     --journal <file> --bridge [--deadline-ms <n>]
+  codemode plan resume  --journal <file> --bridge [--deadline-ms <n>]
   codemode plan inspect --journal <file> [--json] [--messages]
   codemode plan review  --journal <file> --operation <id> --as applied|not-applied
                         --reviewer <name> [--note <text>]
@@ -53,19 +53,25 @@ cancel, outcome). The host's start frame supplies its provider declaration; it
 authorizes, executes, and reconciles operations while Rust keeps the journal.
 Credentials stay with the host. Approved plans run natively.
 
-Policy options (approve):
+Policy options (approve; a change needs a new approval):
   --concurrency <n>          Operations in flight at once (default 4)
   --max-attempts <n>         Dispatches per operation, first included (default 3)
   --max-probes <n>           Reconciliation probes per operation (default 3)
-  --attempt-timeout-ms <n>   Deadline per attempt (default 10000)
-  --probe-timeout-ms <n>     Deadline per probe (default 5000)
-  --session-timeout-ms <n>   Deadline per dispatch phase (default 60000)
+
+Session option (run, resume; not approved, so each session may choose its own):
+  --deadline-ms <n>          One deadline for the whole session: authorization,
+                             reconciliation probes, and dispatch, including host
+                             permission waits inside a call (default 300000).
+                             Reached before an attempt's intent is recorded, it
+                             withdraws the attempt; after, the attempt is unknown.
+                             A probe it cuts off still counts against --max-probes.
 
 Every journal commit asks the OS to flush to storage before it returns.
 
 Exit status for run and resume: 0 every operation is applied or satisfied;
 3 work remains (a review, or another resume); 4 the session was refused;
-124 deadline; 130 cancelled; 2 usage, journal, or startup error.
+124 the deadline interrupted the session, in any phase; 130 cancelled;
+1 the dispatch run stopped for another reason; 2 usage, journal, or startup error.
 ";
 
 const BOOLEAN_FLAGS: &[&str] = &["--json", "--messages", "--bridge"];
@@ -178,13 +184,10 @@ pub(crate) async fn execute(args: Vec<OsString>) -> Result<u8, Box<dyn Error>> {
                 "--concurrency",
                 "--max-attempts",
                 "--max-probes",
-                "--attempt-timeout-ms",
-                "--probe-timeout-ms",
-                "--session-timeout-ms",
             ],
         )?),
         Some(kind @ ("run" | "resume")) => {
-            let flags = Flags::parse(rest, &["--journal", "--bridge"])?;
+            let flags = Flags::parse(rest, &["--journal", "--bridge", "--deadline-ms"])?;
             let kind = if kind == "run" {
                 SessionKind::Run
             } else {
@@ -309,9 +312,6 @@ fn approve(flags: Flags) -> Result<u8, Box<dyn Error>> {
         concurrency: flags.number("--concurrency", defaults.concurrency)?,
         max_attempts: flags.number("--max-attempts", defaults.max_attempts)?,
         max_probes: flags.number("--max-probes", defaults.max_probes)?,
-        attempt_timeout_ms: flags.number("--attempt-timeout-ms", defaults.attempt_timeout_ms)?,
-        probe_timeout_ms: flags.number("--probe-timeout-ms", defaults.probe_timeout_ms)?,
-        session_timeout_ms: flags.number("--session-timeout-ms", defaults.session_timeout_ms)?,
     };
     policy
         .validate()
@@ -343,13 +343,13 @@ fn approve(flags: Flags) -> Result<u8, Box<dyn Error>> {
     Ok(0)
 }
 
+/// 124 for a deadline and 130 for cancellation, whether or not dispatch began.
 fn exit_code(outcome: &SessionOutcome) -> u8 {
     match outcome.status.as_str() {
         "completed" => 0,
-        "interrupted" => match outcome.trace.as_ref().map(|trace| trace.status) {
-            Some(status) => status.exit_code().max(1),
-            None => 130,
-        },
+        "interrupted" => outcome
+            .interruption
+            .map_or(1, |status| status.exit_code().max(1)),
         _ => 3,
     }
 }
@@ -361,7 +361,17 @@ async fn session(flags: Flags, kind: SessionKind) -> Result<u8, Box<dyn Error>> 
         )
         .into());
     }
-    bridge_session(flags.require("--journal")?, SessionOptions { kind }).await
+    let defaults = SessionOptions::default();
+    let default_ms = u64::try_from(defaults.deadline.as_millis()).unwrap_or(u64::MAX);
+    let deadline_ms = flags.number("--deadline-ms", default_ms)?;
+    if deadline_ms == 0 {
+        return Err(CliError("--deadline-ms must be positive".into()).into());
+    }
+    let options = SessionOptions {
+        kind,
+        deadline: Duration::from_millis(deadline_ms),
+    };
+    bridge_session(flags.require("--journal")?, options).await
 }
 
 /// Serve one session over stdio with the host as provider. stdout carries only frames.

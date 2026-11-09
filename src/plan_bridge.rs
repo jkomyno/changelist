@@ -41,9 +41,11 @@
 //!   also carries `"diagnostic"`.
 //! - `{"type":"error","message":".."}` instead, when no session could run.
 //!
-//! A reply that never comes leaves an attempt pending until the attempt or session
-//! deadline, or cancellation, records it as unknown. Replies for unknown or finished
-//! requests are ignored, because they can race with a deadline.
+//! A reply that never comes leaves an attempt pending until the session deadline
+//! (`--deadline-ms`) or cancellation records it as unknown; an unanswered
+//! `authorize` or `reconcile` frame waits at most until that deadline too.
+//! Replies for unknown or finished requests are ignored, because they can race
+//! with a deadline.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -236,6 +238,7 @@ impl HostPlanProvider {
 
     /// Wait for a reply, or for cancellation: authorization and probes are not
     /// bounded by a dispatch run, so they must not outlive the session's cancellation.
+    /// The executor bounds them by the session deadline.
     async fn answer<T>(
         receiver: oneshot::Receiver<Result<T, ProviderError>>,
         cancellation: &RunCancellation,
@@ -294,7 +297,7 @@ impl RecoverableProvider for HostPlanProvider {
         };
         match receiver.await {
             Ok(reply) => reply,
-            // No reply can arrive; the attempt deadline or cancellation records it as unknown.
+            // No reply can arrive; the session deadline or cancellation records it as unknown.
             Err(_) => std::future::pending().await,
         }
     }

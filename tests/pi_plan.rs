@@ -246,10 +246,6 @@ fn pi_runs_and_recovers_an_approved_plan_through_its_own_gates() {
             "tester",
             "--concurrency",
             "1",
-            "--attempt-timeout-ms",
-            "60000",
-            "--session-timeout-ms",
-            "120000",
         ],
     );
     run(

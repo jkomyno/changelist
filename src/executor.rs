@@ -3,11 +3,12 @@
 //! A session checks the latest approval against the current provider declaration
 //! and policy, asks the provider whether each scope is still authorized,
 //! reconciles operations whose outcome is unknown, and then dispatches every
-//! operation whose next step is `dispatch`. Dispatch reuses [`run_calls`]: native
-//! requests name only operation identities, Rust admits and schedules those calls
-//! under the approved concurrency, and a journaling provider looks up each
-//! operation's frozen arguments, records the intent durably, calls the trusted
-//! provider, and records the observation durably before replying.
+//! operation whose next step is `dispatch`. One deadline bounds all of it.
+//! Dispatch reuses [`run_calls`]: native requests name only operation
+//! identities, Rust admits and schedules those calls under the approved
+//! concurrency, and a journaling provider looks up each operation's frozen
+//! arguments, records the intent durably, calls the trusted provider, and
+//! records the observation durably before replying.
 //!
 //! Recovery never reruns an agent's program: it works only from the approved list.
 
@@ -30,7 +31,7 @@ use crate::recovery::{
 };
 use crate::runtime::{
     CallContext, NativeCall, ProviderError, RunCancellation, RunConfig, RunError, RunReport,
-    ToolCall, ToolProvider, millis, run_calls,
+    RunStatus, ToolCall, ToolProvider, millis, run_calls,
 };
 
 /// Process settings for a session that are not part of the approval.
@@ -38,12 +39,18 @@ use crate::runtime::{
 pub struct SessionOptions {
     /// `run` for the first session, `resume` afterwards.
     pub kind: SessionKind,
+    /// Total time for the session from its start: authorization, reconciliation
+    /// probes, and dispatch, including any host permission wait inside a provider
+    /// call. Not part of the approval, because stopping earlier can only reduce
+    /// effects. Defaults to 300 seconds.
+    pub deadline: Duration,
 }
 
 impl Default for SessionOptions {
     fn default() -> Self {
         Self {
             kind: SessionKind::Run,
+            deadline: Duration::from_secs(300),
         }
     }
 }
@@ -83,6 +90,10 @@ pub struct SessionOutcome {
     /// Why a session was refused or interrupted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// What stopped an `interrupted` session: [`RunStatus::Cancelled`],
+    /// [`RunStatus::Deadline`], or another status that ended its dispatch run.
+    #[serde(skip)]
+    pub interruption: Option<RunStatus>,
     /// Operations charged for a probe in this session, including unanswered probes.
     pub probed: usize,
     /// Attempts this session recorded an intent for: dispatched, or withdrawn
@@ -300,13 +311,20 @@ async fn after_queued_writes<T: Send + 'static>(
 
 /// Run one session against `journal` with `provider`.
 ///
+/// `options.deadline`, counted from the call, bounds authorization, probes, and
+/// dispatch. Reached before an attempt's intent commits, it withdraws the
+/// attempt; after, it drops the provider call and the attempt stays unknown
+/// (`unobserved`). A probe it cuts off stays charged and is recorded as
+/// `probe_timeout`; an authorization it cuts off ends the session before dispatch.
+///
 /// # Errors
 /// Returns [`SessionError::Refused`] (already recorded in the journal) when no
 /// approval matches the current plan, provider declaration, and policy, or a
 /// scope is not authorized now; [`SessionError::AlreadyStarted`] for `run` on a
-/// journal with sessions; and journal or runtime failures. A dispatch run that
-/// ends early, or cancellation during authorization or reconciliation, returns an
-/// `interrupted` outcome.
+/// journal with sessions; [`SessionError::Run`] for a deadline too large to
+/// represent; and journal or runtime failures. A dispatch run that ends early,
+/// or cancellation or the deadline during authorization or reconciliation,
+/// returns an `interrupted` outcome.
 pub async fn run_session<P: RecoverableProvider>(
     journal: Journal,
     provider: P,
@@ -314,6 +332,9 @@ pub async fn run_session<P: RecoverableProvider>(
     cancellation: RunCancellation,
 ) -> Result<SessionOutcome, SessionError> {
     let started = Instant::now();
+    let deadline = started.checked_add(options.deadline).ok_or_else(|| {
+        SessionError::Run(RunError::Config("the session deadline is too large".into()))
+    })?;
     let history = journal.history()?;
     if options.kind == SessionKind::Run && !history.sessions.is_empty() {
         return Err(SessionError::AlreadyStarted);
@@ -329,10 +350,11 @@ pub async fn run_session<P: RecoverableProvider>(
         Err(reason) => return refuse(&journal, session, reason).await,
     };
     let policy = approval.policy;
-    match authorize(&plan, provider.as_ref(), &policy, &cancellation).await {
+    let mut interrupted = match authorize(&plan, provider.as_ref(), deadline, &cancellation).await {
         Err(AuthorizationError::Refused(reason)) => return refuse(&journal, session, reason).await,
-        Ok(()) | Err(AuthorizationError::Cancelled) => {}
-    }
+        Err(AuthorizationError::Stopped(status)) => Some(status),
+        Ok(()) => None,
+    };
     let checks_ms = millis(started.elapsed());
 
     let reconcile_started = Instant::now();
@@ -342,18 +364,23 @@ pub async fn run_session<P: RecoverableProvider>(
         .filter(|status| status.assessment.next == NextStep::Reconcile)
         .collect();
     let retention = approval.declaration.retention;
-    let probed = probe(
-        &journal,
-        &plan,
-        &history,
-        &to_probe,
-        &provider,
-        &policy,
-        retention,
-        session,
-        &cancellation,
-    )
-    .await?;
+    let probed = if interrupted.is_some() {
+        HashSet::new()
+    } else {
+        probe(
+            &journal,
+            &plan,
+            &history,
+            &to_probe,
+            &provider,
+            &policy,
+            retention,
+            session,
+            deadline,
+            &cancellation,
+        )
+        .await?
+    };
     let reconcile_ms = millis(reconcile_started.elapsed());
 
     // Include unanswered probe starts: cancellation does not refund their budget.
@@ -374,8 +401,8 @@ pub async fn run_session<P: RecoverableProvider>(
 
     let dispatch_started = Instant::now();
     let mut trace = None;
-    let mut interrupted = None;
-    if !dispatch.is_empty() && !cancellation.is_cancelled() {
+    interrupted = interrupted.or_else(|| stopped(&cancellation, deadline));
+    if interrupted.is_none() && !dispatch.is_empty() {
         let report = dispatch_run(
             &journal,
             &provider,
@@ -383,6 +410,7 @@ pub async fn run_session<P: RecoverableProvider>(
             &policy,
             retention,
             session,
+            deadline,
             &cancellation,
         )
         .await;
@@ -398,20 +426,18 @@ pub async fn run_session<P: RecoverableProvider>(
             }
         };
         if !report.status.is_success() {
-            interrupted = Some(report.status.as_str().to_string());
+            interrupted = Some(report.status);
         }
         trace = Some(report);
-    } else if cancellation.is_cancelled() {
-        interrupted = Some("cancelled".into());
     }
     let dispatch_ms = millis(dispatch_started.elapsed());
 
     // An attempt the run stopped waiting for keeps an unknown outcome, with the reason.
-    let reason = interrupted.clone().unwrap_or_else(|| "run_finished".into());
+    let reason = interrupted.map_or("run_finished", RunStatus::as_str);
     // Writes the run abandoned may still commit; wait for them so a recorded result
     // is never replaced by "unobserved", and a late intent is still marked.
     let history = after_queued_writes(&journal, move |journal| {
-        journal.record_unobserved(session, &reason)?;
+        journal.record_unobserved(session, reason)?;
         journal.history()
     })
     .await?;
@@ -439,6 +465,7 @@ pub async fn run_session<P: RecoverableProvider>(
     }
     .to_string();
     let detail = interrupted.map(|status| {
+        let status = status.as_str();
         if trace.is_some() {
             format!("the dispatch run ended with {status}")
         } else {
@@ -455,6 +482,7 @@ pub async fn run_session<P: RecoverableProvider>(
         session,
         status,
         detail,
+        interruption: interrupted,
         probed: probed.len(),
         dispatched,
         operations,
@@ -525,8 +553,20 @@ fn check_approval(
     Ok(approval.clone())
 }
 
+/// Why the session must stop now, if it must: cancellation, then the deadline.
+fn stopped(cancellation: &RunCancellation, deadline: Instant) -> Option<RunStatus> {
+    if cancellation.is_cancelled() {
+        Some(RunStatus::Cancelled)
+    } else if Instant::now() >= deadline {
+        Some(RunStatus::Deadline)
+    } else {
+        None
+    }
+}
+
 enum AuthorizationError {
-    Cancelled,
+    /// Cancellation or the deadline ended the session before every scope answered.
+    Stopped(RunStatus),
     Refused(String),
 }
 
@@ -534,7 +574,7 @@ enum AuthorizationError {
 async fn authorize(
     plan: &FrozenPlan,
     provider: &impl RecoverableProvider,
-    policy: &RecoveryPolicy,
+    deadline: Instant,
     cancellation: &RunCancellation,
 ) -> Result<(), AuthorizationError> {
     let scopes: BTreeSet<_> = plan
@@ -544,18 +584,19 @@ async fn authorize(
         .map(|operation| &operation.scope)
         .collect();
     for scope in scopes {
-        if cancellation.is_cancelled() {
-            return Err(AuthorizationError::Cancelled);
+        if let Some(status) = stopped(cancellation, deadline) {
+            return Err(AuthorizationError::Stopped(status));
         }
-        let timeout = Duration::from_millis(policy.probe_timeout_ms);
         let context = ProbeContext {
-            deadline: Instant::now() + timeout,
+            deadline,
             cancellation: cancellation.clone(),
         };
         let outcome = tokio::select! {
             biased;
-            () = cancellation.cancelled() => return Err(AuthorizationError::Cancelled),
-            outcome = time::timeout(timeout, provider.authorize(scope, context)) => outcome,
+            () = cancellation.cancelled() => {
+                return Err(AuthorizationError::Stopped(RunStatus::Cancelled));
+            }
+            outcome = time::timeout_at(deadline, provider.authorize(scope, context)) => outcome,
         };
         match outcome {
             Ok(Ok(())) => {}
@@ -565,20 +606,17 @@ async fn authorize(
                     machine_code(&error.code)
                 )));
             }
-            Err(_) => {
-                return Err(AuthorizationError::Refused(format!(
-                    "authorization for {scope} did not answer within {} ms",
-                    policy.probe_timeout_ms
-                )));
-            }
+            // Not a refusal: no answer is not evidence that the scope is unauthorized.
+            Err(_) => return Err(AuthorizationError::Stopped(RunStatus::Deadline)),
         }
     }
     Ok(())
 }
 
 /// Probe each operation once, at most `policy.concurrency` at a time, and record
-/// every answer. Returns the operations charged for a probe, including those
-/// cancelled before an answer was recorded.
+/// every answer. A probe still running at `deadline` is recorded as
+/// `probe_timeout`; none starts after it. Returns the operations charged for a
+/// probe, including those cancelled before an answer was recorded.
 #[expect(clippy::too_many_arguments, reason = "one internal call site")]
 async fn probe<P: RecoverableProvider>(
     journal: &Shared,
@@ -589,13 +627,14 @@ async fn probe<P: RecoverableProvider>(
     policy: &RecoveryPolicy,
     retention: Retention,
     session: u64,
+    deadline: Instant,
     cancellation: &RunCancellation,
 ) -> Result<HashSet<String>, JournalError> {
     let mut probed = HashSet::new();
     let mut pending = statuses.iter();
     let mut running = JoinSet::new();
     loop {
-        while running.len() < policy.concurrency && !cancellation.is_cancelled() {
+        while running.len() < policy.concurrency && stopped(cancellation, deadline).is_none() {
             let Some(status) = pending.next() else { break };
             let Some(operation) = plan.operation(&status.operation).cloned() else {
                 continue;
@@ -618,10 +657,10 @@ async fn probe<P: RecoverableProvider>(
             if cancellation.is_cancelled() {
                 break;
             }
+            // Charged, so the deadline answers it if the provider does not.
             let provider = Arc::clone(provider);
-            let timeout = Duration::from_millis(policy.probe_timeout_ms);
             let context = ProbeContext {
-                deadline: Instant::now() + timeout,
+                deadline,
                 cancellation: cancellation.clone(),
             };
             running.spawn(async move {
@@ -630,11 +669,11 @@ async fn probe<P: RecoverableProvider>(
                 let outcome = tokio::select! {
                     biased;
                     () = cancellation.cancelled() => return None,
-                    outcome = time::timeout(timeout, provider.reconcile(operation, keys, context)) => {
+                    outcome = time::timeout_at(deadline, provider.reconcile(operation, keys, context)) => {
                         outcome.unwrap_or_else(|_| {
                             Err(ProviderError {
                                 code: "probe_timeout".into(),
-                                message: "the reconciliation probe did not answer in time".into(),
+                                message: "the reconciliation probe did not answer by the session deadline".into(),
                             })
                         })
                     }
@@ -665,6 +704,8 @@ async fn probe<P: RecoverableProvider>(
     Ok(probed)
 }
 
+/// Dispatch `operations` in one native run that ends by the session's `deadline`.
+#[expect(clippy::too_many_arguments, reason = "one internal call site")]
 async fn dispatch_run<P: RecoverableProvider>(
     journal: &Shared,
     provider: &Arc<P>,
@@ -672,6 +713,7 @@ async fn dispatch_run<P: RecoverableProvider>(
     policy: &RecoveryPolicy,
     retention: Retention,
     session: u64,
+    deadline: Instant,
     cancellation: &RunCancellation,
 ) -> Result<RunReport, RunError> {
     let calls: Vec<NativeCall> = operations
@@ -685,8 +727,11 @@ async fn dispatch_run<P: RecoverableProvider>(
         .iter()
         .map(|(operation, _)| operation.tool.clone())
         .collect();
+    // The time left, rounded down to whole milliseconds; at least 1 ms, because
+    // the caller found time left just before.
+    let remaining = millis(deadline.saturating_duration_since(Instant::now())).max(1);
     let config = RunConfig {
-        timeout_ms: policy.session_timeout_ms,
+        timeout_ms: remaining,
         max_calls: operations.len(),
         max_concurrency: policy.concurrency,
         allowed_tools: tools.into_iter().collect(),
@@ -707,7 +752,6 @@ async fn dispatch_run<P: RecoverableProvider>(
         dispatched: Mutex::new(HashSet::new()),
         session,
         retention,
-        attempt_timeout: Duration::from_millis(policy.attempt_timeout_ms),
         cancellation: cancellation.clone(),
     };
     run_calls(&calls, config, journaling, cancellation.clone()).await
@@ -724,7 +768,6 @@ struct JournalingProvider<P> {
     session: u64,
     /// What the journal keeps of the provider's replies, from the approval.
     retention: Retention,
-    attempt_timeout: Duration,
     cancellation: RunCancellation,
 }
 
@@ -802,33 +845,32 @@ impl<P: RecoverableProvider> ToolProvider for JournalingProvider<P> {
             .await;
             return Err(refusal("cancelled", "the run stopped before dispatch"));
         }
-        let deadline = context.deadline.min(Instant::now() + self.attempt_timeout);
         let attempt = Attempt {
             operation,
             key: key.clone(),
             number,
         };
-        let observed =
-            match time::timeout_at(deadline, self.provider.execute(attempt, context)).await {
-                Ok(Ok(value)) => Observed::Succeeded {
+        // The run's deadline drops this future; the session then records the
+        // attempt as unobserved, which is unknown.
+        let (observed, reply) = match self.provider.execute(attempt, context).await {
+            Ok(value) => (
+                Observed::Succeeded {
                     bytes: serde_json::to_vec(&value).map_or(0, |bytes| bytes.len() as u64),
                 },
-                Ok(Err(error)) => Observed::Failed {
+                Ok(json!({"operation": id, "attempt": number})),
+            ),
+            // Only a machine code reaches the trace, never the provider's message.
+            Err(error) => {
+                let reply = Err(refusal(
+                    machine_code(&error.error.code),
+                    "the provider failed",
+                ));
+                let observed = Observed::Failed {
                     error: error.error,
                     effect: error.effect,
-                },
-                Err(_) => Observed::TimedOut,
-            };
-        let reply = match &observed {
-            Observed::Succeeded { .. } => Ok(json!({"operation": id, "attempt": number})),
-            // Only a machine code reaches the trace, never the provider's message.
-            Observed::Failed { error, .. } => {
-                Err(refusal(machine_code(&error.code), "the provider failed"))
+                };
+                (observed, reply)
             }
-            _ => Err(refusal(
-                "attempt_timeout",
-                "no result before the attempt deadline",
-            )),
         };
         let retention = self.retention;
         let recorded = journaled(&self.journal, move |journal| {
@@ -977,7 +1019,6 @@ mod tests {
             dispatched: Mutex::new(HashSet::new()),
             session,
             retention: Retention::Metadata,
-            attempt_timeout: BOUND,
             cancellation: RunCancellation::default(),
         };
         Harness {
