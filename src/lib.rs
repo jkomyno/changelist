@@ -73,5 +73,5 @@ pub use runtime::{
     BridgeTotals, ByteTotals, CallContext, CallOutcome, CallRecord, ClockInfo, ExecutionBackend,
     FactSink, NativeCall, ProviderError, ProviderFact, ProviderFactKind, REPORT_SCHEMA_VERSION,
     RunCancellation, RunConfig, RunError, RunEvent, RunLimits, RunReport, RunStatus, ToolCall,
-    ToolProvider, run, run_calls,
+    ToolProvider, WorkerExit, run, run_calls,
 };

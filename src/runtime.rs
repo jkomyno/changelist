@@ -16,17 +16,29 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::{self, Instant};
 
+use crate::embedded::MEMORY_LIMIT_EXIT_CODE;
+
 /// Largest frame from the guest (source and call frames), including its LF.
 pub(crate) const FRAME_BYTES: usize = 64 * 1024;
 /// Largest reply frame to the guest, including its LF; the worker accepts up to 1 MiB.
 pub(crate) const REPLY_FRAME_BYTES: usize = 1024 * 1024;
 /// Version of the serialized [`RunReport`] format written by this build.
-pub const REPORT_SCHEMA_VERSION: u32 = 4;
+pub const REPORT_SCHEMA_VERSION: u32 = 5;
 /// Provider facts kept per call; later facts for that call are counted as dropped.
 const MAX_FACTS_PER_CALL: usize = 8;
 /// Provider facts buffered between the provider and the run loop.
 const FACT_CHANNEL_CAPACITY: usize = 1024;
 const MAX_GUEST_ID: u64 = 9_007_199_254_740_991;
+const MIB: u64 = 1024 * 1024;
+/// Smallest heap budget; V8 aborts below about 8 MiB while the worker starts,
+/// before exhaustion can be reported.
+const MIN_HEAP_MB: u64 = 16;
+/// Default Linux data limit above the heap budget, for V8's other reservations,
+/// thread stacks, and native allocations; measured, see `run`.
+#[cfg(target_os = "linux")]
+const DATA_MARGIN_MB: u64 = 256;
+/// How long a stopped worker's remaining output is read for a `memory_limit` frame.
+const STOPPED_OUTPUT_GRACE: Duration = Duration::from_millis(200);
 
 /// Passive limits and executable selection for one run.
 #[derive(Debug, Clone)]
@@ -51,6 +63,18 @@ pub struct RunConfig {
     /// Tool names authorized by this host, independently of guest requests.
     /// Empty by default: every call is denied until the host authorizes its tool.
     pub allowed_tools: Vec<String>,
+    /// V8 heap budget for the program's worker, in MiB (default 256, minimum 16). Reaching it
+    /// ends the run with [`RunStatus::MemoryLimit`]. It bounds the JavaScript heap
+    /// only: `ArrayBuffer` backing stores and native allocations are outside it.
+    pub heap_mb: u64,
+    /// Linux only: the worker's data-segment limit (`RLIMIT_DATA`) in MiB, which
+    /// also bounds `ArrayBuffer` backing stores. `None` applies the heap budget plus
+    /// 256 MiB on Linux and no process limit elsewhere. Requesting it on another
+    /// platform fails with [`RunError::Config`] before a worker starts. A limit too
+    /// small for V8's own reservations (measured: about 112 MiB with small heap
+    /// budgets) stops the worker at startup, and the run ends with
+    /// [`RunStatus::WorkerCrashed`].
+    pub process_memory_mb: Option<u64>,
 }
 
 /// The host-chosen limits a run executed under, recorded with its trace.
@@ -64,6 +88,12 @@ pub struct RunLimits {
     pub max_concurrency: usize,
     /// Shared serialized response and output byte allowance.
     pub max_output_bytes: usize,
+    /// V8 heap budget in bytes applied to the worker; `null` for native runs.
+    pub heap_bytes: Option<u64>,
+    /// Data-segment limit (`RLIMIT_DATA`) in bytes the worker applied to itself
+    /// before starting V8; `null` when no process limit was applied, as on every
+    /// platform other than Linux and for native runs.
+    pub process_data_bytes: Option<u64>,
 }
 
 impl Default for RunConfig {
@@ -75,6 +105,8 @@ impl Default for RunConfig {
             max_output_bytes: 256 * 1024,
             worker: None,
             allowed_tools: Vec::new(),
+            heap_mb: 256,
+            process_memory_mb: None,
         }
     }
 }
@@ -362,6 +394,13 @@ pub enum RunStatus {
     Cancelled,
     /// Child stdout violated the untrusted input protocol.
     ProtocolError,
+    /// The worker exhausted its memory: V8 reached the heap budget, or on Linux an
+    /// allocation failed under the process data limit. The worker reported it with
+    /// a `memory_limit` frame or exited with the reserved code 75.
+    MemoryLimit,
+    /// The worker died without output for another reason, such as a signal it
+    /// did not receive from this controller; [`RunReport::worker_exit`] records how.
+    WorkerCrashed,
 }
 
 impl RunStatus {
@@ -383,10 +422,13 @@ impl RunStatus {
             Self::Deadline => "deadline",
             Self::Cancelled => "cancelled",
             Self::ProtocolError => "protocol_error",
+            Self::MemoryLimit => "memory_limit",
+            Self::WorkerCrashed => "worker_crashed",
         }
     }
 
-    /// CLI exit code: success 0, cancellation 130, deadline 124, other failure 1.
+    /// CLI exit code: success 0, cancellation 130, deadline 124, other failure,
+    /// including `memory_limit` and `worker_crashed`, 1.
     #[must_use]
     pub fn exit_code(self) -> u8 {
         match self {
@@ -551,6 +593,19 @@ pub struct RunReport {
     pub bridge: Option<BridgeTotals>,
     /// A bounded explanation of the terminal status; child stderr is discarded.
     pub diagnostic: Option<String>,
+    /// How the worker exited when it ended without output and without being
+    /// stopped by this controller; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_exit: Option<WorkerExit>,
+}
+
+/// A worker's own exit, as the controller observed it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerExit {
+    /// Exit code, when the worker exited normally.
+    pub code: Option<i32>,
+    /// Terminating signal number, when a signal ended the worker.
+    pub signal: Option<i32>,
 }
 
 /// Bytes the bridge exchanged with its host, excluding the final report frame.
@@ -607,6 +662,9 @@ enum GuestFrame {
     },
     Error {
         message: String,
+    },
+    MemoryLimit {
+        heap_limit_bytes: u64,
     },
 }
 
@@ -815,11 +873,26 @@ impl Guest {
 ///
 /// The worker named by [`RunConfig::worker`] starts with an empty environment,
 /// strips TypeScript types without checking them, refuses every import, and exposes
-/// only `tools.call`, `console`, and standard JavaScript built-ins.
+/// only `tools.call`, `console`, and standard JavaScript built-ins other than
+/// `WebAssembly`, `SharedArrayBuffer`, and `Atomics`.
 /// Provider failures can be caught by guest code and remain visible in the trace.
 /// A deadline or cancellation kills the worker and drops pending provider futures;
 /// an already dispatched external effect may still have occurred. This is not an
-/// OS sandbox or RSS limit. Requires a Tokio runtime with I/O and time enabled.
+/// OS sandbox. Requires a Tokio runtime with I/O and time enabled.
+///
+/// # Memory
+///
+/// The worker enforces [`RunConfig::heap_mb`] as its V8 heap budget on every
+/// platform. On Linux it also applies a data-segment limit (`RLIMIT_DATA`) to
+/// itself before V8 starts, which bounds `ArrayBuffer` backing stores and native
+/// allocations; by default the heap budget plus 256 MiB, a margin measured to
+/// leave V8's startup reservations and the heap budget's exhaustion path working.
+/// Elsewhere no process limit is applied, so `ArrayBuffer` memory is unbounded,
+/// and [`RunConfig::process_memory_mb`] is refused. [`RunLimits`] records what was
+/// applied. Exhaustion ends the run with [`RunStatus::MemoryLimit`]; another worker
+/// death without output, such as a signal from elsewhere, with
+/// [`RunStatus::WorkerCrashed`]. Either way calls already dispatched keep their
+/// observed results, collected until the deadline, and are otherwise unknown.
 ///
 /// # Examples
 ///
@@ -849,8 +922,10 @@ impl Guest {
 /// ```
 ///
 /// # Errors
-/// Returns [`RunError::Config`] for invalid limits, oversized source, or a missing
-/// [`RunConfig::worker`], and [`RunError::Io`] for worker startup failure or pipe I/O.
+/// Returns [`RunError::Config`] for invalid limits, including a heap budget under
+/// 16 MiB or a process memory limit this platform cannot enforce, oversized source,
+/// or a missing [`RunConfig::worker`], and [`RunError::Io`] for worker startup
+/// failure or pipe I/O.
 /// Guest errors, protocol violations, cancellation, and exceeded budgets return a report.
 pub async fn run(
     code: &str,
@@ -858,7 +933,7 @@ pub async fn run(
     provider: impl ToolProvider,
     cancellation: RunCancellation,
 ) -> Result<RunReport, RunError> {
-    let initial = validate(code, &config)?;
+    let (initial, memory) = validate(code, &config)?;
     let worker = config
         .worker
         .as_deref()
@@ -871,6 +946,7 @@ pub async fn run(
             guest: Box::new(guest),
             initial,
             code,
+            memory,
         },
         start,
         config,
@@ -889,22 +965,68 @@ fn validate_limits(config: &RunConfig) -> Result<(), RunError> {
     Ok(())
 }
 
-/// Check limits and source size, returning the initial guest frame.
-fn validate(code: &str, config: &RunConfig) -> Result<Vec<u8>, RunError> {
+/// The worker's memory limits in bytes.
+#[derive(Debug, Clone, Copy)]
+struct WorkerMemory {
+    /// V8 heap budget.
+    heap: u64,
+    /// The process data limit the worker applies to itself, if this platform can enforce one.
+    data: Option<u64>,
+}
+
+fn memory_limits(config: &RunConfig) -> Result<WorkerMemory, RunError> {
+    let bytes = |mb: u64, name: &str| {
+        mb.checked_mul(MIB)
+            .filter(|_| mb > 0)
+            .ok_or_else(|| RunError::Config(format!("{name} must be a positive number of MiB")))
+    };
+    if config.heap_mb < MIN_HEAP_MB {
+        return Err(RunError::Config(format!(
+            "the heap budget must be at least {MIN_HEAP_MB} MiB"
+        )));
+    }
+    let heap = bytes(config.heap_mb, "the heap budget")?;
+    #[cfg(target_os = "linux")]
+    let data = {
+        let data_mb = config
+            .process_memory_mb
+            .unwrap_or_else(|| config.heap_mb.saturating_add(DATA_MARGIN_MB));
+        Some(bytes(data_mb, "the process memory limit")?)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let data = match config.process_memory_mb {
+        Some(_) => {
+            return Err(RunError::Config(
+                "a process memory limit is enforced only on Linux; this platform \
+                 enforces only the V8 heap budget"
+                    .into(),
+            ));
+        }
+        None => None,
+    };
+    Ok(WorkerMemory { heap, data })
+}
+
+/// Check limits and source size, returning the initial guest frame and the
+/// worker's memory limits.
+fn validate(code: &str, config: &RunConfig) -> Result<(Vec<u8>, WorkerMemory), RunError> {
     validate_limits(config)?;
+    let memory = memory_limits(config)?;
     if code.len() > FRAME_BYTES {
         return Err(RunError::Config(
             "source exceeds the 64 KiB frame limit".into(),
         ));
     }
-    let initial =
-        serde_json::to_vec(&json!({"type":"run", "code":code})).map_err(io::Error::other)?;
+    let initial = serde_json::to_vec(&json!({
+        "type": "run", "code": code, "heap_bytes": memory.heap, "process_data_bytes": memory.data,
+    }))
+    .map_err(io::Error::other)?;
     if initial.len() + 1 > FRAME_BYTES {
         return Err(RunError::Config(
             "serialized source exceeds the 64 KiB frame limit".into(),
         ));
     }
-    Ok(initial)
+    Ok((initial, memory))
 }
 
 /// Execute finite host-owned requests through the program runtime's controls.
@@ -977,6 +1099,7 @@ enum ExecutionInput<'a> {
         guest: Box<Guest>,
         initial: Vec<u8>,
         code: &'a str,
+        memory: WorkerMemory,
     },
     Native(&'a [NativeCall]),
 }
@@ -989,6 +1112,7 @@ enum Submission {
     },
     Output(Value),
     Error(String),
+    MemoryLimit(u64),
     InvalidFrame,
     Exhausted,
 }
@@ -1000,19 +1124,21 @@ async fn execute(
     provider: impl ToolProvider,
     cancellation: RunCancellation,
 ) -> Result<RunReport, RunError> {
-    let (guest, initial, code, native_calls, backend) = match source {
+    let (guest, initial, code, native_calls, backend, memory) = match source {
         ExecutionInput::Guest {
             guest,
             initial,
             code,
+            memory,
         } => (
             Some(guest),
             Some(initial),
             code,
             &[][..],
             ExecutionBackend::EmbeddedV8,
+            Some(memory),
         ),
-        ExecutionInput::Native(calls) => (None, None, "", calls, ExecutionBackend::Native),
+        ExecutionInput::Native(calls) => (None, None, "", calls, ExecutionBackend::Native, None),
     };
     let native = backend == ExecutionBackend::Native;
     let mut native_calls = native_calls.iter();
@@ -1029,6 +1155,8 @@ async fn execute(
             max_calls: config.max_calls,
             max_concurrency: config.max_concurrency,
             max_output_bytes: config.max_output_bytes,
+            heap_bytes: memory.map(|memory| memory.heap),
+            process_data_bytes: memory.and_then(|memory| memory.data),
         },
         output: None,
         calls: Vec::new(),
@@ -1040,6 +1168,7 @@ async fn execute(
         bytes: ByteTotals::default(),
         bridge: None,
         diagnostic: None,
+        worker_exit: None,
     };
     let (mut child, mut input, mut output) = if let Some(guest) = guest {
         let Guest {
@@ -1073,6 +1202,8 @@ async fn execute(
     let mut input_closed = false;
     let mut partial_frame = Vec::new();
     let mut io_failure = None;
+    // How the worker itself ended, once known; later stops cannot replace it.
+    let mut worker_end: Option<(RunStatus, String)> = None;
     loop {
         if cancellation.is_cancelled() {
             stop(&mut report, start, RunStatus::Cancelled);
@@ -1216,6 +1347,7 @@ async fn execute(
                         Ok(GuestFrame::Call { id, tool, arguments }) => Submission::Call { guest_id: Some(id), tool, arguments },
                         Ok(GuestFrame::Output { value }) => Submission::Output(value),
                         Ok(GuestFrame::Error { message }) => Submission::Error(message),
+                        Ok(GuestFrame::MemoryLimit { heap_limit_bytes }) => Submission::MemoryLimit(heap_limit_bytes),
                         Err(_) => Submission::InvalidFrame,
                     };
                     Ok((message, bytes.len() as u64))
@@ -1290,6 +1422,15 @@ async fn execute(
                     }
                     Submission::Error(message) => { report.status = RunStatus::GuestError; report.diagnostic = Some(message); event_because(&mut report, start, None, "guest_finished", Some("error")); guest_done = true; responses.clear(); if let Some(child) = &mut child
                             && let Err(error) = child.start_kill() { io_failure = Some(error); break; } }
+                    Submission::MemoryLimit(limit) => {
+                        // Recorded before the worker is killed, so no kill can reclassify it.
+                        worker_end = Some((RunStatus::MemoryLimit, memory_diagnostic(limit)));
+                        event_because(&mut report, start, None, "guest_finished", Some(RunStatus::MemoryLimit.as_str()));
+                        guest_done = true;
+                        responses.clear();
+                        if let Some(child) = &mut child
+                            && let Err(error) = child.start_kill() { io_failure = Some(error); break; }
+                    }
                     Submission::InvalidFrame => {
                         report.status = RunStatus::ProtocolError;
                         report.diagnostic = Some("invalid child stdout frame".into());
@@ -1300,13 +1441,36 @@ async fn execute(
                             source_exhausted = true;
                             event(&mut report, start, None, "input_exhausted");
                         } else {
-                            report.status = RunStatus::GuestError;
-                            report.diagnostic = Some("child stdout closed without returning output; stderr discarded".into());
-                            event_because(&mut report, start, None, "guest_finished", Some("exited"));
                             guest_done = true;
                             responses.clear();
-                            if let Some(child) = &mut child
-                                && let Err(error) = child.start_kill() { io_failure = Some(error); break; }
+                            // Wait for the exit without killing: a kill would hide how the worker ended.
+                            let exit = match &mut child {
+                                Some(child) => tokio::select! {
+                                    biased;
+                                    () = cancellation.cancelled() => None,
+                                    () = time::sleep_until(deadline) => None,
+                                    status = child.wait() => Some(status),
+                                },
+                                None => None,
+                            };
+                            let exit = match exit.transpose() {
+                                Ok(exit) => exit.map(worker_exit),
+                                Err(error) => { io_failure = Some(error); break; }
+                            };
+                            report.worker_exit = exit;
+                            let reason = match exit_status(exit) {
+                                Some(end) => {
+                                    let status = end.0;
+                                    worker_end = Some(end);
+                                    status.as_str()
+                                }
+                                None => {
+                                    report.status = RunStatus::GuestError;
+                                    report.diagnostic = Some("child stdout closed without returning output; stderr discarded".into());
+                                    "exited"
+                                }
+                            };
+                            event_because(&mut report, start, None, "guest_finished", Some(reason));
                         }
                     }
                 }
@@ -1317,6 +1481,37 @@ async fn execute(
     }
     if native {
         event(&mut report, start, None, "execution_finished");
+    }
+    // A worker this controller stops, for example at a deadline, may have exhausted
+    // its memory at the same moment: a `memory_limit` frame it wrote before dying,
+    // or its reserved exit code, still classifies the run. A protocol violation
+    // makes the rest of its output untrustworthy.
+    if !guest_done
+        && worker_end.is_none()
+        && report.status != RunStatus::ProtocolError
+        && let (Some(child), Some(output)) = (&mut child, &mut output)
+    {
+        let _ = child.start_kill();
+        let exited = child.wait().await.ok().and_then(|status| status.code());
+        let reported = time::timeout(
+            STOPPED_OUTPUT_GRACE,
+            stopped_memory_limit(output, &mut partial_frame),
+        )
+        .await
+        .ok()
+        .flatten();
+        if let Some(limit) = reported {
+            worker_end = Some((RunStatus::MemoryLimit, memory_diagnostic(limit)));
+        } else if exited == Some(MEMORY_LIMIT_EXIT_CODE) {
+            worker_end = exit_status(Some(WorkerExit {
+                code: exited,
+                signal: None,
+            }));
+        }
+    }
+    if let Some((status, diagnostic)) = worker_end {
+        report.status = status;
+        report.diagnostic = Some(diagnostic);
     }
     // Stop producers first, so this drain ends after at most the buffered facts.
     fact_receiver.close();
@@ -1373,6 +1568,65 @@ async fn execute(
     report.elapsed_ms = elapsed(start);
     event(&mut report, start, None, "run_finished");
     Ok(report)
+}
+
+fn memory_diagnostic(heap_limit_bytes: u64) -> String {
+    format!(
+        "the worker exhausted its memory: V8 neared its heap limit of {heap_limit_bytes} bytes, \
+         or an allocation failed under the process data limit"
+    )
+}
+
+fn worker_exit(status: std::process::ExitStatus) -> WorkerExit {
+    #[cfg(unix)]
+    let signal = std::os::unix::process::ExitStatusExt::signal(&status);
+    #[cfg(not(unix))]
+    let signal = None;
+    WorkerExit {
+        code: status.code(),
+        signal,
+    }
+}
+
+/// Classify a worker that ended on its own without output: the reserved code is
+/// memory exhaustion, a signal or an unexpected code is a crash, and its own
+/// failure codes 0 and 1 (or an unobserved exit) are left to the caller.
+fn exit_status(exit: Option<WorkerExit>) -> Option<(RunStatus, String)> {
+    let exit = exit?;
+    match (exit.code, exit.signal) {
+        (Some(MEMORY_LIMIT_EXIT_CODE), _) => Some((
+            RunStatus::MemoryLimit,
+            format!(
+                "the worker exited with the reserved memory-limit code {MEMORY_LIMIT_EXIT_CODE}"
+            ),
+        )),
+        (_, Some(signal)) => Some((
+            RunStatus::WorkerCrashed,
+            format!(
+                "the worker was terminated by signal {signal} without returning output; stderr discarded"
+            ),
+        )),
+        (Some(0 | 1), _) | (None, None) => None,
+        (Some(code), None) => Some((
+            RunStatus::WorkerCrashed,
+            format!(
+                "the worker exited with code {code} without returning output; stderr discarded"
+            ),
+        )),
+    }
+}
+
+/// A `memory_limit` frame among the frames a stopped worker wrote before it died.
+async fn stopped_memory_limit(
+    output: &mut BufReader<ChildStdout>,
+    partial: &mut Vec<u8>,
+) -> Option<u64> {
+    while let Ok(Some(bytes)) = frame(output, partial, FRAME_BYTES).await {
+        if let Ok(GuestFrame::MemoryLimit { heap_limit_bytes }) = serde_json::from_slice(&bytes) {
+            return Some(heap_limit_bytes);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

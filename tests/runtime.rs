@@ -531,7 +531,14 @@ async fn abrupt_worker_exit_keeps_a_later_result_and_otherwise_unknown() {
     )
     .await
     .expect("worker exit produces a report");
-    assert_eq!(report.status, RunStatus::GuestError, "{report:?}");
+    assert_eq!(report.status, RunStatus::WorkerCrashed, "{report:?}");
+    assert_eq!(
+        report.worker_exit,
+        Some(codemode::WorkerExit {
+            code: None,
+            signal: Some(9)
+        })
+    );
     assert_eq!(
         report.calls[0].outcome,
         CallOutcome::Succeeded {
@@ -555,7 +562,8 @@ async fn abrupt_worker_exit_keeps_a_later_result_and_otherwise_unknown() {
     )
     .await
     .expect("worker exit produces a report");
-    assert_eq!(report.status, RunStatus::Deadline, "{report:?}");
+    // The deadline that cut collection short does not hide why the worker ended.
+    assert_eq!(report.status, RunStatus::WorkerCrashed, "{report:?}");
     assert_eq!(report.calls[0].outcome, CallOutcome::Unknown);
 }
 
@@ -712,7 +720,7 @@ async fn trace_separates_admission_dispatch_result_and_delivery_with_byte_accoun
     .await
     .expect("run completes");
     assert_eq!(report.status, RunStatus::Success, "{report:?}");
-    assert_eq!(report.schema_version, 4);
+    assert_eq!(report.schema_version, 5);
     for record in &report.calls {
         let admitted = record.admitted_ms.expect("admitted");
         let started = record.started_ms.expect("dispatched");

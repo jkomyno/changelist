@@ -7,6 +7,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+/// The default heap budget the controller sends.
+const HEAP_BYTES: u64 = 256 * 1024 * 1024;
+
 struct Worker {
     child: Child,
     input: Option<ChildStdin>,
@@ -53,6 +56,14 @@ impl Worker {
         }
     }
 
+    /// Send the run frame the controller sends, with the default heap budget.
+    fn run(&mut self, code: impl Into<String>) {
+        let code: String = code.into();
+        self.send(
+            json!({"type":"run","code":code,"heap_bytes":HEAP_BYTES,"process_data_bytes":null}),
+        );
+    }
+
     fn send(&mut self, frame: Value) {
         writeln!(self.input.as_mut().expect("worker input open"), "{frame}")
             .expect("write host frame");
@@ -91,7 +102,7 @@ impl Drop for Worker {
 #[test]
 fn worker_executes_typescript_without_deno() {
     let mut worker = Worker::start();
-    worker.send(json!({"type":"run", "code":"const n: number = 20; return await tools.call('mock.echo', {answer:n+22});"}));
+    worker.run("const n: number = 20; return await tools.call('mock.echo', {answer:n+22});");
     assert_eq!(
         worker.receive(),
         json!({"type":"call", "id":0,"tool":"mock.echo","arguments":{"answer":42}})
@@ -106,13 +117,15 @@ fn worker_executes_typescript_without_deno() {
 #[test]
 fn same_turn_calls_snapshot_arguments_and_provider_errors_are_catchable() {
     let mut worker = Worker::start();
-    worker.send(json!({"type":"run", "code":r#"
+    worker.run(
+        r#"
       const args = {n:1};
       const first = tools.call('echo', args);
       args.n = 2;
       const second = tools.call('fail').catch(error => [error.code, error.message]);
       return await Promise.all([first, second]);
-    "#}));
+    "#,
+    );
     assert_eq!(
         worker.receive(),
         json!({"type":"call","id":0,"tool":"echo","arguments":{"n":1}})
@@ -132,11 +145,13 @@ fn same_turn_calls_snapshot_arguments_and_provider_errors_are_catchable() {
 #[test]
 fn unawaited_calls_precede_final_output_and_uncloneable_arguments_reject_locally() {
     let mut worker = Worker::start();
-    worker.send(json!({"type":"run","code":r#"
+    worker.run(
+        r#"
       const rejected = await tools.call('bad', () => 1).then(() => false, () => true);
       queueMicrotask(() => { void tools.call('echo', 'late'); });
       return rejected;
-    "#}));
+    "#,
+    );
     assert_eq!(
         worker.receive(),
         json!({"type":"call","id":1,"tool":"echo","arguments":"late"})
@@ -147,20 +162,24 @@ fn unawaited_calls_precede_final_output_and_uncloneable_arguments_reject_locally
 #[test]
 fn forbidden_capabilities_and_imports_are_unavailable() {
     let mut worker = Worker::start();
-    worker.send(json!({"type":"run","code":r#"
+    worker.run(
+        r#"
       const globals = [typeof Deno, typeof process, typeof require, typeof fetch,
-        typeof WebSocket, typeof Worker];
+        typeof WebSocket, typeof Worker, typeof WebAssembly, typeof SharedArrayBuffer,
+        typeof Atomics];
       const imports = await Promise.all(['file:///etc/passwd', 'https://example.com/x.js',
         'node:fs', 'data:text/javascript,export default 1', 'ext:core/ops', 'ext:core/mod.js',
         './local.ts'].map(async name => {
           try { await import(name); return 'allowed'; } catch { return 'denied'; }
         }));
       return {globals, imports};
-    "#}));
+    "#,
+    );
     assert_eq!(
         worker.receive(),
         json!({"type":"output","value":{
-            "globals":["undefined","undefined","undefined","undefined","undefined","undefined"],
+            "globals":["undefined","undefined","undefined","undefined","undefined","undefined",
+              "undefined","undefined","undefined"],
         "imports":["denied","denied","denied","denied","denied","denied","denied"]
           }})
     );
@@ -170,7 +189,9 @@ fn forbidden_capabilities_and_imports_are_unavailable() {
 fn fresh_workers_do_not_share_global_state() {
     for expected in [0, 0] {
         let mut worker = Worker::start();
-        worker.send(json!({"type":"run","code":"const previous = globalThis.marker ?? 0; globalThis.marker = 42; return previous;"}));
+        worker.run(
+            "const previous = globalThis.marker ?? 0; globalThis.marker = 42; return previous;",
+        );
         assert_eq!(worker.receive(), json!({"type":"output","value":expected}));
     }
 }
@@ -178,7 +199,7 @@ fn fresh_workers_do_not_share_global_state() {
 #[test]
 fn stdin_eof_terminates_a_spinning_guest() {
     let mut worker = Worker::start();
-    worker.send(json!({"type":"run","code":"console.log('spinning'); for (;;) {}"}));
+    worker.run("console.log('spinning'); for (;;) {}");
     assert_eq!(
         worker
             .diagnostic
@@ -198,7 +219,7 @@ fn overlong_source_input_and_output_are_rejected() {
         "return await tools.call('echo', 'x'.repeat(64 * 1024));".into(),
     ] {
         let mut worker = Worker::start();
-        worker.send(json!({"type":"run","code":code}));
+        worker.run(code);
         assert_eq!(worker.receive()["type"], "error");
         assert!(!worker.wait_for_exit().success());
     }
@@ -215,7 +236,7 @@ fn overlong_source_input_and_output_are_rejected() {
 #[test]
 fn a_large_reply_and_a_burst_of_small_replies_are_delivered() {
     let mut worker = Worker::start();
-    worker.send(json!({"type":"run","code":"const values = await Promise.all(Array.from({length:64}, () => tools.call('echo'))); return [values[0].length, values.length];"}));
+    worker.run("const values = await Promise.all(Array.from({length:64}, () => tools.call('echo'))); return [values[0].length, values.length];");
     for id in 0..64 {
         assert_eq!(worker.receive()["id"], id);
     }
@@ -231,9 +252,30 @@ fn a_large_reply_and_a_burst_of_small_replies_are_delivered() {
 #[test]
 fn malformed_host_replies_fail_the_worker() {
     let mut worker = Worker::start();
-    worker.send(json!({"type":"run","code":"return await tools.call('echo');"}));
+    worker.run("return await tools.call('echo');");
     assert_eq!(worker.receive()["type"], "call");
     worker.send(json!({"type":"result","id":0,"ok":false,"error":{"message":"missing code"}}));
+    assert_eq!(worker.receive()["type"], "error");
+    assert!(!worker.wait_for_exit().success());
+}
+
+#[test]
+fn heap_exhaustion_writes_a_memory_limit_frame_and_exits_with_the_reserved_code() {
+    let mut worker = Worker::start();
+    worker.send(
+        json!({"type":"run","heap_bytes":64 * 1024 * 1024,"process_data_bytes":null,
+        "code":"const keep = []; for (;;) keep.push(new Array(1e5).fill(0));"}),
+    );
+    let frame = worker.receive();
+    assert_eq!(frame["type"], "memory_limit", "{frame}");
+    assert!(frame["heap_limit_bytes"].as_u64().is_some(), "{frame}");
+    assert_eq!(worker.wait_for_exit().code(), Some(75));
+}
+
+#[test]
+fn a_run_frame_without_a_heap_budget_is_refused() {
+    let mut worker = Worker::start();
+    worker.send(json!({"type":"run","code":"return 1;"}));
     assert_eq!(worker.receive()["type"], "error");
     assert!(!worker.wait_for_exit().success());
 }

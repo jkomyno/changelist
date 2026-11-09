@@ -71,6 +71,10 @@ export interface BridgeLimits {
   maxCalls: number;
   /** Shared reply and output byte budget; defaults to 262144. */
   maxOutputBytes?: number;
+  /** V8 heap budget of the worker in MiB, at least 16; defaults to 256. */
+  heapMb?: number;
+  /** Linux only: the worker's data-segment limit in MiB; elsewhere the bridge refuses to start. */
+  processMemoryMb?: number;
 }
 
 export interface BridgeRun extends BridgeLimits {
@@ -138,6 +142,8 @@ function bridgeArgs(limits: BridgeLimits): string[] {
     String(limits.maxCalls),
     "--max-output-bytes",
     String(limits.maxOutputBytes ?? OUTPUT_BYTES),
+    ...(limits.heapMb === undefined ? [] : ["--heap-mb", String(limits.heapMb)]),
+    ...(limits.processMemoryMb === undefined ? [] : ["--process-memory-mb", String(limits.processMemoryMb)]),
   ];
 }
 

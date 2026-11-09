@@ -13,7 +13,9 @@ use std::fmt::Write as _;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{CallOutcome, CallRecord, ExecutionBackend, ProviderFactKind, RunReport, RunStatus};
+use crate::{
+    CallOutcome, CallRecord, ExecutionBackend, ProviderFactKind, RunReport, RunStatus, WorkerExit,
+};
 
 const MAX_KEYS: usize = 6;
 const MAX_KEY_CHARS: usize = 24;
@@ -54,6 +56,9 @@ pub struct Inspection {
     /// The run diagnostic, only when messages were requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<String>,
+    /// How the worker exited on its own, when the report records it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_exit: Option<WorkerExit>,
     /// Where the time went.
     pub timing: Timing,
     /// What is known about each call.
@@ -292,7 +297,7 @@ impl Sections {
 /// ```
 /// use codemode::{InspectOptions, RunReport, Sections, inspect};
 /// let report: RunReport = serde_json::from_str(r#"{
-///   "schema_version": 4, "backend": "embedded_v8", "code": "return 1;", "status": "success",
+///   "schema_version": 5, "backend": "embedded_v8", "code": "return 1;", "status": "success",
 ///   "limits": {"timeout_ms": 5000, "max_calls": 32, "max_concurrency": 4,
 ///              "max_output_bytes": 262144},
 ///   "output": 1, "calls": [], "events": [], "provider_facts": [],
@@ -322,6 +327,7 @@ pub fn inspect(report: &RunReport, options: &InspectOptions) -> Inspection {
             .as_deref()
             .filter(|_| options.messages)
             .map(|text| sanitize(text, MAX_MESSAGE_CHARS)),
+        worker_exit: report.worker_exit,
         timing: timing(report, options),
         calls: calls(report, &evidence, options),
         reconcile: reconcile(report, &evidence, options),
@@ -786,6 +792,20 @@ impl Inspection {
             ExecutionBackend::EmbeddedV8 => "embedded_v8",
         };
         let _ = writeln!(out, "backend {backend}");
+        match self.worker_exit {
+            Some(WorkerExit {
+                signal: Some(signal),
+                ..
+            }) => {
+                let _ = writeln!(out, "worker terminated by signal {signal}");
+            }
+            Some(WorkerExit {
+                code: Some(code), ..
+            }) => {
+                let _ = writeln!(out, "worker exited with code {code}");
+            }
+            _ => {}
+        }
         if let Some(diagnostic) = &self.diagnostic {
             let _ = writeln!(out, "diagnostic: {diagnostic}");
         }

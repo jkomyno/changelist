@@ -257,7 +257,7 @@ async fn a_lost_response_is_reconciled_instead_of_repeated() {
     .await
     .expect("session runs");
     let trace = first.trace.as_ref().expect("dispatch trace");
-    assert_eq!(trace.schema_version, 4);
+    assert_eq!(trace.schema_version, 5);
     assert_eq!(trace.backend, codemode::ExecutionBackend::Native);
     assert!(trace.code.is_empty());
     assert!(trace.output.is_none());

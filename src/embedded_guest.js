@@ -74,4 +74,8 @@
   };
   delete globalThis.Deno;
   delete globalThis.__bootstrap;
+  // Not needed by the helper contract, and their memory is outside the V8 heap budget.
+  delete globalThis.WebAssembly;
+  delete globalThis.SharedArrayBuffer;
+  delete globalThis.Atomics;
 })();

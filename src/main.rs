@@ -35,6 +35,12 @@ Each program runs in a fresh V8 worker process started from this executable.
   --max-calls <n>         Maximum helper-call attempts (default: 32)
   --concurrency <n>       Maximum active provider calls (default: 4)
   --max-output-bytes <n>  Cumulative JSON response/output bytes (default: 262144)
+  --heap-mb <n>           V8 heap budget of the worker in MiB (default: 256,
+                          minimum: 16); reaching it ends the run with status
+                          memory_limit
+  --process-memory-mb <n> Linux only: the worker's data-segment limit
+                          (RLIMIT_DATA) in MiB, which also bounds ArrayBuffer
+                          memory (default on Linux: heap budget + 256)
 
 inspect reads a saved execution record and answers: why was this slow, which
 calls ran, and which outcomes require reconciliation. It prints tool names,
@@ -147,9 +153,21 @@ fn parse_arguments() -> Result<Command, CliError> {
         }
         if !matches!(
             flag,
-            "--timeout-ms" | "--max-calls" | "--concurrency" | "--max-output-bytes"
+            "--timeout-ms"
+                | "--max-calls"
+                | "--concurrency"
+                | "--max-output-bytes"
+                | "--heap-mb"
+                | "--process-memory-mb"
         ) {
             return Err(CliError(format!("unknown option '{flag}'")));
+        }
+        if flag == "--process-memory-mb" && !cfg!(target_os = "linux") {
+            return Err(CliError(
+                "--process-memory-mb is enforced only on Linux; this platform enforces only \
+                 the V8 heap budget (--heap-mb)"
+                    .into(),
+            ));
         }
         let value = args
             .next()
@@ -158,8 +176,13 @@ fn parse_arguments() -> Result<Command, CliError> {
             .to_str()
             .and_then(|value| value.parse::<u64>().ok())
             .ok_or_else(|| CliError(format!("{flag} requires a nonnegative integer")))?;
-        if flag == "--timeout-ms" {
-            config.timeout_ms = number;
+        match flag {
+            "--timeout-ms" => config.timeout_ms = number,
+            "--heap-mb" => config.heap_mb = number,
+            "--process-memory-mb" => config.process_memory_mb = Some(number),
+            _ => {}
+        }
+        if matches!(flag, "--timeout-ms" | "--heap-mb" | "--process-memory-mb") {
             continue;
         }
         let number = usize::try_from(number)

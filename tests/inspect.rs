@@ -92,7 +92,7 @@ fn evidence_report() -> RunReport {
     };
     let fact = |id: u64, kind: &str, at: u64| json!({"call_id": id, "kind": kind, "received_ms": at, "provider_ms": 1.5});
     serde_json::from_value(json!({
-        "schema_version": 4, "backend": "embedded_v8", "code": "...", "status": "deadline",
+        "schema_version": 5, "backend": "embedded_v8", "code": "...", "status": "deadline",
         "limits": {"timeout_ms": 300, "max_calls": 32, "max_concurrency": 4, "max_output_bytes": 1000},
         "calls": [
             call(1, json!({"status": "unknown"}), Some(11)),
@@ -265,7 +265,7 @@ fn inspect_reads_a_record_from_stdin_and_refuses_other_json() {
 
 fn minimal(status: &str, elapsed: u64, calls: Value, events: Value) -> RunReport {
     serde_json::from_value(json!({
-        "schema_version": 4, "backend": "embedded_v8", "code": "", "status": status,
+        "schema_version": 5, "backend": "embedded_v8", "code": "", "status": status,
         "limits": {"timeout_ms": 10, "max_calls": 32, "max_concurrency": 4, "max_output_bytes": 1000},
         "calls": calls, "events": events, "provider_facts": [], "provider_facts_dropped": 0,
         "elapsed_ms": elapsed, "clock": clock(), "bytes": bytes(), "diagnostic": null
@@ -283,6 +283,30 @@ fn a_run_stopped_before_any_guest_frame_counts_the_rest_as_shutdown() {
     );
     assert_eq!(phase(&report, "startup"), 10);
     assert_eq!(phase(&report, "shutdown"), 2);
+}
+
+#[test]
+fn a_crashed_worker_shows_its_status_and_signal() {
+    let mut report = minimal(
+        "worker_crashed",
+        12,
+        json!([]),
+        json!([{"id": 1, "call_id": null, "kind": "guest_finished", "at_ms": 10,
+            "reason": "worker_crashed"}]),
+    );
+    report.worker_exit = Some(codemode::WorkerExit {
+        code: None,
+        signal: Some(9),
+    });
+    let text = inspect(&report, &InspectOptions::default()).render(Sections::ALL);
+    assert!(text.contains("status worker_crashed"), "{text}");
+    assert!(text.contains("worker terminated by signal 9"), "{text}");
+    let saved = serde_json::to_string(&report).expect("serializes");
+    let output = codemode(&["inspect", "-", "--json"], Some(&saved));
+    assert!(output.status.success(), "{output:?}");
+    let answers: Value = serde_json::from_slice(&output.stdout).expect("JSON answers");
+    assert_eq!(answers["status"], "worker_crashed");
+    assert_eq!(answers["worker_exit"]["signal"], 9);
 }
 
 #[test]
@@ -349,7 +373,7 @@ async fn native_inspection_has_exclusive_host_phases_and_roundtrips_without_gues
     .await
     .expect("native run completes");
     let saved = serde_json::to_value(&report).expect("native report serializes");
-    assert_eq!(saved["schema_version"], 4);
+    assert_eq!(saved["schema_version"], 5);
     assert_eq!(saved["backend"], "native");
     assert!(saved.get("output").is_none());
     assert!(
