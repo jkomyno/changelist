@@ -211,8 +211,31 @@ fn kill_when_held(scratch: &Scratch, mut child: Child, count: usize) {
         assert!(Instant::now() < deadline, "the held request never arrived");
         std::thread::sleep(Duration::from_millis(20));
     }
+    let pid = child.id();
     child.kill().expect("SIGKILL");
     child.wait().expect("reap");
+    assert_guest_exits(pid);
+}
+
+/// A killed executor's guest sees its input close and exits instead of lingering.
+/// The guest's launcher file is named after the executor's process id.
+fn assert_guest_exits(executor: u32) {
+    let pattern = format!("codemode-{executor}-[0-9]+\\.ts");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let running = Command::new("pgrep")
+            .args(["-f", &pattern])
+            .output()
+            .expect("pgrep runs");
+        if !running.status.success() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the guest of killed executor {executor} is still running"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn statuses(scratch: &Scratch) -> Vec<(String, Conclusion, NextStep)> {

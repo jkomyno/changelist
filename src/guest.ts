@@ -168,4 +168,8 @@ try {
     }
   }
   if (!started) throw new Error("Missing run frame");
+  // The host closed our input, so no reply can arrive: it stopped or was killed.
+  // Stop the program instead of leaving it running without a parent.
+  worker.terminate();
+  Deno.exit(1);
 } catch (error) { fail(error); }
