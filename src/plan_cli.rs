@@ -10,9 +10,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use codemode::fixture::FixtureProvider;
 use codemode::{
-    Approval, Durability, Journal, JournalError, JournalInspectOptions, Plan, ProviderDeclaration,
-    RecoveryPolicy, Resolution, RunCancellation, SessionError, SessionKind, SessionOptions,
-    SessionOutcome, approval_binding, inspect_journal, run_session,
+    Approval, Durability, Journal, JournalError, JournalInspectOptions, Plan, PlanBridgeError,
+    ProviderDeclaration, RecoveryPolicy, Resolution, RunCancellation, SessionError, SessionKind,
+    SessionOptions, SessionOutcome, approval_binding, inspect_journal, run_session,
+    serve_plan_bridge,
 };
 
 use crate::{CliError, cancel_on_interrupt, read_input};
@@ -27,8 +28,10 @@ Usage:
   codemode plan check <plan.json> [--provider <declaration.json>] [--json]
   codemode plan approve <plan.json> --journal <file> --provider <declaration.json>
                         --digest <sha256:...> --approver <name> [--note <text>] [policy options]
-  codemode plan run     --journal <file> --fixture <fixture.db> --account <name> [--deno <path>]
-  codemode plan resume  --journal <file> --fixture <fixture.db> --account <name> [--deno <path>]
+  codemode plan run     --journal <file> (--fixture <fixture.db> --account <name> | --bridge)
+                        [--deno <path>]
+  codemode plan resume  --journal <file> (--fixture <fixture.db> --account <name> | --bridge)
+                        [--deno <path>]
   codemode plan inspect --journal <file> [--json] [--messages]
   codemode plan review  --journal <file> --operation <id> --as applied|not-applied
                         --reviewer <name> [--note <text>]
@@ -44,6 +47,13 @@ current authorization first. inspect answers what was approved, attempted,
 changed, uncertain, and what can safely happen next, without argument or
 result values. review records a person's finding for an operation that needs
 one. trace prints a session's execution record for `codemode inspect`.
+
+run and resume act through the offline fixture (--fixture, --account) or, with
+--bridge, through a parent host: stdin and stdout carry protocol version 3
+frames (start, authorize, call, reconcile, their replies, cancel, outcome). The
+host's start frame supplies its provider declaration; it authorizes, executes,
+and reconciles operations while Rust keeps the journal. Credentials stay with
+the host.
 
 Policy options (approve):
   --concurrency <n>          Operations in flight at once (default 4)
@@ -62,7 +72,7 @@ Exit status for run and resume: 0 every operation is applied or satisfied;
 124 deadline; 130 cancelled; 2 usage, journal, or startup error.
 ";
 
-const BOOLEAN_FLAGS: &[&str] = &["--json", "--messages"];
+const BOOLEAN_FLAGS: &[&str] = &["--json", "--messages", "--bridge"];
 
 struct Flags {
     positional: Vec<String>,
@@ -193,6 +203,7 @@ pub(crate) async fn execute(args: Vec<OsString>) -> Result<u8, Box<dyn Error>> {
                     "--journal",
                     "--fixture",
                     "--account",
+                    "--bridge",
                     "--deno",
                     "--durability",
                 ],
@@ -376,14 +387,24 @@ fn exit_code(outcome: &SessionOutcome) -> u8 {
 
 async fn session(flags: Flags, kind: SessionKind) -> Result<u8, Box<dyn Error>> {
     let durability = flags.durability()?;
-    let journal = Journal::open(flags.require("--journal")?, durability)?;
-    let provider = FixtureProvider::open(flags.require("--fixture")?, flags.require("--account")?)?;
     let options = SessionOptions {
         kind,
         deno: flags
             .get("--deno")
             .map_or_else(|| "deno".into(), PathBuf::from),
     };
+    if flags.has("--bridge") {
+        if flags.has("--fixture") || flags.has("--account") {
+            return Err(CliError(
+                "--bridge cannot be combined with --fixture or --account; the host is the provider"
+                    .into(),
+            )
+            .into());
+        }
+        return bridge_session(flags.require("--journal")?, durability, options).await;
+    }
+    let journal = Journal::open(flags.require("--journal")?, durability)?;
+    let provider = FixtureProvider::open(flags.require("--fixture")?, flags.require("--account")?)?;
     let cancellation = RunCancellation::default();
     let signal_task = cancel_on_interrupt(&cancellation);
     let result = run_session(journal, provider, options, cancellation).await;
@@ -397,6 +418,40 @@ async fn session(flags: Flags, kind: SessionKind) -> Result<u8, Box<dyn Error>> 
             print_json(&serde_json::json!({
                 "session": session, "status": "refused", "detail": reason,
             }))?;
+            eprintln!("codemode: session {session} refused: {reason}");
+            Ok(4)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Serve one session over stdio with the host as provider. stdout carries only frames.
+async fn bridge_session(
+    journal: &str,
+    durability: Durability,
+    options: SessionOptions,
+) -> Result<u8, Box<dyn Error>> {
+    let journal = match Journal::open(journal, durability) {
+        Ok(journal) => journal,
+        Err(error) => {
+            print_json(&serde_json::json!({"type": "error", "message": error.to_string()}))?;
+            return Err(error.into());
+        }
+    };
+    let cancellation = RunCancellation::default();
+    let signal_task = cancel_on_interrupt(&cancellation);
+    let result = serve_plan_bridge(
+        tokio::io::stdin(),
+        tokio::io::stdout(),
+        journal,
+        options,
+        cancellation,
+    )
+    .await;
+    signal_task.abort();
+    match result {
+        Ok(outcome) => Ok(exit_code(&outcome)),
+        Err(PlanBridgeError::Session(SessionError::Refused { session, reason })) => {
             eprintln!("codemode: session {session} refused: {reason}");
             Ok(4)
         }

@@ -3,11 +3,14 @@
  *
  * It sees every tool call, including nested calls made for rust_codemode
  * programs, because Pi routes `ctx.executeTool()` through `tool_call` handlers.
- * `bash` needs interactive approval; without a UI it is blocked (fail closed).
- * When CODEMODE_PI_AUDIT is set, each decision is appended to that JSONL file.
+ * `bash` and `issues_add_comment` need interactive approval; without a UI they are
+ * blocked (fail closed). When CODEMODE_PI_AUDIT is set, each decision is appended
+ * to that JSONL file, with the call's `attempt_key` argument when it has one.
  */
 import { appendFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+const NEEDS_APPROVAL = new Set(["bash", "issues_add_comment"]);
 
 export default function approvalGate(pi: ExtensionAPI) {
   const audit = (entry: Record<string, unknown>) => {
@@ -17,12 +20,16 @@ export default function approvalGate(pi: ExtensionAPI) {
   pi.events.on("codemode-demo:aborted", (tool) => audit({ event: "aborted", tool }));
   pi.on("tool_call", async (event, ctx) => {
     let decision = "allowed";
-    if (event.toolName === "bash") {
-      const approved = ctx.hasUI && (await ctx.ui.confirm("Allow bash?", String(event.input.command)));
+    if (NEEDS_APPROVAL.has(event.toolName)) {
+      const detail = event.toolName === "bash" ? String(event.input.command) : JSON.stringify(event.input);
+      const approved = ctx.hasUI && (await ctx.ui.confirm(`Allow ${event.toolName}?`, detail));
       if (!approved) decision = "blocked";
     }
-    audit({ event: "tool_call", tool: event.toolName, nested: event.parentToolCallId !== undefined, decision });
-    if (decision === "blocked") return { block: true, reason: "bash requires approval, which is unavailable here" };
+    const attempt = typeof event.input.attempt_key === "string" ? { attempt: event.input.attempt_key } : {};
+    audit({ event: "tool_call", tool: event.toolName, nested: event.parentToolCallId !== undefined, decision, ...attempt });
+    if (decision === "blocked") {
+      return { block: true, reason: `${event.toolName} requires approval, which is unavailable here` };
+    }
     return undefined;
   });
 }

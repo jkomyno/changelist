@@ -9,6 +9,8 @@
 //! [`run`] takes any [`ToolProvider`]. [`serve_bridge`] supplies one whose calls
 //! are executed by a parent host, such as an agent extension, over a versioned
 //! stdio protocol; the host keeps its permissions, approvals, and credentials.
+//! [`serve_plan_bridge`] does the same for an approved plan's session: the host
+//! executes and reconciles operations while Rust keeps the journal.
 //!
 //! [`fixture`] is an offline issue tracker with its own side-effect ledger, for
 //! demos, tests, and baselines of recoverable operations.
@@ -19,6 +21,7 @@ pub mod fixture;
 mod inspect;
 mod journal;
 mod plan;
+mod plan_bridge;
 mod plan_inspect;
 mod recovery;
 mod runtime;
@@ -40,6 +43,7 @@ pub use plan::{
     Digest, FrozenPlan, MAX_ARGUMENT_BYTES, MAX_OPERATIONS, MAX_PLAN_BYTES, Operation,
     PLAN_FORMAT_VERSION, Plan, PlanError, Scope,
 };
+pub use plan_bridge::{PLAN_BRIDGE_PROTOCOL_VERSION, PlanBridgeError, serve_plan_bridge};
 pub use plan_inspect::{
     ApprovalSummary, AttemptLine, JournalInspectOptions, JournalInspection, OperationReport,
     PlanSummary, ProbeLine, ReviewLine, SessionSummary, inspect_journal,

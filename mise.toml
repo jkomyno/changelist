@@ -26,7 +26,7 @@ run = "integrations/pi/run-demo.sh"
 
 [tasks.pi-check]
 description = "Run native Pi 1.4.0 integration checks"
-run = "mise exec npm:@earendil-works/pi-coding-agent@1.4.0 -- cargo test --locked --test pi -- --ignored"
+run = "mise exec npm:@earendil-works/pi-coding-agent@1.4.0 -- cargo test --locked --test pi --test pi_plan -- --ignored"
 
 [tasks.opencode-demo]
 description = "Run the offline OpenCode 1.19.5 integration example"

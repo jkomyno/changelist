@@ -102,7 +102,9 @@ impl From<io::Error> for BridgeError {
 }
 
 /// Distinguish an explicit JSON `null` from a missing field.
-fn present<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Value>, D::Error> {
+pub(crate) fn present<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Value>, D::Error> {
     Value::deserialize(deserializer).map(Some)
 }
 
@@ -166,7 +168,7 @@ struct Counters {
     too_large: Mutex<HashMap<u64, Option<u64>>>,
 }
 
-enum Outbound {
+pub(crate) enum Outbound {
     Frame(Vec<u8>),
     /// Write this frame, then stop.
     Last(Vec<u8>),
@@ -180,7 +182,7 @@ fn encode(frame: &BridgeFrame<'_>) -> io::Result<Vec<u8>> {
 
 /// The only writer of bridge output. Frames are written whole and in order, so a
 /// dropped provider future can never leave a partial call frame before the report.
-async fn write_frames<W: AsyncWrite + Unpin>(
+pub(crate) async fn write_frames<W: AsyncWrite + Unpin>(
     mut output: W,
     mut frames: mpsc::UnboundedReceiver<Outbound>,
     cancellation: RunCancellation,

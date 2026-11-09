@@ -110,7 +110,7 @@ fn pi_nested_calls_keep_pi_permissions_and_rust_scheduling() {
     assert_eq!(trace["status"], "success");
     assert_eq!(
         trace["output"],
-        json!({"title": "codemode Pi bridge fixture", "entries": 5,
+        json!({"title": "codemode Pi bridge fixture", "entries": 7,
                "refused": ["tool_error", "tool_denied"], "environment": "denied"})
     );
     let outcomes: Vec<_> = trace["calls"]

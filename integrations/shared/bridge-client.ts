@@ -1,5 +1,6 @@
 /**
- * Host-neutral client for `codemode bridge` (protocol version 2).
+ * Host-neutral client for `codemode bridge` (protocol version 2) and for plan
+ * sessions served by `codemode plan run|resume --bridge` (protocol version 3).
  *
  * A host adapter supplies the authorized tool names and one `execute` function;
  * this module owns the subprocess, framing, cancellation, and report. It uses only
@@ -19,6 +20,10 @@
  * - Aborting `signal` sends `cancel` to Rust and aborts outstanding host calls; the
  *   bridge is killed if it has not exited two seconds later. Calls already
  *   dispatched are recorded as unknown; their effects may remain.
+ * - `runPlanBridge` serves an approved plan's session instead: the host supplies
+ *   its provider declaration and answers authorization checks, attempts, and
+ *   reconciliation probes, while Rust keeps the journal. A failed attempt without
+ *   a stated effect is recorded as `unknown`.
  */
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
@@ -182,6 +187,51 @@ export function startBridge(limits: BridgeLimits): StartedBridge {
   return started;
 }
 
+/**
+ * Pass each LF-terminated JSON frame on `stream` to `handle`. An oversized or
+ * invalid frame, or an error thrown by `handle`, calls `fail` once and stops reading.
+ */
+function readFrames(
+  stream: NodeJS.ReadableStream,
+  limit: number,
+  // Frames are untrusted JSON; each handler checks the fields it uses.
+  handle: (frame: any) => void,
+  fail: (error: Error) => void,
+): void {
+  // Pieces of an incomplete frame; joined once its newline arrives, so a large
+  // frame is copied and scanned once rather than once per chunk.
+  let pieces: Buffer[] = [];
+  let pending = 0;
+  let failed = false;
+  const stop = (error: unknown) => {
+    failed = true;
+    fail(error instanceof Error ? error : new Error(String(error)));
+  };
+  stream.on("data", (chunk: Buffer) => {
+    if (failed) return;
+    let start = 0;
+    let newline: number;
+    while ((newline = chunk.indexOf(10, start)) !== -1) {
+      if (pending + newline - start > limit) return stop(new Error(`bridge frame exceeds ${limit} bytes`));
+      pieces.push(chunk.subarray(start, newline));
+      const line = Buffer.concat(pieces).toString("utf8");
+      pieces = [];
+      pending = 0;
+      start = newline + 1;
+      try {
+        handle(JSON.parse(line));
+      } catch (error) {
+        return stop(error);
+      }
+    }
+    if (start < chunk.length) {
+      pieces.push(chunk.subarray(start));
+      pending += chunk.length - start;
+    }
+    if (pending > limit) stop(new Error(`bridge frame exceeds ${limit} bytes`));
+  });
+}
+
 /** Run one program through `codemode bridge` and resolve with its execution record. */
 export async function runBridge(run: BridgeRun): Promise<RunReport> {
   const outputBytes = run.maxOutputBytes ?? OUTPUT_BYTES;
@@ -273,10 +323,6 @@ export async function runBridge(run: BridgeRun): Promise<RunReport> {
 
   try {
     return await new Promise<RunReport>((resolvePromise, reject) => {
-      // Pieces of an incomplete frame; joined once its newline arrives, so a large
-      // report is copied and scanned once rather than once per chunk.
-      let pieces: Buffer[] = [];
-      let pending = 0;
       let bridgeError: string | undefined;
       const fail = (error: Error) => {
         // Start nothing further, even if more frames are already buffered.
@@ -286,41 +332,22 @@ export async function runBridge(run: BridgeRun): Promise<RunReport> {
         child.kill("SIGKILL");
         reject(error);
       };
-      child.stdout.on("data", (chunk: Buffer) => {
-        let start = 0;
-        let newline: number;
-        while ((newline = chunk.indexOf(10, start)) !== -1) {
-          if (pending + newline - start > frameLimit) {
-            fail(new Error(`bridge frame exceeds ${frameLimit} bytes`));
-            return;
-          }
-          pieces.push(chunk.subarray(start, newline));
-          const line = Buffer.concat(pieces).toString("utf8");
-          pieces = [];
-          pending = 0;
-          start = newline + 1;
-          try {
-            const frame = JSON.parse(line);
-            if (frame.type === "call") onCall(frame);
-            else if (frame.type === "report") {
-              finished = true;
-              abortOutstanding();
-              child.stdin.end();
-              terminate();
-              resolvePromise(frame.report);
-            } else if (frame.type === "error") bridgeError = String(frame.message);
-            else throw new Error(`unexpected bridge frame type ${frame.type}`);
-          } catch (error) {
-            fail(error instanceof Error ? error : new Error(String(error)));
-            return;
-          }
-        }
-        if (start < chunk.length) {
-          pieces.push(chunk.subarray(start));
-          pending += chunk.length - start;
-        }
-        if (pending > frameLimit) fail(new Error(`bridge frame exceeds ${frameLimit} bytes`));
-      });
+      readFrames(
+        child.stdout,
+        frameLimit,
+        (frame) => {
+          if (frame.type === "call") onCall(frame);
+          else if (frame.type === "report") {
+            finished = true;
+            abortOutstanding();
+            child.stdin.end();
+            terminate();
+            resolvePromise(frame.report);
+          } else if (frame.type === "error") bridgeError = String(frame.message);
+          else throw new Error(`unexpected bridge frame type ${frame.type}`);
+        },
+        fail,
+      );
       child.on("error", (error) => fail(error));
       const ended = (code: number | null, killSignal: NodeJS.Signals | null) => {
         if (finished) return;
@@ -332,6 +359,262 @@ export async function runBridge(run: BridgeRun): Promise<RunReport> {
       // A started bridge may have failed or exited while it waited.
       if (bridge.error) fail(bridge.error);
       else if (bridge.exited) ended(child.exitCode, child.signalCode);
+    });
+  } finally {
+    run.signal?.removeEventListener("abort", onAbort);
+    finished = true;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Plan sessions: `codemode plan run|resume --bridge` (protocol version 3)
+
+/** What a host can say about a failed attempt's effect. Without one, Rust records `unknown`. */
+export type FailureEffect = "refused" | "not_applied" | "unknown";
+
+/** A host's observed outcome for one plan attempt. */
+export type PlanReply =
+  | { ok: true; value: unknown }
+  | { ok: false; error: { code: string; message: string }; effect?: FailureEffect };
+
+/** Where an operation acts, from the approved plan. */
+export interface PlanScope {
+  provider: string;
+  account: string;
+  destination?: string;
+}
+
+/** The trusted host's identity and recovery contracts; an approval binds to it. */
+export interface ProviderDeclaration {
+  provider: string;
+  account: string;
+  contracts: Record<string, { repeat: "safe" | "unsafe"; reconcile: "receipt" | "state" | "none" }>;
+}
+
+/** One attempt of an approved operation, sent after Rust journaled its intent. */
+export interface PlanCall {
+  id: number;
+  tool: string;
+  /** The frozen, approved arguments. */
+  arguments: Record<string, unknown>;
+  operation: string;
+  /** The attempt key; a provider that keeps receipts should record it. */
+  attempt: string;
+  preconditions: unknown[];
+}
+
+/** A request to establish what happened to an operation's earlier attempts. */
+export interface ReconcileRequest {
+  id: number;
+  operation: string;
+  tool: string;
+  arguments: Record<string, unknown>;
+  keys: string[];
+}
+
+export type Reconciled =
+  | { verdict: "applied" | "satisfied" | "not_applied" | "unknown"; evidence: string }
+  | { error: { code: string; message: string } };
+
+export type Authorized = { ok: true } | { ok: false; error: { code: string; message: string } };
+
+/** A session's outcome as Rust reports it; a refused session has only session, status, and detail. */
+export interface PlanOutcome {
+  session: number;
+  status: string;
+  detail?: string;
+  operations?: Array<{ operation: string; tool: string; conclusion: string; next: string; [key: string]: unknown }>;
+  [key: string]: unknown;
+}
+
+export interface PlanBridgeRun {
+  /** Absolute path of the `codemode` executable. */
+  bin: string;
+  /** Absolute path of the Deno executable for the dispatch run. */
+  deno: string;
+  cwd: string;
+  /** The approved plan's journal. */
+  journal: string;
+  kind: "run" | "resume";
+  /** Sent in the start frame; the session is refused unless the approval binds exactly it. */
+  declaration: ProviderDeclaration;
+  /** Aborting it cancels the session. */
+  signal?: AbortSignal;
+  /** Whether the host may act on `scope` now. Rejections refuse the session. */
+  authorize(scope: PlanScope): Promise<Authorized>;
+  /** Run one attempt. Rejections become `tool_error` with effect `unknown`. */
+  execute(call: PlanCall, signal: AbortSignal): Promise<PlanReply>;
+  /** Answer a probe. Rejections become a `reconcile_failed` error; the outcome stays unknown. */
+  reconcile(request: ReconcileRequest, signal: AbortSignal): Promise<Reconciled>;
+}
+
+export interface PlanBridgeResult {
+  outcome: PlanOutcome;
+  /** Set when host input ended the session early. */
+  diagnostic?: string;
+}
+
+/** Bound on bridge frames in plan mode: call arguments are at most 64 KiB; outcomes list at most 256 operations. */
+const PLAN_FRAME_BYTES = 4 * HOST_FRAME_BYTES;
+const MESSAGE_CHARS = 4_096;
+
+const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/** Fit a result frame into one host frame without misreporting what was observed. */
+function resultFrame(id: number, reply: PlanReply): string {
+  const frame = JSON.stringify({ type: "result", id, ...reply });
+  if (Buffer.byteLength(frame) < HOST_FRAME_BYTES) return frame;
+  if (reply.ok) {
+    // The effect applied; only the value is too large to keep. Rust keeps results only up to 16 KiB anyway.
+    const bytes = Buffer.byteLength(JSON.stringify(reply.value));
+    return JSON.stringify({ type: "result", id, ok: true, value: { omitted: "too_large", bytes } });
+  }
+  const error = { code: reply.error.code.slice(0, 128), message: reply.error.message.slice(0, MESSAGE_CHARS) };
+  return JSON.stringify({ type: "result", id, ok: false, error, effect: reply.effect });
+}
+
+/**
+ * Run or resume an approved plan through `codemode plan <kind> --bridge`, with this
+ * host as the provider, and resolve with the session's outcome. Rust owns the
+ * journal: it records each attempt's intent before `execute` sees it and the
+ * observed reply afterwards. Same process hygiene as `runBridge`: an empty
+ * environment, explicit paths, and `cancel` then SIGKILL after two seconds on abort.
+ */
+export async function runPlanBridge(run: PlanBridgeRun): Promise<PlanBridgeResult> {
+  const child = spawn(run.bin, ["plan", run.kind, "--journal", run.journal, "--bridge", "--deno", run.deno], {
+    cwd: run.cwd,
+    env: {},
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr = (stderr + chunk.toString("utf8")).slice(-STDERR_TAIL);
+  });
+  child.stdin.on("error", () => {
+    // The bridge exited; its last frame or exit status explains why.
+  });
+
+  const outstanding = new Map<number, AbortController>();
+  let finished = false;
+  let cancelled = false;
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  const send = (frame: string) => {
+    if (!finished && child.stdin.writable) child.stdin.write(frame + "\n");
+  };
+  const abortOutstanding = () => {
+    for (const controller of outstanding.values()) controller.abort();
+    outstanding.clear();
+  };
+  const terminate = () => {
+    killTimer ??= setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
+    killTimer.unref?.();
+  };
+  child.once("close", () => clearTimeout(killTimer));
+  const onAbort = () => {
+    cancelled = true;
+    send(JSON.stringify({ type: "cancel" }));
+    abortOutstanding();
+    terminate();
+  };
+
+  /** Start one host request and send its reply frame, unless it was aborted first. */
+  const serve = <T>(id: unknown, start: (signal: AbortSignal) => Promise<T>, frame: (result: T) => string, failed: (message: string) => string) => {
+    if (typeof id !== "number" || !Number.isSafeInteger(id) || outstanding.has(id)) {
+      throw new Error("bridge sent an invalid or duplicate request id");
+    }
+    const controller = new AbortController();
+    outstanding.set(id, controller);
+    let pending: Promise<T>;
+    try {
+      pending = start(controller.signal);
+    } catch (error) {
+      pending = Promise.reject(error);
+    }
+    pending.then(
+      (result) => {
+        if (outstanding.delete(id)) send(frame(result));
+      },
+      (error: unknown) => {
+        if (outstanding.delete(id)) send(failed(describeError(error)));
+      },
+    );
+  };
+
+  // Frames are untrusted JSON from the bridge; each branch checks the fields it uses.
+  const onFrame = (frame: Record<string, unknown>, resolveOutcome: (result: PlanBridgeResult) => void, onError: (message: string) => void) => {
+    switch (frame.type) {
+      case "authorize":
+        return serve(
+          frame.id,
+          () => run.authorize(frame.scope as PlanScope),
+          (result) => JSON.stringify({ type: "authorized", id: frame.id, ...result }),
+          (message) => JSON.stringify({ type: "authorized", id: frame.id, ok: false, error: { code: "authorize_failed", message } }),
+        );
+      case "call": {
+        const call = frame as unknown as PlanCall;
+        if (cancelled) {
+          // Buffered before the abort: never started, so certainly not applied.
+          const reply: PlanReply = { ok: false, error: { code: "cancelled", message: "host cancelled before execution" }, effect: "not_applied" };
+          return send(resultFrame(call.id, reply));
+        }
+        return serve(
+          call.id,
+          (signal) => run.execute(call, signal),
+          (reply) => resultFrame(call.id, reply),
+          // A host failure is never proof that nothing happened.
+          (message) => resultFrame(call.id, { ok: false, error: { code: "tool_error", message }, effect: "unknown" }),
+        );
+      }
+      case "reconcile": {
+        const request = frame as unknown as ReconcileRequest;
+        return serve(
+          request.id,
+          (signal) => run.reconcile(request, signal),
+          (result) =>
+            "error" in result
+              ? JSON.stringify({ type: "reconciled", id: request.id, error: result.error })
+              : JSON.stringify({ type: "reconciled", id: request.id, verdict: result.verdict, evidence: String(result.evidence) }),
+          (message) => JSON.stringify({ type: "reconciled", id: request.id, error: { code: "reconcile_failed", message } }),
+        );
+      }
+      case "outcome":
+        finished = true;
+        abortOutstanding();
+        child.stdin.end();
+        terminate();
+        return resolveOutcome({
+          outcome: frame.outcome as PlanOutcome,
+          ...(typeof frame.diagnostic === "string" ? { diagnostic: frame.diagnostic } : {}),
+        });
+      case "error":
+        return onError(String(frame.message));
+      default:
+        throw new Error(`unexpected bridge frame type ${String(frame.type)}`);
+    }
+  };
+
+  send(JSON.stringify({ type: "start", version: 3, declaration: run.declaration }));
+  if (run.signal?.aborted) onAbort();
+  run.signal?.addEventListener("abort", onAbort, { once: true });
+
+  try {
+    return await new Promise<PlanBridgeResult>((resolvePromise, reject) => {
+      let bridgeError: string | undefined;
+      const fail = (error: Error) => {
+        finished = true;
+        cancelled = true;
+        abortOutstanding();
+        child.kill("SIGKILL");
+        reject(error);
+      };
+      readFrames(child.stdout, PLAN_FRAME_BYTES, (frame) => onFrame(frame, resolvePromise, (message) => (bridgeError = message)), fail);
+      child.on("error", (error) => fail(error));
+      child.on("close", (code: number | null, killSignal: NodeJS.Signals | null) => {
+        if (finished) return;
+        abortOutstanding();
+        const reason = bridgeError ?? (stderr.trim() || `exit ${code ?? killSignal}`);
+        reject(new Error(`codemode plan bridge ended without an outcome: ${reason}`));
+      });
     });
   } finally {
     run.signal?.removeEventListener("abort", onAbort);

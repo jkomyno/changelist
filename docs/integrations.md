@@ -19,10 +19,10 @@ so this needs `codemode bridge` plus a host-specific adapter.
 
 | Host | Verified | Remaining target |
 | --- | --- | --- |
-| Pi 1.4.0 | Native callbacks through [`integrations/pi`](../integrations/pi/README.md): nested calls, Pi permission gates, Rust-side authorization, cancellation, and environment containment. Checked offline with a scripted model. | A live model session; interactive approval prompts (`ctx.ui.confirm`) were not exercised; other Pi versions. |
-| OpenCode 1.19.5 | Plugin tool through [`integrations/opencode`](../integrations/opencode/README.md): each guest call passes OpenCode's permission service (`allow`, `deny`, `ask`; approvals granted over OpenCode's HTTP API and refused by `opencode run`, handled as a native rejection), Rust-side authorization, session abort (including during an approval wait), and environment containment. Checked offline with a scripted model. | **Blocker:** plugins cannot call OpenCode's registered tools (built-in, plugin, or MCP), and nested calls do not reach other plugins' `tool.execute` hooks; guest calls reach only host tools passed to the adapter. A live model session; the TUI approval dialog; other OpenCode versions. |
-| Codex | Not checked. | CLI invocation with an explicitly configured provider. Native callbacks need a demonstrated interface for calling Codex tools back; MCP exposes our tool to Codex, not Codex's tools to us. |
-| Composio CLI 0.6.0 | Provider through [`integrations/composio`](../integrations/composio/README.md): `composio run` hosts the bridge, and guest calls execute as Composio tools through the CLI's authenticated `execute` helper. **Live, read-only:** two identity reads in parallel, a CLI-rejected invalid input, a Rust-side denial, and the CLI credential absent from the trace. **Offline:** result mapping, cancellation and unobserved executions (`unknown`), and environment containment with a fake helper; the `@composio/core` executor against a stand-in client. | **Blocker:** a live SDK run needs a project API key; the checked machine has only a CLI user key, which `@composio/core` 0.28.0 rejects. The CLI's approval flow (off for the checked account); write tools; other CLI versions. |
+| Pi 1.4.0 | Native callbacks through [`integrations/pi`](../integrations/pi/README.md): nested calls, Pi permission gates, Rust-side authorization, cancellation, and environment containment. Checked offline with a scripted model. **Plan mode** (`rust_codemode_plan`, protocol 3): an approved plan runs with every attempt passing Pi's gates through `ctx.executeTool()`; after Pi is killed with SIGKILL following a lost response, resume reconciles through a host-registered reconciler with no duplicate effect; a gate-blocked operation stays `unknown` and needs review. Fixture tools and a scripted model only. | A live model session; interactive approval prompts (`ctx.ui.confirm`) were not exercised; other Pi versions. |
+| OpenCode 1.19.5 | Plugin tool through [`integrations/opencode`](../integrations/opencode/README.md): each guest call passes OpenCode's permission service (`allow`, `deny`, `ask`; approvals granted over OpenCode's HTTP API and refused by `opencode run`, handled as a native rejection), Rust-side authorization, session abort (including during an approval wait), and environment containment. Checked offline with a scripted model. | Plan mode (recoverable plans) not checked. **Blocker:** plugins cannot call OpenCode's registered tools (built-in, plugin, or MCP), and nested calls do not reach other plugins' `tool.execute` hooks; guest calls reach only host tools passed to the adapter. A live model session; the TUI approval dialog; other OpenCode versions. |
+| Codex | Not checked, for runs or plans. | CLI invocation with an explicitly configured provider. Native callbacks need a demonstrated interface for calling Codex tools back; MCP exposes our tool to Codex, not Codex's tools to us. |
+| Composio CLI 0.6.0 | Provider through [`integrations/composio`](../integrations/composio/README.md): `composio run` hosts the bridge, and guest calls execute as Composio tools through the CLI's authenticated `execute` helper. **Live, read-only:** two identity reads in parallel, a CLI-rejected invalid input, a Rust-side denial, and the CLI credential absent from the trace. **Offline:** result mapping, cancellation and unobserved executions (`unknown`), and environment containment with a fake helper; the `@composio/core` executor against a stand-in client. | Plan mode not checked: the CLI helper reports no receipts, so a host flow would need its own reconcilers. **Blocker:** a live SDK run needs a project API key; the checked machine has only a CLI user key, which `@composio/core` 0.28.0 rejects. The CLI's approval flow (off for the checked account); write tools; other CLI versions. |
 
 Validate launch, framing, tool scope, failure states, approval behavior, and
 cancellation for each host/version before marking it compatible. Do not install
@@ -77,6 +77,34 @@ rest:
 The bridge does not authenticate the host: whoever owns its stdio is the trusted
 provider. Limits come from command-line options chosen by the host, and
 credentials stay in the host process.
+
+## Plan bridge (version 3)
+
+`codemode plan run|resume --journal <file> --bridge [--deno <path>]` serves one
+session of an approved [plan](recovery.md) over stdin and stdout. The host is the
+trusted provider: it declares the recovery contracts, executes each attempt
+through its own permission gates, and answers reconciliation probes. Rust checks
+the approval against that declaration, owns the journal, and decides what may
+happen next. The library entry point is `codemode::serve_plan_bridge`.
+
+| Direction | Frame | Meaning |
+| --- | --- | --- |
+| host → bridge | `{"type":"start","version":3,"declaration":{...}}` | Must be first. The host's provider declaration; the session is refused unless the approval binds exactly it. |
+| bridge → host | `{"type":"authorize","id":1,"scope":{...}}` | Is this scope authorized now? Answer `{"type":"authorized","id":1,"ok":true}`, or `"ok":false` with `error`. |
+| bridge → host | `{"type":"call","id":2,"tool":"...","arguments":{...},"operation":"...","attempt":"...","preconditions":[...]}` | One attempt, sent only after its intent is durable. Answer with a version 2 `result` frame, plus an optional `"effect":"refused"\|"not_applied"\|"unknown"` on failure; without it the effect is `unknown`. |
+| bridge → host | `{"type":"reconcile","id":3,"operation":"...","tool":"...","arguments":{...},"keys":[...]}` | Establish an uncertain outcome. Answer `{"type":"reconciled","id":3,"verdict":"...","evidence":"..."}`, or with `error`. |
+| host → bridge | `{"type":"cancel"}` | Cancel the session; closing the input does too. `fact` frames are accepted and ignored. |
+| bridge → host | `{"type":"outcome","outcome":{...}}` | Last. A refused session's outcome is `{"session","status":"refused","detail"}`; `diagnostic` is present when host input ended the session. Exit codes match `codemode plan run`. |
+| bridge → host | `{"type":"error","message":"..."}` | No session ran, for example an invalid start frame or an unavailable journal. |
+
+The shared client's `runPlanBridge` spawns the bridge with an empty environment.
+The Pi adapter's `rust_codemode_plan` dispatches each attempt through
+`ctx.executeTool()`, so plan approval supplements Pi's gates and never bypasses
+them; Pi errors are effect `unknown`, because Pi reports gate blocks and tool
+failures alike. Provider extensions register attempt-key arguments, precondition
+arguments, and reconcilers on `codemode:plan-providers`. Only the Pi flow has
+been checked; see [`integrations/pi`](../integrations/pi/README.md) for exactly
+what its test establishes.
 
 ## Host adapters
 
