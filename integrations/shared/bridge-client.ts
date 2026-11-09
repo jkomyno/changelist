@@ -8,7 +8,7 @@
  *
  * Boundaries:
  * - Rust owns admission, the deadline, call allowance, concurrency, output budget,
- *   call identities, and the execution record. The guest runs in restricted Deno.
+ *   call identities, and the execution record. The selected worker executes the guest.
  * - The bridge starts with an empty environment and explicit executable paths, so
  *   the host's credentials and other environment variables never reach Rust or the guest.
  * - Each call frame is acknowledged with a `received` fact; `execute` can report
@@ -65,7 +65,7 @@ export interface BridgeCall {
 export interface BridgeLimits {
   /** Absolute path of the `codemode` executable. */
   bin: string;
-  /** Absolute Deno path for the default backend; unused by embedded-v8. */
+  /** Deno path, or resolve it on the host PATH when omitted; unused by embedded-v8. */
   deno?: string;
   /** Program engine; defaults to deno. The binary must include embedded-v8 to select it. */
   backend?: "deno" | "embedded-v8";
@@ -146,6 +146,8 @@ function reportLimit(maxCalls: number, outputBytes: number): number {
 }
 
 function bridgeArgs(limits: BridgeLimits): string[] {
+  const backend = limits.backend ?? "deno";
+  const deno = backend === "deno" ? limits.deno ?? resolve(findExecutable("deno", limits.cwd)) : undefined;
   return [
     "bridge",
     "--timeout-ms",
@@ -157,8 +159,8 @@ function bridgeArgs(limits: BridgeLimits): string[] {
     "--max-output-bytes",
     String(limits.maxOutputBytes ?? OUTPUT_BYTES),
     "--backend",
-    limits.backend ?? "deno",
-    ...(limits.deno === undefined ? [] : ["--deno", limits.deno]),
+    backend,
+    ...(deno === undefined ? [] : ["--deno", deno]),
   ];
 }
 
