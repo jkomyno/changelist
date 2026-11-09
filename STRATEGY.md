@@ -1,6 +1,6 @@
 ---
 name: codemode
-last_updated: 2026-11-07
+last_updated: 2026-11-09
 ---
 
 # codemode Strategy
@@ -14,7 +14,9 @@ for review, with measurement still to be established.
 Developers building tool-using AI agents need to execute composed workflows while
 controlling access, resource use, and partial failures. They need to understand
 which actions ran and which outcomes remain unknown when generated code fails
-or stops, without exposing provider credentials to that code.
+or stops, without exposing provider credentials to that code. When a batch of external
+changes is interrupted, they need to know which changes happened, which are
+uncertain, and what can safely happen next, without repeating effects blindly.
 
 ## Positioning
 
@@ -41,8 +43,13 @@ and inspect the resulting evidence from their existing agent or CLI.
 - Keep Composio optional; the core must run with a mock provider and support
   other providers through the same contract.
 - Keep the design explainable in a 30-minute technical presentation around
-  run-level control, scheduling, and execution evidence; defer durable recovery,
-  live replay, general dependency planning, and catalog or billing infrastructure.
+  run-level control, scheduling, execution evidence, and bounded recovery of
+  approved operation lists. Recovery never replays arbitrary programs; defer a
+  general workflow engine, persistent notebooks, general dependency planning,
+  catalog or billing infrastructure, and a UI.
+- Recovery semantics belong to the trusted provider. Do not claim exactly-once
+  execution across arbitrary APIs; distinguish confirmed effects, satisfied
+  state without attribution, confirmed non-effects, and unknown outcomes.
 - Treat shell invocation and native-tool integration as separate claims. Each
   target host needs its own versioned validation before compatibility is asserted.
 
@@ -65,6 +72,10 @@ test the code-mode bet.
   executed code, every tool call's name, arguments, result summary, timing and
   error, and the final outcome; validate traces against observed execution,
   including failed runs.
+- **Recovery correctness** — after an interrupted batch, duplicate effects,
+  outcomes left unresolved, and time to a safe conclusion, compared with
+  stop-on-uncertainty and blind-retry baselines on an offline provider whose
+  own ledger is the oracle.
 - **Verified host compatibility** — target host/version pairs that pass launch,
   tool-boundary, output, and cancellation checks; record in the integration guide,
   distinguishing shell invocation from native-tool callbacks.
@@ -95,6 +106,15 @@ and outcomes and remain useful to external evaluation and debugging tools.
 
 _Why it serves the approach:_ Traces provide the evidence needed to investigate
 failures and test whether code-mode workflows improve agent behavior.
+
+### Recoverable approved actions
+
+Invest in a small path from a reviewed plan of external operations to a durable
+journal and provider-supported reconciliation after an interruption.
+
+_Why it serves the approach:_ Agents that change external systems need an
+answer to "what happened, and what is safe now?" that does not depend on the
+agent's program surviving or on retrying blindly.
 
 ### Developer adoption and extensibility
 

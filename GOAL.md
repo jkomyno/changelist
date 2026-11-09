@@ -8,9 +8,10 @@ a verified adapter. Shell invocation alone does not establish native-tool access
 
 Keep the public technical story small enough to explain and demonstrate in a
 **30-minute technical presentation**: one run-level control contract, a bounded
-rolling scheduler, and an inspectable execution record. Demonstrate those
-properties on a small composed workflow and a controlled failure. Specific event
-names, submissions, and presentation logistics stay private.
+rolling scheduler, an inspectable execution record, and bounded recovery of an
+approved batch of operations. Demonstrate those properties on a small composed
+workflow, a controlled failure, and an interrupted batch. Specific event names,
+submissions, and presentation logistics stay private.
 
 Core idea:
 The product bet is that agents can express useful multi-tool workflows as code.
@@ -45,9 +46,17 @@ Goals:
   cancellation state, and serialized-output byte budget outside guest code.
   Refill a concurrency slot when a call completes. Preserve call identity and
   distinguish rejected, failed, completed, and genuinely unknown remote outcomes.
-- Keep the story within the three concepts above. Durable crash recovery,
-  automatic live replay, a general dependency planner, billing, and provider
-  catalog infrastructure are outside the initial implementation.
+- Recover approved operation lists: "Review a batch of external changes, execute
+  it, and know how to continue after an interruption." Accept a finite, versioned
+  plan of operations; bind approval to its digest, provider scope, recovery
+  contracts, and budgets; journal dispatch intent and observed results durably;
+  and after a crash reconcile uncertain outcomes only as the trusted provider's
+  declared contract allows. Never claim exactly-once execution, and never let
+  plan approval bypass a host's permission gates.
+- Keep the story within the concepts above. Recovery covers only approved
+  operation lists: a general workflow engine, replay of arbitrary programs,
+  persistent notebook state, a general dependency planner, billing, provider
+  catalog infrastructure, and a UI remain out of scope.
 
 Composio is a first-class integration, not built-in:
 - Learn from its backend ToolRouter's scheduling, data movement, limits, and
