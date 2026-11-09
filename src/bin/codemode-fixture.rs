@@ -30,7 +30,8 @@ Usage:
   codemode-fixture ledger --db PATH [--json]
   codemode-fixture state --db PATH [--json]
   codemode-fixture call --db PATH --account NAME --tool TOOL --key KEY --arguments JSON
-                        [--preconditions JSON-ARRAY]
+                        [--preconditions JSON-ARRAY] [--scope JSON]
+  codemode-fixture authorize --db PATH --account NAME --scope JSON
   codemode-fixture reconcile --db PATH --account NAME --tool TOOL --arguments JSON --keys K1,K2
 
 Tools: issues.add_label {issue, label}, issues.remove_label {issue, label},
@@ -40,10 +41,12 @@ LIST is comma-separated numbers or ranges, such as 101-110 or 101,105.
 init fails if the file exists. edit acts as 'external', outside codemode.
 call prints one JSON line, {\"ok\":true,\"value\":...} or
 {\"ok\":false,\"error\":{\"code\",\"message\"},\"effect\":\"refused|not_applied|unknown\"};
-a matching fault makes it never return. reconcile prints {\"verdict\",\"evidence\"}
+a matching fault makes it never return. With --scope, call refuses a scope that is
+not this account and repository (permission_denied). authorize prints
+{\"ok\":true} or {\"ok\":false,\"error\":{...}}. reconcile prints {\"verdict\",\"evidence\"}
 or {\"error\":{...}}.
 
-Exit status: 0 success; 1 a tool error or refusal from call or reconcile;
+Exit status: 0 success; 1 a tool error or refusal from call, authorize, or reconcile;
 2 a usage or storage error (message on stderr).
 ";
 
@@ -175,6 +178,10 @@ fn operation(account: &str, tool: &str, arguments: Value, preconditions: Vec<Val
     }
 }
 
+fn scope(value: Value) -> Result<Scope, Failure> {
+    serde_json::from_value(value).map_err(|error| usage(format!("--scope is not a scope: {error}")))
+}
+
 fn context() -> ProbeContext {
     ProbeContext {
         // The caller ends a call that never returns, for example by killing this process.
@@ -293,11 +300,20 @@ async fn run(command: &str, args: &[String]) -> Result<(), Failure> {
         "call" => {
             let flags = Flags::parse(
                 args,
-                &["db", "account", "tool", "key", "arguments", "preconditions"],
+                &[
+                    "db",
+                    "account",
+                    "tool",
+                    "key",
+                    "arguments",
+                    "preconditions",
+                    "scope",
+                ],
                 false,
             )?;
             let account = flags.required("account")?;
             let provider = FixtureProvider::open(flags.required("db")?, account)?;
+            let scope = flags.json_value("scope")?.map(scope).transpose()?;
             let arguments = flags
                 .json_value("arguments")?
                 .ok_or_else(|| usage("--arguments is required"))?;
@@ -306,8 +322,15 @@ async fn run(command: &str, args: &[String]) -> Result<(), Failure> {
                 Some(Value::Array(items)) => items,
                 Some(_) => return Err(usage("--preconditions must be a JSON array")),
             };
+            let mut operation =
+                operation(account, flags.required("tool")?, arguments, preconditions);
+            // The approved scope, when the caller has one: the provider refuses a
+            // scope that is not its own account and repository.
+            if let Some(scope) = scope {
+                operation.scope = scope;
+            }
             let attempt = Attempt {
-                operation: operation(account, flags.required("tool")?, arguments, preconditions),
+                operation,
                 key: flags.required("key")?.to_string(),
                 number: 1,
             };
@@ -319,6 +342,23 @@ async fn run(command: &str, args: &[String]) -> Result<(), Failure> {
                         "error": {"code": failure.error.code, "message": failure.error.message},
                         "effect": failure.effect,
                     }));
+                    return Err(Failure::Tool);
+                }
+            }
+        }
+        "authorize" => {
+            let flags = Flags::parse(args, &["db", "account", "scope"], false)?;
+            let provider =
+                FixtureProvider::open(flags.required("db")?, flags.required("account")?)?;
+            let scope = scope(
+                flags
+                    .json_value("scope")?
+                    .ok_or_else(|| usage("--scope is required"))?,
+            )?;
+            match provider.authorize(&scope, context()).await {
+                Ok(()) => print_json(&json!({"ok": true})),
+                Err(error) => {
+                    print_json(&json!({"ok": false, "error": error}));
                     return Err(Failure::Tool);
                 }
             }

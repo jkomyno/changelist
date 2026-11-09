@@ -515,3 +515,71 @@ fn a_changed_plan_needs_a_new_journal_and_damage_fails_closed() {
         "{stderr}"
     );
 }
+
+#[test]
+fn the_fixture_refuses_a_scope_it_does_not_act_as() {
+    let scratch = Scratch::new();
+    setup(&scratch, &[label(101, "add")], &[]);
+    let fixture = scratch.fixture();
+    let call = |scope: Value| {
+        command(
+            FIXTURE,
+            &[
+                "call",
+                "--db",
+                path(&fixture),
+                "--account",
+                ACCOUNT,
+                "--tool",
+                "issues.add_label",
+                "--key",
+                "k1",
+                "--arguments",
+                r#"{"issue":101,"label":"triage"}"#,
+                "--scope",
+                &scope.to_string(),
+            ],
+        )
+        .output()
+        .expect("call runs")
+    };
+    let other = json!({"provider": "fixture.issues", "account": "other-bot", "destination": "acme/widgets"});
+    let refused = call(other.clone());
+    assert_eq!(refused.status.code(), Some(1), "{refused:?}");
+    assert!(String::from_utf8_lossy(&refused.stdout).contains("permission_denied"));
+    let elsewhere =
+        json!({"provider": "fixture.issues", "account": ACCOUNT, "destination": "acme/other"});
+    assert_eq!(call(elsewhere).status.code(), Some(1));
+    assert!(
+        ledger(&scratch).rows.iter().all(|row| !row.effect),
+        "a refused scope applied an effect"
+    );
+
+    let authorize = |scope: Value| {
+        command(
+            FIXTURE,
+            &[
+                "authorize",
+                "--db",
+                path(&fixture),
+                "--account",
+                ACCOUNT,
+                "--scope",
+                &scope.to_string(),
+            ],
+        )
+        .output()
+        .expect("authorize runs")
+        .status
+        .code()
+    };
+    let own =
+        json!({"provider": "fixture.issues", "account": ACCOUNT, "destination": "acme/widgets"});
+    assert_eq!(authorize(own.clone()), Some(0));
+    assert_eq!(authorize(other), Some(1));
+    ok(
+        FIXTURE,
+        &["revoke", "--db", path(&fixture), "--account", ACCOUNT],
+    );
+    assert_eq!(authorize(own), Some(1));
+}

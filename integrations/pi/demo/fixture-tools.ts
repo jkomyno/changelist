@@ -12,7 +12,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import type { ReconcileRequest, Reconciled } from "../../shared/bridge-client.ts";
+import type { Authorized, PlanScope, ReconcileRequest, Reconciled } from "../../shared/bridge-client.ts";
 import type { PlanProviderRegistry } from "../codemode-bridge.ts";
 
 const TOOLS = {
@@ -72,14 +72,17 @@ export default function fixtureTools(pi: ExtensionAPI) {
         ...tool.fields,
         attempt_key: Type.Optional(Type.String({ description: "Attempt key for the provider's receipt" })),
         preconditions: Type.Optional(Type.Array(Type.Unknown())),
+        scope: Type.Optional(Type.Unknown()),
       }),
       async execute(_id, params, signal) {
-        const { attempt_key, preconditions, ...fields } = params as Record<string, unknown>;
+        const { attempt_key, preconditions, scope, ...fields } = params as Record<string, unknown>;
         const { db, account } = settings();
         const args = ["call", "--db", db, "--account", account, "--tool", tool.fixture];
         args.push("--key", typeof attempt_key === "string" ? attempt_key : `pi-${randomUUID()}`);
         args.push("--arguments", JSON.stringify(fields));
         if (Array.isArray(preconditions)) args.push("--preconditions", JSON.stringify(preconditions));
+        // The fixture refuses a scope that is not this account and repository.
+        if (scope !== undefined) args.push("--scope", JSON.stringify(scope));
         const result = await fixture(args, signal);
         if (result.ok !== true) {
           const error = result.error as { code?: string; message?: string } | undefined;
@@ -95,6 +98,13 @@ export default function fixtureTools(pi: ExtensionAPI) {
       (registry as PlanProviderRegistry).register(name, {
         keyArgument: "attempt_key",
         preconditionsArgument: "preconditions",
+        scopeArgument: "scope",
+        async authorize(scope: PlanScope, signal: AbortSignal): Promise<Authorized> {
+          const { db, account } = settings();
+          const result = await fixture(["authorize", "--db", db, "--account", account, "--scope", JSON.stringify(scope)], signal);
+          if (result.ok === true) return { ok: true };
+          return { ok: false, error: (result.error as { code: string; message: string }) ?? { code: "unauthorized", message: "refused" } };
+        },
         async reconcile(request: ReconcileRequest, signal: AbortSignal): Promise<Reconciled> {
           const { db, account } = settings();
           const args = ["reconcile", "--db", db, "--account", account, "--tool", tool.fixture];

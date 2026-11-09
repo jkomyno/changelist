@@ -37,6 +37,7 @@ import {
   type ProviderDeclaration,
   positive,
   type ReconcileRequest,
+  type Authorized,
   type Reconciled,
   type RunReport,
   runBridge,
@@ -58,6 +59,14 @@ export interface PlanToolProvider {
   keyArgument?: string;
   /** Argument that receives the operation's preconditions. Required for operations that have any. */
   preconditionsArgument?: string;
+  /**
+   * Argument that receives the approved scope. Required: the tool must refuse a scope
+   * that is not the account and destination it acts as, so a changed host
+   * configuration cannot act under an approval for another scope.
+   */
+  scopeArgument?: string;
+  /** Whether the tool's account may act on `scope` now. Required for plan sessions. */
+  authorize?(scope: PlanScope, signal: AbortSignal): Promise<Authorized>;
   /** Answer a probe. Required for tools that reconcile by receipt or state. */
   reconcile?(request: ReconcileRequest, signal: AbortSignal): Promise<Reconciled>;
 }
@@ -200,6 +209,10 @@ async function runPiPlan(
       // Without the key the provider keeps no receipt, and a probe would wrongly find nothing.
       return refused("no_key_argument", `no provider registered an attempt-key argument for ${call.tool}`);
     }
+    if (!provider?.scopeArgument || provider.scopeArgument in args) {
+      return refused("scope_unverifiable", `no provider registered a scope argument for ${call.tool}`);
+    }
+    args[provider.scopeArgument] = call.scope;
     if (call.preconditions.length > 0) {
       if (!provider?.preconditionsArgument || provider.preconditionsArgument in args) {
         return refused("preconditions_unsupported", `no provider registered a preconditions argument for ${call.tool}`);
@@ -220,12 +233,19 @@ async function runPiPlan(
     kind: params.action,
     declaration,
     signal,
-    // The approval was checked by Rust; Pi's gates decide each call at dispatch time.
-    // This host has no separate account check, so authorization is the declaration's scope.
-    authorize: async (scope: PlanScope) =>
-      scope.provider === declaration.provider && scope.account === declaration.account
-        ? { ok: true }
-        : { ok: false, error: { code: "unauthorized", message: `this host acts as ${declaration.provider}/${declaration.account}` } },
+    // The approval was checked by Rust. Each declared tool's provider confirms the scope
+    // against its live account; Pi's gates still decide each call at dispatch time.
+    authorize: async (scope: PlanScope): Promise<Authorized> => {
+      for (const tool of Object.keys(declaration.contracts)) {
+        const authorize = providers.get(tool)?.authorize;
+        if (!authorize) {
+          return { ok: false, error: { code: "unauthorized", message: `no provider can confirm ${tool} may act as this scope` } };
+        }
+        const answer = await authorize(scope, signal ?? new AbortController().signal);
+        if (!answer.ok) return answer;
+      }
+      return { ok: true };
+    },
     execute,
     reconcile: async (request, probeSignal) => {
       const reconcile = providers.get(request.tool)?.reconcile;

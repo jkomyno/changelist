@@ -91,8 +91,8 @@ happen next. The library entry point is `codemode::serve_plan_bridge`.
 | --- | --- | --- |
 | host → bridge | `{"type":"start","version":3,"declaration":{...}}` | Must be first. The host's provider declaration; the session is refused unless the approval binds exactly it. |
 | bridge → host | `{"type":"authorize","id":1,"scope":{...}}` | Is this scope authorized now? Answer `{"type":"authorized","id":1,"ok":true}`, or `"ok":false` with `error`. |
-| bridge → host | `{"type":"call","id":2,"tool":"...","arguments":{...},"operation":"...","attempt":"...","preconditions":[...]}` | One attempt, sent only after its intent is durable. Answer with a version 2 `result` frame, plus an optional `"effect":"refused"\|"not_applied"\|"unknown"` on failure; without it the effect is `unknown`. |
-| bridge → host | `{"type":"reconcile","id":3,"operation":"...","tool":"...","arguments":{...},"keys":[...]}` | Establish an uncertain outcome. Answer `{"type":"reconciled","id":3,"verdict":"...","evidence":"..."}`, or with `error`. |
+| bridge → host | `{"type":"call","id":2,"tool":"...","arguments":{...},"operation":"...","attempt":"...","preconditions":[...],"scope":{...}}` | One attempt, sent only after its intent is durable. The host must refuse a `scope` it does not act as. Answer with a version 2 `result` frame, plus an optional `"effect":"refused"\|"not_applied"\|"unknown"` on failure; without it the effect is `unknown`. |
+| bridge → host | `{"type":"reconcile","id":3,"operation":"...","tool":"...","arguments":{...},"keys":[...],"scope":{...}}` | Establish an uncertain outcome. Answer `{"type":"reconciled","id":3,"verdict":"...","evidence":"..."}`, or with `error`. |
 | host → bridge | `{"type":"cancel"}` | Cancel the session; closing the input does too. `fact` frames are accepted and ignored. |
 | bridge → host | `{"type":"outcome","outcome":{...}}` | Last. A refused session's outcome is `{"session","status":"refused","detail"}`; `diagnostic` is present when host input ended the session. Exit codes match `codemode plan run`. |
 | bridge → host | `{"type":"error","message":"..."}` | No session ran, for example an invalid start frame or an unavailable journal. |
@@ -101,8 +101,9 @@ The shared client's `runPlanBridge` spawns the bridge with an empty environment.
 The Pi adapter's `rust_codemode_plan` dispatches each attempt through
 `ctx.executeTool()`, so plan approval supplements Pi's gates and never bypasses
 them; Pi errors are effect `unknown`, because Pi reports gate blocks and tool
-failures alike. Provider extensions register attempt-key arguments, precondition
-arguments, and reconcilers on `codemode:plan-providers`. Only the Pi flow has
+failures alike. Provider extensions register attempt-key, precondition, and scope
+arguments, an authorization check, and reconcilers on `codemode:plan-providers`;
+an attempt whose tool cannot receive its approved scope is refused. Only the Pi flow has
 been checked; see [`integrations/pi`](../integrations/pi/README.md) for exactly
 what its test establishes.
 

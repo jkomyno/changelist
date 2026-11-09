@@ -29,11 +29,11 @@
 //!
 //! - `{"type":"authorize","id":1,"scope":{..}}` for each scope the plan uses,
 //!   before anything is reconciled or dispatched.
-//! - `{"type":"call","id":2,"tool":..,"arguments":{..},"operation":"..","attempt":"..","preconditions":[..]}`
+//! - `{"type":"call","id":2,"tool":..,"arguments":{..},"operation":"..","attempt":"..","preconditions":[..],"scope":{..}}`
 //!   for each attempt, after its intent is durable. `arguments` are the frozen,
 //!   approved arguments; `attempt` is the attempt key the host should hand to a
 //!   provider that keeps receipts.
-//! - `{"type":"reconcile","id":3,"operation":"..","tool":..,"arguments":{..},"keys":[..]}`
+//! - `{"type":"reconcile","id":3,"operation":"..","tool":..,"arguments":{..},"keys":[..],"scope":{..}}`
 //!   for each operation whose outcome is unknown and whose contract can reconcile it.
 //! - `{"type":"outcome","outcome":{..}}` once, last. A refused session has
 //!   `{"session":n,"status":"refused","detail":".."}` as its outcome. When host
@@ -165,6 +165,7 @@ enum BridgeFrame<'a> {
         operation: &'a str,
         attempt: &'a str,
         preconditions: &'a [Value],
+        scope: &'a Scope,
     },
     Reconcile {
         id: u64,
@@ -172,6 +173,7 @@ enum BridgeFrame<'a> {
         tool: &'a str,
         arguments: &'a Value,
         keys: &'a [String],
+        scope: &'a Scope,
     },
     Outcome {
         outcome: Value,
@@ -293,6 +295,7 @@ impl RecoverableProvider for HostPlanProvider {
                 operation: &operation.id,
                 attempt: &attempt.key,
                 preconditions: &operation.preconditions,
+                scope: &operation.scope,
             })
         });
         let _guard = match sent {
@@ -326,6 +329,7 @@ impl RecoverableProvider for HostPlanProvider {
                 tool: &operation.tool,
                 arguments: &operation.arguments,
                 keys: &keys,
+                scope: &operation.scope,
             })
         })?;
         Self::answer(receiver, &context.cancellation).await

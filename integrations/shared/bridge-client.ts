@@ -399,6 +399,8 @@ export interface PlanCall {
   /** The attempt key; a provider that keeps receipts should record it. */
   attempt: string;
   preconditions: unknown[];
+  /** The approved scope; the provider must refuse an attempt it cannot perform as this scope. */
+  scope: PlanScope;
 }
 
 /** A request to establish what happened to an operation's earlier attempts. */
@@ -408,6 +410,8 @@ export interface ReconcileRequest {
   tool: string;
   arguments: Record<string, unknown>;
   keys: string[];
+  /** The approved scope of the operation. */
+  scope: PlanScope;
 }
 
 export type Reconciled =
@@ -529,7 +533,15 @@ export async function runPlanBridge(run: PlanBridgeRun): Promise<PlanBridgeResul
     }
     pending.then(
       (result) => {
-        if (outstanding.delete(id)) send(frame(result));
+        if (!outstanding.delete(id)) return;
+        let reply: string;
+        try {
+          reply = frame(result);
+        } catch (error) {
+          // A reply that cannot be encoded (a cyclic value, a malformed answer) is a failure, not a crash.
+          reply = failed(describeError(error));
+        }
+        send(reply);
       },
       (error: unknown) => {
         if (outstanding.delete(id)) send(failed(describeError(error)));

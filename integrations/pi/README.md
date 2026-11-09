@@ -92,9 +92,14 @@ Pi model ── rust_codemode_plan ──► extension ── start {declaration
   in the declaration that are callable in the session are reached; `rust_codemode`,
   `rust_codemode_plan`, `codemode`, and `tool_search` never are. An undeclared or
   uncallable tool is answered `not_applied` without reaching Pi.
-- **Authorization.** This host has no separate account check, so `authorize`
-  accepts the scopes whose provider and account match the declaration. Pi's gates
-  decide each call when it is dispatched.
+- **Authorization and scope.** Before a session sends anything, each declared
+  tool's provider confirms that its live account may act on every approved scope
+  (`authorize`; the fixture tools run `codemode-fixture authorize`, which also
+  refuses a revoked account). Every attempt and probe carries the operation's
+  approved scope, and the adapter passes it to the tool, which must refuse a scope
+  that is not the account and destination it acts as: a host whose configuration
+  changed since approval cannot act under that approval. Pi's gates still decide
+  each call when it is dispatched.
 - **Failures.** Pi reports gate blocks, validation errors, and thrown errors alike
   (`isError`), so the adapter cannot tell a blocked call from one that failed after
   an effect. Every Pi error becomes effect `unknown`: an operation with a
@@ -103,8 +108,9 @@ Pi model ── rust_codemode_plan ──► extension ── start {declaration
 - **Providers.** Provider extensions listen on `codemode:plan-providers`. When a
   plan session starts, the adapter emits a registry, and each listener
   synchronously calls `registry.register(tool, { keyArgument, preconditionsArgument,
-  reconcile })`, so load order does not matter. The adapter adds the attempt key
-  and the operation's preconditions under those argument names. It refuses
+  scopeArgument, authorize, reconcile })`, so load order does not matter. The adapter
+  adds the attempt key, the preconditions, and the approved scope under those
+  argument names, and refuses an attempt whose tool registered no scope argument. It refuses
   (effect `refused`, before Pi runs anything) an attempt whose tool reconciles by
   receipt but registered no key argument, or whose operation has preconditions the
   tool cannot receive. A probe for a tool without a reconciler fails with
