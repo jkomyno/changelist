@@ -279,7 +279,7 @@ fn check(flags: Flags) -> Result<u8, Box<dyn Error>> {
     let mut out = String::new();
     out.push_str(&format!("plan {}\n", plan.digest()));
     if let Some(summary) = &plan.plan().summary {
-        out.push_str(&format!("summary: {summary}\n"));
+        out.push_str(&format!("summary: {summary:?}\n"));
     }
     out.push_str(&format!("{} operations:\n", plan.plan().operations.len()));
     for operation in &plan.plan().operations {
@@ -289,12 +289,12 @@ fn check(flags: Flags) -> Result<u8, Box<dyn Error>> {
             .map(|map| map.keys().collect())
             .unwrap_or_default();
         out.push_str(&format!(
-            "  {} {} {} {{{}}}",
+            "  {:?} {:?} {:?} {{{}}}",
             operation.id,
             operation.tool,
-            operation.scope,
+            operation.scope.to_string(),
             keys.iter()
-                .map(|key| key.as_str())
+                .map(|key| format!("{key:?}"))
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
