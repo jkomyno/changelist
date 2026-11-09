@@ -179,7 +179,6 @@ export function startBridge(limits: BridgeLimits): StartedBridge {
     started.exited = true;
   });
   child.stdin.on("error", () => {
-    // The bridge exited; its report or exit status explains why.
   });
   child.stderr.on("data", (chunk: Buffer) => {
     started.stderr = (started.stderr + chunk.toString("utf8")).slice(-STDERR_TAIL);
@@ -194,7 +193,6 @@ export function startBridge(limits: BridgeLimits): StartedBridge {
 function readFrames(
   stream: NodeJS.ReadableStream,
   limit: number,
-  // Frames are untrusted JSON; each handler checks the fields it uses.
   handle: (frame: any) => void,
   fail: (error: Error) => void,
 ): void {
@@ -491,7 +489,6 @@ export async function runPlanBridge(run: PlanBridgeRun): Promise<PlanBridgeResul
     stderr = (stderr + chunk.toString("utf8")).slice(-STDERR_TAIL);
   });
   child.stdin.on("error", () => {
-    // The bridge exited; its last frame or exit status explains why.
   });
 
   const outstanding = new Map<number, AbortController>();
@@ -540,7 +537,6 @@ export async function runPlanBridge(run: PlanBridgeRun): Promise<PlanBridgeResul
     );
   };
 
-  // Frames are untrusted JSON from the bridge; each branch checks the fields it uses.
   const onFrame = (frame: Record<string, unknown>, resolveOutcome: (result: PlanBridgeResult) => void, onError: (message: string) => void) => {
     switch (frame.type) {
       case "authorize":

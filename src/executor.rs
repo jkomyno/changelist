@@ -30,7 +30,7 @@ use crate::recovery::{
 };
 use crate::runtime::{
     CallContext, DispatchPolicy, ProviderError, RunCancellation, RunConfig, RunError, RunReport,
-    ToolCall, ToolProvider, run,
+    ToolCall, ToolProvider, millis, run,
 };
 
 /// Process settings for a session that are not part of the approval.
@@ -137,10 +137,6 @@ impl From<JournalError> for SessionError {
     fn from(error: JournalError) -> Self {
         Self::Journal(error)
     }
-}
-
-fn millis(duration: Duration) -> u64 {
-    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// The contracts to judge operations by: the approved ones, or the most
@@ -270,7 +266,6 @@ pub async fn run_session<P: RecoverableProvider>(
     }
     let checks_ms = millis(started.elapsed());
 
-    // Reconcile what may have reached the provider before deciding what to send.
     let reconcile_started = Instant::now();
     let statuses = assess_history(&plan, &history, &HashSet::new());
     let to_probe: Vec<&OperationStatus> = statuses
@@ -290,7 +285,12 @@ pub async fn run_session<P: RecoverableProvider>(
     .await?;
     let reconcile_ms = millis(reconcile_started.elapsed());
 
-    let history = journaled(&journal, |journal| journal.history()).await?;
+    // Probes are the only facts written since the first read.
+    let history = if probed.is_empty() {
+        history
+    } else {
+        journaled(&journal, |journal| journal.history()).await?
+    };
     let statuses = assess_history(&plan, &history, &probed);
     let dispatch: Vec<(Operation, u32)> = statuses
         .iter()
@@ -339,17 +339,7 @@ pub async fn run_session<P: RecoverableProvider>(
     // An attempt the run stopped waiting for keeps an unknown outcome, with the reason.
     let reason = interrupted.clone().unwrap_or_else(|| "run_finished".into());
     let history = journaled(&journal, move |journal| {
-        let history = journal.history()?;
-        for attempt in &history.attempts {
-            if attempt.session == session && attempt.observation.is_none() {
-                journal.record_observation(
-                    &attempt.key,
-                    Observed::Unobserved {
-                        reason: reason.clone(),
-                    },
-                )?;
-            }
-        }
+        journal.record_unobserved(session, &reason)?;
         journal.history()
     })
     .await?;
@@ -677,7 +667,6 @@ impl<P: RecoverableProvider> ToolProvider for JournalingProvider<P> {
         let session = self.session;
         let call_id = call.id;
         let intent = (key.clone(), id.clone());
-        // Durable before the provider can see the attempt.
         let recorded = journaled(&self.journal, move |journal| {
             let (key, id) = intent;
             journal.record_intent(&key, &id, number, session, Some(call_id))

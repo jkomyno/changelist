@@ -106,9 +106,6 @@ Prints a Markdown summary to stdout and progress to stderr. Exits 1 if any
 correctness check that should hold fails and 2 on a usage, setup, or output error.
 ";
 
-// ---------------------------------------------------------------------------
-// Strategies and modes
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Strategy {
@@ -165,9 +162,6 @@ impl Mode {
 fn rotation<T: Copy, const N: usize>(items: [T; N], round: usize) -> impl Iterator<Item = T> {
     (0..N).map(move |offset| items[(round + offset) % N])
 }
-
-// ---------------------------------------------------------------------------
-// Plans, fixtures, and the correctness oracle
 
 struct Workload {
     name: String,
@@ -312,9 +306,6 @@ fn ledger_counts(ledger: &Ledger) -> (u64, u64) {
     (duplicates, repeats.saturating_sub(duplicates))
 }
 
-// ---------------------------------------------------------------------------
-// Runtime-only dispatch (blind retry and the overhead baseline)
-
 /// The same trusted program shape as codemode's dispatcher: it names operations
 /// only, and all calls are submitted together.
 fn dispatcher(operations: &[Operation]) -> String {
@@ -426,9 +417,6 @@ fn to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
-// ---------------------------------------------------------------------------
-// A. The crashed state
-
 /// Run `codemode plan run` until the held request reaches the fixture, then kill it.
 async fn crash(
     dir: &Path,
@@ -533,9 +521,6 @@ fn verify_crash(dir: &Path, plan: &FrozenPlan) -> Result<Vec<String>, Box<dyn Er
     Ok(failures)
 }
 
-// ---------------------------------------------------------------------------
-// A. Strategies
-
 #[derive(Debug, Serialize)]
 struct RecoveryRun {
     latency_ms: u64,
@@ -627,7 +612,6 @@ async fn recover(
             let statuses = assess_history(plan, &journal.history()?, &HashSet::new());
             drop(journal);
             record.journal_us = micros(started.elapsed());
-            // Any unknown operation stops it: nothing is probed or sent.
             record.unresolved = statuses
                 .iter()
                 .filter(|status| {
@@ -737,9 +721,6 @@ async fn recover(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// B. Persistence overhead
-
 #[derive(Debug, Serialize)]
 struct OverheadRun {
     workload: String,
@@ -832,7 +813,6 @@ async fn overhead_run(
                     .failures
                     .push(format!("session ended {}", outcome.status));
             }
-            // Counted after the measurement, from what the journal holds.
             let history = Journal::open(dir.join("j.db"), durability)?.history()?;
             let sessions: usize = history
                 .sessions
@@ -860,9 +840,6 @@ async fn overhead_run(
     record.correct = record.failures.is_empty();
     Ok(record)
 }
-
-// ---------------------------------------------------------------------------
-// Aggregation
 
 #[derive(Debug, Serialize)]
 struct Stats {
@@ -1031,9 +1008,6 @@ fn overhead_aggregate(
         paired_execution_delta_ms: execution_delta,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Markdown report
 
 fn ms_from_us(us: i64) -> String {
     format!("{:.1}", us as f64 / 1000.0)
@@ -1243,9 +1217,6 @@ fn render_markdown(
     }
     out
 }
-
-// ---------------------------------------------------------------------------
-// Environment, arguments, and output files
 
 #[derive(Debug, Serialize)]
 struct Environment {
@@ -1466,9 +1437,6 @@ impl Drop for Scratch {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
-
-// ---------------------------------------------------------------------------
-// Main loop
 
 #[tokio::main]
 async fn main() -> ExitCode {

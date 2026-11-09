@@ -673,14 +673,56 @@ fn next_step(
     }
 }
 
-impl fmt::Display for Verdict {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
+impl Verdict {
+    const ALL: [Self; 4] = [
+        Self::Applied,
+        Self::Satisfied,
+        Self::NotApplied,
+        Self::Unknown,
+    ];
+
+    /// The serialized name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
             Self::Applied => "applied",
             Self::Satisfied => "satisfied",
             Self::NotApplied => "not_applied",
             Self::Unknown => "unknown",
-        })
+        }
+    }
+
+    /// The verdict with serialized name `name`.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|verdict| verdict.as_str() == name)
+    }
+}
+
+impl fmt::Display for Verdict {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl Resolution {
+    /// The serialized name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Applied => "applied",
+            Self::NotApplied => "not_applied",
+        }
+    }
+
+    /// The resolution with serialized name `name`.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        [Self::Applied, Self::NotApplied]
+            .into_iter()
+            .find(|resolution| resolution.as_str() == name)
     }
 }
 

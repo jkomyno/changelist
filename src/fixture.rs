@@ -36,7 +36,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -45,6 +45,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::time::{sleep, sleep_until};
 
+use crate::journal::now_ms;
 use crate::plan::{Digest, Operation, Scope};
 use crate::recovery::{
     Attempt, AttemptError, FailureEffect, ProbeContext, ProviderDeclaration, ReconcileMethod,
@@ -863,9 +864,6 @@ fn reconcile_state(path: &Path, issue: u64, label: &str) -> Result<Reconciliatio
     })
 }
 
-// ---------------------------------------------------------------------------
-// Request handling
-
 #[derive(Debug, Clone, Copy)]
 enum Actor<'a> {
     /// The provider's account; `in_scope` is false when the operation's scope does not match it.
@@ -1202,9 +1200,6 @@ fn decide(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Storage helpers
-
 /// Open an existing file for reading and writing with the fixture's settings.
 fn connect(path: &Path) -> Result<Connection, FixtureError> {
     let connection = Connection::open_with_flags(
@@ -1315,14 +1310,6 @@ fn not_applied(code: &str, message: &str) -> AttemptError {
         },
         effect: FailureEffect::NotApplied,
     }
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 #[cfg(test)]

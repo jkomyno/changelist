@@ -677,8 +677,12 @@ impl Drop for Launcher {
     }
 }
 
+/// Whole milliseconds, saturating.
+pub(crate) fn millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
 fn elapsed(start: Instant) -> u64 {
-    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
+    millis(start.elapsed())
 }
 fn event(report: &mut RunReport, start: Instant, call_id: Option<u64>, kind: &str) {
     event_because(report, start, call_id, kind, None);

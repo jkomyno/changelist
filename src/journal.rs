@@ -333,7 +333,7 @@ impl fmt::Debug for Journal {
     }
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| {
@@ -390,7 +390,6 @@ impl Journal {
         durability: Durability,
     ) -> Result<Self, JournalError> {
         let path = path.as_ref().to_path_buf();
-        // Claim the path atomically, so two creators cannot both succeed.
         OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -654,6 +653,47 @@ impl Journal {
         })
     }
 
+    /// Record every attempt of `session` that has no observation as unobserved,
+    /// because the run that dispatched it stopped waiting (`reason`). One commit.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn record_unobserved(&mut self, session: u64, reason: &str) -> Result<(), JournalError> {
+        let record = serde_json::to_string(&bounded_observation(Observed::Unobserved {
+            reason: reason.to_string(),
+        }))
+        .map_err(|error| JournalError::Storage(error.to_string()))?;
+        let transaction = self.connection.transaction().map_err(storage)?;
+        let keys: Vec<String> = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT a.key FROM attempts a LEFT JOIN observations o USING (key)
+                     WHERE a.session = ?1 AND o.key IS NULL ORDER BY a.ordinal",
+                )
+                .map_err(storage)?;
+            let rows = statement
+                .query_map([session as i64], |row| row.get(0))
+                .map_err(storage)?;
+            rows.collect::<rusqlite::Result<_>>().map_err(storage)?
+        };
+        for key in keys {
+            let ordinal: i64 = transaction
+                .query_row(
+                    "UPDATE clock SET ordinal = ordinal + 1 WHERE id = 1 RETURNING ordinal",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(storage)?;
+            transaction
+                .execute(
+                    "INSERT INTO observations VALUES (?1, ?2, ?3, ?4)",
+                    params![key, ordinal, now_ms() as i64, record],
+                )
+                .map_err(storage)?;
+        }
+        transaction.commit().map_err(storage)
+    }
+
     /// Record a reconciliation probe and its outcome.
     ///
     /// # Errors
@@ -718,10 +758,7 @@ impl Journal {
                 "the plan has no operation '{operation}'"
             )));
         }
-        let resolution = match resolution {
-            Resolution::Applied => "applied",
-            Resolution::NotApplied => "not_applied",
-        };
+        let resolution = resolution.as_str();
         let reviewer = bounded(reviewer);
         let note = note.map(bounded);
         self.write(|transaction, ordinal| {
@@ -924,15 +961,8 @@ impl Journal {
                 serde_json::from_str(&keys).map_err(|error| corrupt("reconciliations", &error))?;
             let outcome = match verdict.as_deref() {
                 Some(verdict) => Ok(Reconciliation {
-                    verdict: match verdict {
-                        "applied" => Verdict::Applied,
-                        "satisfied" => Verdict::Satisfied,
-                        "not_applied" => Verdict::NotApplied,
-                        "unknown" => Verdict::Unknown,
-                        other => {
-                            return Err(corrupt("reconciliations", &format!("verdict {other}")));
-                        }
-                    },
+                    verdict: Verdict::parse(verdict)
+                        .ok_or_else(|| corrupt("reconciliations", &format!("verdict {verdict}")))?,
                     evidence: evidence.unwrap_or_default(),
                 }),
                 None => Err(ProviderError {
@@ -972,11 +1002,8 @@ impl Journal {
             .map_err(storage)?;
         for row in rows {
             let (ordinal, operation, resolution, reviewer, note, unix_ms) = row.map_err(storage)?;
-            let resolution = match resolution.as_str() {
-                "applied" => Resolution::Applied,
-                "not_applied" => Resolution::NotApplied,
-                other => return Err(corrupt("reviews", &format!("resolution {other}"))),
-            };
+            let resolution = Resolution::parse(&resolution)
+                .ok_or_else(|| corrupt("reviews", &format!("resolution {resolution}")))?;
             reviews.push(ReviewRecord {
                 ordinal,
                 operation,

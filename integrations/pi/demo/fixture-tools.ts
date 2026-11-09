@@ -90,7 +90,6 @@ export default function fixtureTools(pi: ExtensionAPI) {
     });
   }
 
-  // Registered per plan session, synchronously, whatever the extension load order.
   pi.events.on("codemode:plan-providers", (registry) => {
     for (const [name, tool] of Object.entries(TOOLS)) {
       (registry as PlanProviderRegistry).register(name, {
