@@ -60,8 +60,9 @@ journal, approves the plan (concurrency 4, otherwise default policy, `storage`
 durability), and arms four faults: lost responses after the effect commits for
 `label-104`, `label-107`, and `comment-105`, and a held request (ledgered, never
 applied) for `label-109`. It then starts the release `codemode plan run` as a
-subprocess, polls the fixture ledger until the held request appears, and sends
-SIGKILL (`Child::kill`). By then all four slots are stuck, so `label-110` was never
+subprocess, polls the fixture ledger until all ten intended requests have arrived,
+including the held request, and sends SIGKILL (`Child::kill`). By then all four
+slots are stuck, so `label-110` was never
 dispatched.
 
 After the process is reaped, the harness copies each database and its write-ahead
@@ -128,6 +129,18 @@ the run: session begin and end, plus an intent and an observation per attempt.
 The journal cost is paired by repetition: each mode's total minus the runtime-only
 total of the same repetition, workload, and latency. The tables give the median of
 those differences, divided by operations and by commits.
+
+## Crash-checkpoint correction
+
+The [initial native measurement](../eval/recovery-native-initial/summary.md)
+failed its correctness oracle in one repetition: observing the held request
+alone did not prove all earlier requests had reached the fixture. One was still
+between its journal intent and provider entry when the process was killed.
+That left a different crashed state and an unused injected fault, invalidating
+the strategy comparison. Those results are retained as failed evidence and are
+excluded from performance claims. The harness now waits for all ten intended
+fixture requests, including the held one, before SIGKILL; the independent
+post-kill state and ledger checks remain unchanged.
 
 ## Historical Deno results
 

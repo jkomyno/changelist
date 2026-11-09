@@ -393,7 +393,7 @@ fn to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
-/// Run `codemode plan run` until the held request reaches the fixture, then kill it.
+/// Kill after all ten intended requests, including the held one, reach the fixture.
 async fn crash(
     dir: &Path,
     plan: &FrozenPlan,
@@ -423,15 +423,17 @@ async fn crash(
     let waited: Result<(), String> = loop {
         if let Some(status) = child.try_wait()? {
             break Err(format!(
-                "codemode plan run exited ({status}) before the held request"
+                "codemode plan run exited ({status}) before the crash checkpoint"
             ));
         }
         let ledger = Fixture::open(&fixture_path)?.ledger()?;
-        if ledger.rows.iter().any(|row| row.outcome == "held") {
+        if ledger.rows.len() == CRASH_LEDGER_ROWS
+            && ledger.rows.iter().any(|row| row.outcome == "held")
+        {
             break Ok(());
         }
         if started.elapsed() > CRASH_TIMEOUT {
-            break Err("the held request did not arrive in time".into());
+            break Err("the ten-request crash checkpoint did not arrive in time".into());
         }
         tokio::time::sleep(Duration::from_millis(2)).await;
     };
