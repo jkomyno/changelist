@@ -12,12 +12,29 @@
 
 mod bridge;
 mod inspect;
+mod journal;
+mod plan;
+mod recovery;
 mod runtime;
 
 pub use bridge::{BRIDGE_FRAME_BYTES, BRIDGE_PROTOCOL_VERSION, BridgeError, serve_bridge};
 pub use inspect::{
     CallRow, CallTiming, Calls, Evidence, InspectOptions, Inspection, Phase, Reconcile,
     ReconcileItem, Sections, Timing, inspect,
+};
+pub use journal::{
+    AttemptRecord, Durability, History, JOURNAL_FORMAT_VERSION, Journal, JournalError,
+    ObservationRecord, ProbeRecord, ReviewRecord, SessionEnd, SessionKind, SessionRecord,
+};
+pub use plan::{
+    Digest, FrozenPlan, MAX_ARGUMENT_BYTES, MAX_OPERATIONS, MAX_PLAN_BYTES, Operation,
+    PLAN_FORMAT_VERSION, Plan, PlanError, Scope,
+};
+pub use recovery::{
+    Approval, Assessment, Attempt, AttemptError, Basis, Conclusion, Fact, FailureEffect, NextStep,
+    Observed, ProbeContext, ProviderDeclaration, ReconcileMethod, Reconciliation,
+    RecoverableProvider, RecoveryContract, RecoveryPolicy, RepeatSafety, Resolution, Verdict,
+    approval_binding, assess,
 };
 pub use runtime::{
     BridgeTotals, ByteTotals, CallContext, CallOutcome, CallRecord, ClockInfo, DispatchPolicy,
