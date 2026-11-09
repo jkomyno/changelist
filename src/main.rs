@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use codemode::{
-    BridgeError, DispatchPolicy, GuestBackend, InspectOptions, MockProvider, RunCancellation,
-    RunConfig, RunReport, Sections, inspect, run, serve_bridge,
+    BridgeError, GuestBackend, InspectOptions, MockProvider, RunCancellation, RunConfig, RunReport,
+    Sections, inspect, run, serve_bridge,
 };
 
 mod plan_cli;
@@ -29,8 +29,6 @@ Options:
   --timeout-ms <n>        Total run deadline, including startup (default: 5000)
   --max-calls <n>         Maximum helper-call attempts (default: 32)
   --concurrency <n>       Maximum active provider calls (default: 4)
-  --dispatch <policy>     rolling (refill each free slot) or batch (wait for
-                          each whole batch); default: rolling
   --max-output-bytes <n>  Cumulative JSON response/output bytes (default: 262144)
   --trace <file.json>     Save the full trace; print only status, output, and path (run only)
   --deno <executable>     Deno executable (default: deno from PATH)
@@ -167,7 +165,6 @@ fn parse_arguments() -> Result<Command, CliError> {
                 | "--timeout-ms"
                 | "--max-calls"
                 | "--concurrency"
-                | "--dispatch"
                 | "--max-output-bytes"
         ) {
             return Err(CliError(format!("unknown option '{flag}'")));
@@ -197,13 +194,6 @@ fn parse_arguments() -> Result<Command, CliError> {
                     },
                     _ => return Err(CliError("--backend must be deno or embedded-v8".into())),
                 };
-            }
-            "--dispatch" => {
-                config.dispatch = match value.to_str() {
-                    Some("rolling") => DispatchPolicy::Rolling,
-                    Some("batch") => DispatchPolicy::Batch,
-                    _ => return Err(CliError("--dispatch must be rolling or batch".into())),
-                }
             }
             _ => {
                 let number = value

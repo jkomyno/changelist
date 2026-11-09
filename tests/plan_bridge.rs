@@ -158,10 +158,7 @@ impl Host {
         let journal = Journal::open(path, Durability::Process).expect("open");
         let (input, bridge_input) = tokio::io::duplex(1 << 20);
         let (bridge_output, output) = tokio::io::duplex(1 << 20);
-        let options = SessionOptions {
-            kind,
-            deno: "/codemode-test-no-deno/deno".into(),
-        };
+        let options = SessionOptions { kind };
         let bridge = tokio::spawn(serve_plan_bridge(
             bridge_input,
             bridge_output,
@@ -372,33 +369,33 @@ fn retention_plan() -> codemode::FrozenPlan {
     .expect("valid plan")
 }
 
-/// Approve the retention plan with `declaration`; `legacy` binds it the way
-/// approvals did before they bound a retention policy.
-fn approve_retention(declaration: &Value, legacy: bool) -> PathBuf {
+/// Approve the retention plan with `declaration`.
+fn approve_retention(declaration: &Value) -> PathBuf {
     let plan = retention_plan();
-    let path = journal_path();
-    let mut journal = Journal::create(&path, &plan, Durability::Process).expect("create");
     let parsed: ProviderDeclaration =
         serde_json::from_value(declaration.clone()).expect("declaration");
     let policy = RecoveryPolicy {
         concurrency: 1,
         ..RecoveryPolicy::default()
     };
-    let binding = if legacy {
-        let mut old = declaration.clone();
-        old.as_object_mut().expect("object").remove("retention");
-        let mut value = json!({"format": "codemode-approval/1", "plan": plan.digest(),
-                           "declaration": old, "policy": policy});
-        value.sort_all_objects();
-        codemode::Digest::of(value.to_string().as_bytes())
-    } else {
-        approval_binding(plan.digest(), &parsed, &policy)
-    };
+    let binding = approval_binding(plan.digest(), &parsed, &policy);
+    record_approval(&plan, parsed, policy, binding)
+}
+
+/// A fresh journal for `plan` holding one approval with `binding`.
+fn record_approval(
+    plan: &codemode::FrozenPlan,
+    declaration: ProviderDeclaration,
+    policy: RecoveryPolicy,
+    binding: codemode::Digest,
+) -> PathBuf {
+    let path = journal_path();
+    let mut journal = Journal::create(&path, plan, Durability::Process).expect("create");
     journal
         .approve(&Approval {
             binding,
             plan: plan.digest().clone(),
-            declaration: parsed,
+            declaration,
             policy,
             approver: "tester".into(),
             note: None,
@@ -455,7 +452,7 @@ async fn finish(mut host: Host) -> (Value, Result<SessionOutcome, PlanBridgeErro
 async fn provider_text_scenario(
     declaration: &Value,
 ) -> (PathBuf, Vec<Vec<(String, Conclusion, NextStep)>>) {
-    let path = approve_retention(declaration, false);
+    let path = approve_retention(declaration);
     let statuses = |outcome: &SessionOutcome| {
         outcome
             .operations
@@ -589,7 +586,7 @@ async fn the_default_retention_keeps_no_provider_text() {
         .iter()
         .filter_map(|attempt| attempt.observation.as_ref().map(|o| &o.observed))
         .collect();
-    assert!(matches!(observed[0], Observed::Succeeded { value: None, bytes } if *bytes > 0));
+    assert!(matches!(observed[0], Observed::Succeeded { bytes } if *bytes > 0));
     assert!(matches!(
         observed[2],
         Observed::Failed { error, effect: FailureEffect::Refused }
@@ -638,9 +635,9 @@ async fn a_summary_policy_keeps_the_hosts_explanations_and_the_same_decisions() 
 }
 
 #[tokio::test]
-async fn a_changed_or_unbound_retention_policy_needs_a_new_approval() {
+async fn a_changed_retention_policy_needs_a_new_approval() {
     // Approved under metadata/1; the host now declares summary/1.
-    let path = approve_retention(&retention_declaration(None), false);
+    let path = approve_retention(&retention_declaration(None));
     let host = Host::start_as(
         &path,
         SessionKind::Run,
@@ -656,40 +653,35 @@ async fn a_changed_or_unbound_retention_policy_needs_a_new_approval() {
         "{frame}"
     );
     let _ = std::fs::remove_file(&path);
+}
 
-    // An approval recorded before approvals bound a retention policy.
+#[tokio::test]
+async fn an_approval_bound_under_the_previous_format_is_refused_before_any_host_request() {
+    let plan = retention_plan();
     let declaration = retention_declaration(None);
-    let path = approve_retention(&declaration, true);
+    let parsed: ProviderDeclaration =
+        serde_json::from_value(declaration.clone()).expect("declaration");
+    let policy = RecoveryPolicy {
+        concurrency: 1,
+        ..RecoveryPolicy::default()
+    };
+    let mut previous = json!({"format": "codemode-approval/2", "plan": plan.digest(),
+                              "declaration": parsed, "policy": policy});
+    previous.sort_all_objects();
+    let binding = codemode::Digest::of(previous.to_string().as_bytes());
+    let path = record_approval(&plan, parsed, policy, binding);
+
     let host = Host::start_as(&path, SessionKind::Run, declaration).await;
+    // The first frame the host receives is the outcome: no authorize, call, or reconcile.
     let (frame, _) = finish(host).await;
+    assert_eq!(frame["outcome"]["status"], "refused", "{frame}");
     assert!(
         frame["outcome"]["detail"]
             .as_str()
-            .is_some_and(|detail| detail.contains("predates retention policies")),
+            .is_some_and(|detail| detail.contains("does not bind this plan")),
         "{frame}"
     );
     let journal = reopen(&path).await;
-    let inspection = codemode::inspect_journal(&journal, &Default::default()).expect("inspects");
-    assert_eq!(
-        inspection
-            .approval
-            .as_ref()
-            .map(|approval| approval.approvals_without_retention),
-        Some(1)
-    );
-    assert!(inspection.render().contains("predate retention policies"));
-    assert!(
-        inspection
-            .render()
-            .contains("retention: none bound (this approval predates retention policies)")
-    );
-    assert_eq!(
-        inspection
-            .approval
-            .as_ref()
-            .map(|approval| approval.retention_bound),
-        Some(false)
-    );
     assert!(
         journal.history().expect("history").attempts.is_empty(),
         "nothing ran"
@@ -699,8 +691,34 @@ async fn a_changed_or_unbound_retention_policy_needs_a_new_approval() {
 }
 
 #[tokio::test]
+async fn a_fact_frame_is_a_protocol_error_and_nothing_is_dispatched() {
+    let path = approved_journal();
+    let mut host = Host::start(&path, SessionKind::Run).await;
+    let authorize = host.next().await;
+    assert_eq!(authorize["type"], "authorize", "{authorize}");
+    host.send(json!({"type": "fact", "id": authorize["id"], "kind": "received"}))
+        .await;
+    let (frame, _) = tokio::time::timeout(Duration::from_secs(5), finish(host))
+        .await
+        .expect("the fact frame ends the session");
+    assert!(
+        frame["diagnostic"]
+            .as_str()
+            .is_some_and(|diagnostic| diagnostic.starts_with("invalid host frame")),
+        "{frame}"
+    );
+    let journal = reopen(&path).await;
+    assert!(
+        journal.history().expect("history").attempts.is_empty(),
+        "nothing was dispatched"
+    );
+    drop(journal);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
 async fn a_malformed_host_reply_is_described_without_its_values() {
-    let path = approve_retention(&retention_declaration(None), false);
+    let path = approve_retention(&retention_declaration(None));
     let mut host = Host::start_as(&path, SessionKind::Run, retention_declaration(None)).await;
     host.authorize().await;
     let call = host.next_kept().await;

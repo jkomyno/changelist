@@ -2,7 +2,7 @@
 //!
 //! The trusted provider, never the plan or guest code, declares how each of its
 //! tools can be recovered ([`RecoveryContract`]) and implements the probes
-//! ([`RecoverableProvider::reconcile`]). [`assess`] folds an operation's journaled
+//! ([`RecoverableProvider::reconcile`]). `assess` folds an operation's journaled
 //! facts into one of four distinct conclusions and the next safe step.
 
 use std::collections::BTreeMap;
@@ -56,7 +56,8 @@ pub enum ReconcileMethod {
 ///
 /// Every policy keeps the facts recovery needs: attempt identity and order, the
 /// observed outcome and stated effect, result sizes, probe verdicts, and error
-/// codes that look like machine codes (see [`machine_code`]). Result values are
+/// codes that look like machine codes: 1 to 64 ASCII letters, digits, or
+/// `_ . : -`; any other code is kept as [`UNRECOGNIZED_CODE`]. Result values are
 /// never kept. The journal applies the policy before anything is written, so an
 /// excluded value never reaches the database or its write-ahead log.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,15 +99,8 @@ pub const UNRECOGNIZED_CODE: &str = "unrecognized_code";
 /// `code` if it looks like a machine code: 1 to 64 ASCII letters, digits, or
 /// `_ . : -`. Anything else, such as prose, becomes [`UNRECOGNIZED_CODE`], so a
 /// code cannot carry free-form provider text into the journal or a trace.
-///
-/// # Examples
-///
-/// ```
-/// assert_eq!(codemode::machine_code("rate_limited"), "rate_limited");
-/// assert_eq!(codemode::machine_code("token abc revoked"), codemode::UNRECOGNIZED_CODE);
-/// ```
 #[must_use]
-pub fn machine_code(code: &str) -> &str {
+pub(crate) fn machine_code(code: &str) -> &str {
     let machine = !code.is_empty()
         && code.len() <= MAX_CODE_BYTES
         && code
@@ -331,32 +325,12 @@ pub fn approval_binding(
     policy: &RecoveryPolicy,
 ) -> Digest {
     let value = serde_json::json!({
-        "format": "codemode-approval/2",
+        "format": "codemode-approval/3",
         "plan": plan,
         "declaration": declaration,
         "policy": policy,
     });
     Digest::of(canonical_json(value).as_bytes())
-}
-
-impl Approval {
-    /// Whether this approval was recorded before approvals bound a retention
-    /// policy (binding format 1). Such an approval cannot run a session, and the
-    /// facts recorded under it may hold provider values and messages.
-    #[must_use]
-    pub fn predates_retention(&self) -> bool {
-        let mut declaration = serde_json::to_value(&self.declaration).unwrap_or_default();
-        if let Some(fields) = declaration.as_object_mut() {
-            fields.remove("retention");
-        }
-        let value = serde_json::json!({
-            "format": "codemode-approval/1",
-            "plan": self.plan,
-            "declaration": declaration,
-            "policy": self.policy,
-        });
-        Digest::of(canonical_json(value).as_bytes()) == self.binding
-    }
 }
 
 /// One dispatch of an operation.
@@ -558,15 +532,7 @@ pub enum Resolution {
 pub enum Observed {
     /// The provider returned a result: our operation applied.
     Succeeded {
-        /// The result. Never written by this version; journals from earlier
-        /// versions may hold results up to 16 KiB.
-        #[serde(
-            default,
-            skip_serializing_if = "Option::is_none",
-            deserialize_with = "crate::json::optional"
-        )]
-        value: Option<Value>,
-        /// Serialized size of the result.
+        /// Serialized size of the result; the result itself is never kept.
         bytes: u64,
     },
     /// The provider returned an error.
@@ -614,7 +580,7 @@ impl Observed {
 
 /// One fact about an operation, in journal order, as [`assess`] consumes it.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Fact<'a> {
+pub(crate) enum Fact<'a> {
     /// Dispatch intent for attempt `number`, durable before it could reach the provider.
     Intent {
         /// Attempt number.
@@ -659,24 +625,8 @@ pub struct Assessment {
 /// `state` reconciliation can only show that the desired state holds, so its
 /// `applied` counts as `satisfied` and its `not_applied` as `unknown`.
 /// `probed_this_session` prevents probing the same operation twice in one session.
-///
-/// # Examples
-///
-/// ```
-/// use codemode::{
-///     Conclusion, Fact, NextStep, ReconcileMethod, RecoveryContract, RecoveryPolicy,
-///     RepeatSafety, assess,
-/// };
-///
-/// // Dispatched, then the executor died before the result arrived.
-/// let facts = [Fact::Intent { number: 1 }];
-/// let comment = RecoveryContract { repeat: RepeatSafety::Unsafe, reconcile: ReconcileMethod::None };
-/// let assessment = assess(&facts, comment, &RecoveryPolicy::default(), false);
-/// assert_eq!(assessment.conclusion, Conclusion::Unknown);
-/// assert_eq!(assessment.next, NextStep::Review);
-/// ```
 #[must_use]
-pub fn assess(
+pub(crate) fn assess(
     facts: &[Fact<'_>],
     contract: RecoveryContract,
     policy: &RecoveryPolicy,

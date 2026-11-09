@@ -23,8 +23,6 @@
 //!   is never proof that nothing happened.
 //! - `{"type":"reconciled","id":3,"verdict":"applied","evidence":"..."}`, or
 //!   `{"type":"reconciled","id":3,"error":{..}}`, answers a `reconcile` frame.
-//! - `{"type":"fact",...}` frames, as in version 2, are accepted and ignored: the
-//!   journal records observations, not host milestones.
 //! - `{"type":"cancel"}` cancels the session. Closing the input does too.
 //!
 //! Bridge to host:
@@ -66,7 +64,7 @@ use crate::recovery::{
     Attempt, AttemptError, FailureEffect, ProbeContext, ProviderDeclaration, Reconciliation,
     RecoverableProvider, Verdict,
 };
-use crate::runtime::{CallContext, ProviderError, ProviderFactKind, RunCancellation, frame};
+use crate::runtime::{CallContext, ProviderError, RunCancellation, frame};
 
 /// The bridge protocol version that serves plan sessions.
 pub const PLAN_BRIDGE_PROTOCOL_VERSION: u32 = 3;
@@ -139,16 +137,6 @@ enum HostFrame {
         evidence: Option<String>,
         #[serde(default)]
         error: Option<ProviderError>,
-    },
-    #[expect(
-        dead_code,
-        reason = "accepted for version 2 compatibility, then ignored"
-    )]
-    Fact {
-        id: u64,
-        kind: ProviderFactKind,
-        #[serde(default)]
-        host_ms: Option<f64>,
     },
     Cancel,
 }
@@ -361,7 +349,6 @@ fn deliver(frame: HostFrame, pending: &Pending) -> Result<Flow, String> {
     let mismatch = |id: u64| format!("the reply to request {id} has the wrong type");
     match frame {
         HostFrame::Cancel => return Ok(Flow::Cancel),
-        HostFrame::Fact { .. } => {}
         HostFrame::Start { .. } => return Err("duplicate start frame".into()),
         HostFrame::Authorized { id, ok, error } => {
             let reply = match (ok, error) {

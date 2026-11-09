@@ -65,7 +65,7 @@ const checked = JSON.parse(await command(bin, ["plan", "check", "plan.json", "--
 assert(typeof checked.digest === "string", "plan check omitted digest");
 await command(bin, ["plan", "approve", "plan.json", "--journal", "journal.db", "--provider", "provider.json", "--digest", checked.digest, "--approver", "install-smoke"]);
 for (const action of ["run", "resume"]) {
-  await Deno.writeTextFile(`${action}.json`, await command(bin, ["plan", action, "--journal", "journal.db", "--fixture", "fixture.db", "--account", "triage-bot", "--deno", "/nonexistent-install-smoke-engine"]));
+  await Deno.writeTextFile(`${action}.json`, await command(bin, ["plan", action, "--journal", "journal.db", "--fixture", "fixture.db", "--account", "triage-bot"]));
 }
 await Deno.writeTextFile("plan-inspection.txt", await command(bin, ["plan", "inspect", "--journal", "journal.db"]));
 const ledger = JSON.parse(await command(fixture, ["ledger", "--db", "fixture.db", "--json"]));

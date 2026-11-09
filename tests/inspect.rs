@@ -1,7 +1,6 @@
 //! Inspection answers, their bounds, and what they leave out.
 
 use std::io::Write;
-use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
 use codemode::{
@@ -58,22 +57,12 @@ async fn why_slow_attributes_waiting_to_the_concurrency_cap() {
     assert!(text.contains("concurrency cap of 1"), "{text}");
 }
 
-#[test]
-fn saved_schema_one_traces_still_inspect_with_complete_phases() {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("eval/results/traces");
-    let mut checked = 0;
-    for entry in std::fs::read_dir(dir).expect("trace directory") {
-        let path = entry.expect("entry").path();
-        let report: RunReport =
-            serde_json::from_slice(&std::fs::read(&path).expect("trace readable"))
-                .expect("trace parses");
-        let inspection = inspect(&report, &InspectOptions::default());
-        let total: u64 = inspection.timing.phases.iter().map(|phase| phase.ms).sum();
-        assert_eq!(total, report.elapsed_ms, "{}", path.display());
-        assert!(inspection.render(Sections::ALL).contains("schema 1 report"));
-        checked += 1;
-    }
-    assert!(checked > 0);
+fn clock() -> Value {
+    json!({"origin": "run_start", "source": "rust_monotonic", "unit": "ms_floor"})
+}
+
+fn bytes() -> Value {
+    json!({"from_guest": 0, "to_guest": 0, "retained": 0, "omitted": 0})
 }
 
 /// A report with one call per evidence class, built as a host would see it.
@@ -85,8 +74,8 @@ fn evidence_report() -> RunReport {
     };
     let fact = |id: u64, kind: &str, at: u64| json!({"call_id": id, "kind": kind, "received_ms": at, "provider_ms": 1.5});
     serde_json::from_value(json!({
-        "schema_version": 2, "code": "...", "status": "deadline",
-        "limits": {"timeout_ms": 300, "max_calls": 32, "max_concurrency": 4, "max_output_bytes": 1000, "dispatch": "rolling"},
+        "schema_version": 3, "backend": "deno", "code": "...", "status": "deadline",
+        "limits": {"timeout_ms": 300, "max_calls": 32, "max_concurrency": 4, "max_output_bytes": 1000},
         "calls": [
             call(1, json!({"status": "unknown"}), Some(11)),
             call(2, json!({"status": "unknown"}), Some(11)),
@@ -105,7 +94,8 @@ fn evidence_report() -> RunReport {
             fact(2, "received", 12),
             fact(4, "received", 12), fact(4, "permission_requested", 13), fact(4, "permission_denied", 40),
         ],
-        "elapsed_ms": 302, "diagnostic": SECRET
+        "provider_facts_dropped": 0, "elapsed_ms": 302, "clock": clock(), "bytes": bytes(),
+        "diagnostic": SECRET
     }))
     .expect("report deserializes")
 }
@@ -282,9 +272,10 @@ fn inspect_reads_a_record_from_stdin_and_refuses_other_json() {
 
 fn minimal(status: &str, elapsed: u64, calls: Value, events: Value) -> RunReport {
     serde_json::from_value(json!({
-        "schema_version": 2, "code": "", "status": status,
-        "limits": {"timeout_ms": 10, "max_calls": 32, "max_concurrency": 4, "max_output_bytes": 1000, "dispatch": "rolling"},
-        "calls": calls, "events": events, "elapsed_ms": elapsed, "diagnostic": null
+        "schema_version": 3, "backend": "deno", "code": "", "status": status,
+        "limits": {"timeout_ms": 10, "max_calls": 32, "max_concurrency": 4, "max_output_bytes": 1000},
+        "calls": calls, "events": events, "provider_facts": [], "provider_facts_dropped": 0,
+        "elapsed_ms": elapsed, "clock": clock(), "bytes": bytes(), "diagnostic": null
     }))
     .expect("report deserializes")
 }
@@ -304,7 +295,8 @@ fn a_run_stopped_before_any_guest_frame_counts_the_rest_as_shutdown() {
 #[test]
 fn hostile_reports_cannot_panic_or_inject_terminal_control() {
     let call = json!([{"call": {"id": 1, "tool": "t", "arguments": {}}, "guest_id": 0,
-        "outcome": {"status": "unknown"}, "admitted_ms": 0, "started_ms": 1, "finished_ms": u64::MAX}]);
+        "outcome": {"status": "unknown"}, "admitted_ms": 0, "started_ms": 1, "finished_ms": u64::MAX,
+        "argument_bytes": 2}]);
     let events = json!([{"id": 1, "call_id": 1, "kind": "unknown", "at_ms": 1,
         "reason": format!("\u{1b}]52;c;{}\u{7}", "z".repeat(10_000))}]);
     let report = minimal("deadline", u64::MAX, call, events);
@@ -334,7 +326,8 @@ fn a_zero_limit_still_says_reconciliation_is_needed() {
 #[test]
 fn an_omitted_provider_error_is_not_reported_as_a_run_tool() {
     let call = json!([{"call": {"id": 1, "tool": "t", "arguments": {}}, "guest_id": 0,
-        "outcome": {"status": "result_too_large"}, "admitted_ms": 0, "started_ms": 1, "finished_ms": 2}]);
+        "outcome": {"status": "result_too_large"}, "admitted_ms": 0, "started_ms": 1, "finished_ms": 2,
+        "argument_bytes": 2}]);
     let events = json!([{"id": 1, "call_id": 1, "kind": "provider_failed", "at_ms": 2}]);
     let inspection = inspect(
         &minimal("output_limit", 3, call, events),
@@ -406,11 +399,10 @@ async fn native_inspection_has_exclusive_host_phases_and_roundtrips_without_gues
 }
 
 #[test]
-fn schema_two_defaults_to_deno_and_preserves_numeric_guest_tokens() {
+fn saved_reports_preserve_numeric_guest_tokens() {
     let report = evidence_report();
-    assert_eq!(report.backend, codemode::ExecutionBackend::Deno);
     assert_eq!(report.calls[0].guest_id, Some(0));
-    let saved = serde_json::to_value(&report).expect("historical report serializes");
+    let saved = serde_json::to_value(&report).expect("report serializes");
     assert_eq!(saved["calls"][0]["guest_id"], 0);
     assert!(
         inspect(&report, &InspectOptions::default())

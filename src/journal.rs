@@ -40,7 +40,7 @@ use crate::recovery::{
 use crate::runtime::{ProviderError, RunReport};
 
 /// The journal format this build reads and writes.
-pub const JOURNAL_FORMAT_VERSION: u32 = 1;
+pub const JOURNAL_FORMAT_VERSION: u32 = 2;
 const FORMAT: &str = "codemode-journal";
 /// Error code of a probe whose answer was never recorded, for example because
 /// the executor was killed while the provider was answering it.
@@ -448,7 +448,7 @@ fn retained_error(error: &ProviderError, retention: Retention) -> ProviderError 
 /// result's size always remain; a result value never does.
 fn retained_observation(observed: Observed, retention: Retention) -> Observed {
     match observed {
-        Observed::Succeeded { bytes, .. } => Observed::Succeeded { value: None, bytes },
+        Observed::Succeeded { bytes } => Observed::Succeeded { bytes },
         Observed::Failed { error, effect } => Observed::Failed {
             error: retained_error(&error, retention),
             effect,
@@ -1334,6 +1334,27 @@ mod tests {
         let before = std::fs::read(&path).expect("read");
         Journal::open(&path, Durability::Storage).expect_err("still tampered");
         assert_eq!(std::fs::read(&path).expect("read"), before);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_journal_from_the_previous_format_is_refused() {
+        let path = scratch("previous-format");
+        drop(Journal::create(&path, &plan(), Durability::Storage).expect("create"));
+        let connection = Connection::open(&path).expect("open");
+        connection
+            .execute(
+                "UPDATE meta SET value = '1' WHERE key = 'format_version'",
+                [],
+            )
+            .expect("downgrade");
+        drop(connection);
+        let error = Journal::open(&path, Durability::Storage).expect_err("previous format");
+        assert!(
+            matches!(error, JournalError::Incompatible { .. }),
+            "{error}"
+        );
+        assert!(error.to_string().contains("format version 1"), "{error}");
         let _ = std::fs::remove_file(&path);
     }
 

@@ -24,10 +24,6 @@ run = [
     "cargo doc --locked --no-deps",
 ]
 
-[tasks.eval]
-description = "Compare sequential, batch, and rolling dispatch on offline fixtures"
-run = "cargo run --release --locked --bin codemode-eval -- --reps 21 --out eval/results"
-
 [tasks.embedded-check]
 description = "Exercise the optional embedded worker and program backend contracts"
 run = "cargo test --locked --features embedded-v8 --test embedded --test backend --test bridge_client"

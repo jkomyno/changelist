@@ -6,9 +6,7 @@
 //! retention policy, and probe evidence the policy kept. It leaves out argument
 //! values, error messages, and notes unless [`JournalInspectOptions::messages`] is
 //! set; the journal holds no result values or provider prose it did not keep, so
-//! `messages` cannot reveal them. In a journal with an approval that predates
-//! retention policies, older facts may hold provider text, so probe evidence is
-//! also printed only with `messages`.
+//! `messages` cannot reveal them.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
@@ -30,8 +28,8 @@ const MAX_TEXT_CHARS: usize = 300;
 /// What [`inspect_journal`] includes.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JournalInspectOptions {
-    /// Include error messages, review and approval notes, and evidence recorded
-    /// before retention policies, as far as the journal kept them.
+    /// Include error messages and review and approval notes, as far as the
+    /// journal kept them.
     pub messages: bool,
 }
 
@@ -75,12 +73,6 @@ pub struct ApprovalSummary {
     pub approval: Approval,
     /// How many approvals were recorded for this plan.
     pub approvals: usize,
-    /// Whether the approval in force binds its retention policy; false for an
-    /// approval that predates retention policies, whose `retention` field is only a default.
-    pub retention_bound: bool,
-    /// Approvals recorded before approvals bound a retention policy. Facts from
-    /// their sessions may hold provider values and messages.
-    pub approvals_without_retention: usize,
 }
 
 /// One session.
@@ -177,9 +169,8 @@ pub struct ProbeLine {
     /// The verdict, or `error`.
     pub verdict: String,
     /// The provider's evidence as kept (empty when the retention policy dropped
-    /// it), or the error code; absent when hidden without `messages`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub evidence: Option<String>,
+    /// it), or the error code.
+    pub evidence: String,
     /// Probe duration.
     pub elapsed_ms: u64,
 }
@@ -253,14 +244,6 @@ fn build(
                 .count(),
         })
         .collect();
-    let without_retention = history
-        .approvals
-        .iter()
-        .filter(|approval| approval.predates_retention())
-        .count();
-    // Evidence kept under an explicit retention policy is the provider's declared
-    // projection; older evidence was never checked against one.
-    let show_evidence = options.messages || without_retention == 0;
     let statuses = assess_history(plan, history, &HashSet::new());
     let mut conclusions = BTreeMap::new();
     let mut next = BTreeMap::new();
@@ -347,7 +330,7 @@ fn build(
                         session: probe.session,
                         keys: probe.keys.len(),
                         verdict: reconciliation.verdict.to_string(),
-                        evidence: show_evidence.then(|| reconciliation.evidence.clone()),
+                        evidence: reconciliation.evidence.clone(),
                         elapsed_ms: probe.elapsed_ms,
                     },
                     Err(error) => ProbeLine {
@@ -355,7 +338,7 @@ fn build(
                         session: probe.session,
                         keys: probe.keys.len(),
                         verdict: "error".into(),
-                        evidence: Some(machine_code(&error.code).to_string()),
+                        evidence: machine_code(&error.code).to_string(),
                         elapsed_ms: probe.elapsed_ms,
                     },
                 })
@@ -407,8 +390,6 @@ fn build(
                 ..approval.clone()
             },
             approvals: history.approvals.len(),
-            retention_bound: !approval.predates_retention(),
-            approvals_without_retention: without_retention,
         }),
         sessions,
         operations,
@@ -502,35 +483,19 @@ impl JournalInspection {
                     policy.attempt_timeout_ms,
                     policy.probe_timeout_ms
                 );
-                if approval.predates_retention() {
-                    let _ = writeln!(
-                        out,
-                        "retention: none bound (this approval predates retention policies)"
-                    );
-                } else {
-                    let _ = writeln!(
-                        out,
-                        "retention {}: {}",
-                        approval.declaration.retention,
-                        match approval.declaration.retention {
-                            Retention::Metadata => {
-                                "outcomes, effects, sizes, verdicts, and error codes; no provider text"
-                            }
-                            Retention::Summary => {
-                                "also the provider's error messages and probe evidence, up to 1 KiB each"
-                            }
+                let _ = writeln!(
+                    out,
+                    "retention {}: {}",
+                    approval.declaration.retention,
+                    match approval.declaration.retention {
+                        Retention::Metadata => {
+                            "outcomes, effects, sizes, verdicts, and error codes; no provider text"
                         }
-                    );
-                }
-                if summary.approvals_without_retention > 0 {
-                    let _ = writeln!(
-                        out,
-                        "warning: {} approval(s) predate retention policies; facts recorded \
-                         under them may hold provider values and messages, and the files may \
-                         still contain them. Their evidence is shown only with --messages",
-                        summary.approvals_without_retention
-                    );
-                }
+                        Retention::Summary => {
+                            "also the provider's error messages and probe evidence, up to 1 KiB each"
+                        }
+                    }
+                );
                 for (tool, contract) in &approval.declaration.contracts {
                     let _ = writeln!(
                         out,
@@ -624,10 +589,9 @@ impl JournalInspection {
             }
             for probe in &operation.probes {
                 let mut out = String::new();
-                let evidence = match probe.evidence.as_deref() {
-                    None => "evidence hidden; use --messages".to_string(),
-                    Some("") => "evidence not retained".to_string(),
-                    Some(evidence) => sanitize(evidence, MAX_TEXT_CHARS),
+                let evidence = match probe.evidence.as_str() {
+                    "" => "evidence not retained".to_string(),
+                    evidence => sanitize(evidence, MAX_TEXT_CHARS),
                 };
                 let _ = write!(
                     out,

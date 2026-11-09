@@ -7,8 +7,7 @@
 //!
 //! Protocol version 2 uses LF-terminated JSON frames. Host frames are at most
 //! [`BRIDGE_FRAME_BYTES`]. The report frame is bounded by the run limits instead:
-//! source, per-call arguments, and the output budget. Version 1 hosts are still
-//! accepted; they cannot send `fact` frames. Host to bridge:
+//! source, per-call arguments, and the output budget. Host to bridge:
 //!
 //! - `{"type":"start","version":2,"code":"...","tools":["read"]}` must be first.
 //!   `tools` is the host's authorization list; the guest never sees this channel.
@@ -18,8 +17,8 @@
 //!   the tool's value or error was observed but cannot fit in a frame. Rust records that as `result_too_large`
 //!   and ends the run with `output_limit`, as for any oversized observed value. An optional
 //!   `"bytes":n` gives the host-measured serialized size; without it the size is unknown.
-//! - `{"type":"fact","id":1,"kind":"executor_started","host_ms":12.5}` (version 2)
-//!   reports a milestone for a running call: `received`, `permission_requested`,
+//! - `{"type":"fact","id":1,"kind":"executor_started","host_ms":12.5}` reports a
+//!   milestone for a running call: `received`, `permission_requested`,
 //!   `permission_granted`, `permission_denied`, or `executor_started`. `host_ms`
 //!   is optional and uses the host's own clock. Rust records facts as host claims,
 //!   stamped with their arrival time; facts for finished calls are ignored.
@@ -58,7 +57,7 @@ use crate::{
     run_prepared,
 };
 
-/// The newest bridge protocol version this build speaks; version 1 is also accepted.
+/// The bridge protocol version this build speaks; start frames for any other version are refused.
 pub const BRIDGE_PROTOCOL_VERSION: u32 = 2;
 /// Maximum bytes in one bridge frame, including its LF terminator.
 pub const BRIDGE_FRAME_BYTES: usize = 1024 * 1024;
@@ -324,7 +323,6 @@ fn reply(
 /// Route host replies and cancellation until the input closes or becomes invalid.
 async fn route<R: AsyncRead + Unpin>(
     mut input: BufReader<R>,
-    version: u32,
     pending: Pending,
     counters: Arc<Counters>,
     cancellation: RunCancellation,
@@ -377,12 +375,6 @@ async fn route<R: AsyncRead + Unpin>(
                     }
                     let _ = sender.send(reply);
                 }
-            }
-            Ok(HostFrame::Fact { .. }) if version < 2 => {
-                break (
-                    RunStatus::ProtocolError,
-                    "fact frames need protocol version 2".into(),
-                );
             }
             Ok(HostFrame::Fact { id, kind, host_ms }) => {
                 // Sent before the result is, so the run loop sees the fact first.
@@ -499,15 +491,15 @@ where
         }
         Err(error) => return Err(error.into()),
     };
-    let (version, code, tools) = match serde_json::from_slice::<HostFrame>(&bytes) {
+    let (code, tools) = match serde_json::from_slice::<HostFrame>(&bytes) {
         Ok(HostFrame::Start {
-            version: version @ (1 | BRIDGE_PROTOCOL_VERSION),
+            version: BRIDGE_PROTOCOL_VERSION,
             code,
             tools,
-        }) => (version, code, tools),
+        }) => (code, tools),
         Ok(HostFrame::Start { version, .. }) => {
             return Err(BridgeError::Protocol(format!(
-                "unsupported protocol version {version}; expected 1 or {BRIDGE_PROTOCOL_VERSION}"
+                "unsupported protocol version {version}; expected {BRIDGE_PROTOCOL_VERSION}"
             )));
         }
         Ok(_) => return Err(BridgeError::Protocol("first frame must be start".into())),
@@ -528,7 +520,6 @@ where
     let failure = Arc::new(Mutex::new(None));
     let router = tokio::spawn(route(
         input,
-        version,
         Arc::clone(&pending),
         Arc::clone(&counters),
         cancellation.clone(),

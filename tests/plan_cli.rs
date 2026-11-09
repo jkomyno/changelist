@@ -1,6 +1,6 @@
 //! Crash and recovery through the real binaries: the executor is killed with
 //! SIGKILL while the fixture provider holds requests, and the fixture's own
-//! ledger checks what actually happened. The legacy Deno setting names no executable.
+//! ledger checks what actually happened.
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -43,6 +43,29 @@ fn plan_preview_escapes_terminal_text_without_changing_the_approved_data() {
     assert_eq!(decoded["digest"], expected.digest().as_str());
     assert_eq!(decoded["summary"], summary);
     assert_eq!(decoded["operations"][0]["argument_keys"][0], key);
+}
+
+#[test]
+fn removed_plan_options_are_unknown() {
+    let cases: &[&[&str]] = &[
+        &["plan", "run", "--deno", "x"],
+        &["plan", "resume", "--deno", "x"],
+        &["plan", "inspect", "--durability", "process"],
+        &["plan", "approve", "--durability", "process"],
+        &["plan", "run", "--durability", "process"],
+        &["plan", "resume", "--durability", "process"],
+        &["plan", "review", "--durability", "process"],
+        &["plan", "trace", "--durability", "process"],
+    ];
+    for args in cases {
+        let output = command(CODEMODE, args).output().expect("starts");
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!("unknown option '{}'", args[2])),
+            "{args:?}: {stderr}"
+        );
+    }
 }
 
 struct Scratch(PathBuf);
@@ -200,8 +223,6 @@ fn session(scratch: &Scratch, kind: &str, account: &str) -> Command {
             path(&fixture),
             "--account",
             account,
-            "--deno",
-            "/codemode-test-no-deno/deno",
         ],
     );
     command.stdout(Stdio::piped()).stderr(Stdio::piped());

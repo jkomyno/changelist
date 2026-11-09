@@ -4,11 +4,9 @@ use std::fs::OpenOptions;
 use std::future::Future;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::task::Poll;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -53,8 +51,6 @@ pub struct RunConfig {
     pub backend: GuestBackend,
     /// Tool names authorized by this host, independently of guest requests.
     pub allowed_tools: Vec<String>,
-    /// How queued calls start when provider slots are free.
-    pub dispatch: DispatchPolicy,
 }
 
 /// Engine used by an isolated arbitrary-program guest.
@@ -74,22 +70,6 @@ pub enum GuestBackend {
     },
 }
 
-/// When an admitted call may start, given the concurrency cap.
-///
-/// A sequential baseline is either policy with `max_concurrency` set to 1.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DispatchPolicy {
-    /// Start a queued call as soon as any active call finishes.
-    #[default]
-    Rolling,
-    /// Start up to the cap only when no call is active, then wait for that whole
-    /// batch. A batch includes every complete call frame the host has received
-    /// when it forms. Calls submitted in one synchronous guest turn arrive in one
-    /// write and share a batch, up to the cap; calls from later turns may not.
-    Batch,
-}
-
 /// The host-chosen limits a run executed under, recorded with its trace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunLimits {
@@ -101,8 +81,6 @@ pub struct RunLimits {
     pub max_concurrency: usize,
     /// Shared serialized response and output byte allowance.
     pub max_output_bytes: usize,
-    /// Dispatch policy under the concurrency cap.
-    pub dispatch: DispatchPolicy,
 }
 
 impl Default for RunConfig {
@@ -117,7 +95,6 @@ impl Default for RunConfig {
             allowed_tools: ["mock.echo", "mock.wait", "mock.fail"]
                 .map(String::from)
                 .to_vec(),
-            dispatch: DispatchPolicy::Rolling,
         }
     }
 }
@@ -172,14 +149,13 @@ pub struct NativeCall {
 }
 
 /// The execution source whose work and lifecycle the report records.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ExecutionBackend {
     /// Host-owned finite calls, with no JavaScript guest.
     Native,
-    /// A restricted Deno subprocess; also the default for historical reports.
-    #[default]
+    /// A restricted Deno subprocess.
     Deno,
     /// A restricted subprocess embedding V8.
     EmbeddedV8,
@@ -457,8 +433,7 @@ pub struct CallRecord {
     pub guest_id: Option<u64>,
     /// Observed result or precise reason no result is known.
     pub outcome: CallOutcome,
-    /// Admission time; absent in schema version 1 reports.
-    #[serde(default)]
+    /// Admission time.
     pub admitted_ms: Option<u64>,
     /// Dispatch time since run start; absent for calls never dispatched.
     pub started_ms: Option<u64>,
@@ -466,16 +441,12 @@ pub struct CallRecord {
     pub finished_ms: Option<u64>,
     /// When the reply frame was completely written to the guest's input. The guest
     /// may not have read it; absent when no reply was delivered.
-    #[serde(default)]
     pub delivered_ms: Option<u64>,
     /// Serialized size of the submitted arguments.
-    #[serde(default)]
     pub argument_bytes: u64,
     /// Serialized size of the observed value or error, including omitted ones.
-    #[serde(default)]
     pub result_bytes: Option<u64>,
     /// Bytes of the reply frame queued for the guest.
-    #[serde(default)]
     pub reply_bytes: Option<u64>,
 }
 
@@ -537,14 +508,13 @@ pub struct ByteTotals {
 pub struct RunReport {
     /// Version of this serialized report format.
     pub schema_version: u32,
-    /// Execution source; absent historical fields deserialize as Deno.
-    #[serde(default)]
+    /// Execution source.
     pub backend: ExecutionBackend,
     /// Exact executed TypeScript source; empty for native execution.
     pub code: String,
     /// Host-selected terminal status.
     pub status: RunStatus,
-    /// Limits and dispatch policy chosen by the host for this run.
+    /// Limits chosen by the host for this run.
     pub limits: RunLimits,
     /// Guest-returned JSON value, when observed within limits; omitted from JSON when absent.
     #[serde(
@@ -558,18 +528,14 @@ pub struct RunReport {
     /// Host-generated events in observation order.
     pub events: Vec<RunEvent>,
     /// Facts the provider reported about dispatched calls, in arrival order.
-    #[serde(default)]
     pub provider_facts: Vec<ProviderFact>,
     /// Provider facts discarded: over the per-call limit, for calls not running, or unbuffered.
-    #[serde(default)]
     pub provider_facts_dropped: u64,
     /// Monotonic elapsed wall-clock milliseconds.
     pub elapsed_ms: u64,
     /// The clock behind every Rust time in this report.
-    #[serde(default)]
     pub clock: ClockInfo,
     /// Bytes moved, retained, and omitted, as Rust observed them.
-    #[serde(default)]
     pub bytes: ByteTotals,
     /// How long the guest had been running before the run started, when it was
     /// started ahead of time with [`PreparedGuest`]; absent when the run started it.
@@ -837,35 +803,6 @@ fn validate_call(call: &ToolCall, config: &RunConfig) -> Result<(), ProviderErro
         }
         _ => Ok(()),
     }
-}
-
-/// Whether [`frame`] can finish now without waiting: a complete frame, end of
-/// input, an error, or an oversized frame is available. Bytes of an incomplete
-/// frame move into `partial`, where [`frame`] resumes, so a guest that stops
-/// mid-frame cannot hold back dispatch.
-async fn frame_ready(
-    reader: &mut (impl AsyncBufRead + Unpin),
-    partial: &mut Vec<u8>,
-    limit: usize,
-) -> bool {
-    std::future::poll_fn(|context| {
-        loop {
-            let count = match Pin::new(&mut *reader).poll_fill_buf(context) {
-                Poll::Pending => return Poll::Ready(false),
-                Poll::Ready(Ok(bytes))
-                    if !bytes.is_empty()
-                        && !bytes.contains(&b'\n')
-                        && partial.len() + bytes.len() <= limit =>
-                {
-                    partial.extend_from_slice(bytes);
-                    bytes.len()
-                }
-                Poll::Ready(_) => return Poll::Ready(true),
-            };
-            Pin::new(&mut *reader).consume(count);
-        }
-    })
-    .await
 }
 
 /// Read one LF-terminated frame of at most `limit` bytes, keeping partial input
@@ -1241,7 +1178,6 @@ async fn execute(
             max_calls: config.max_calls,
             max_concurrency: config.max_concurrency,
             max_output_bytes: config.max_output_bytes,
-            dispatch: config.dispatch,
         },
         output: None,
         calls: Vec::new(),
@@ -1319,22 +1255,8 @@ async fn execute(
                 );
             }
         }
-        // A batch forms only while nothing runs, after every complete call frame
-        // already received is admitted.
-        let slots_open = match config.dispatch {
-            DispatchPolicy::Rolling => true,
-            DispatchPolicy::Batch => {
-                running.is_empty()
-                    && (source_exhausted
-                        || guest_done
-                        || if let Some(output) = &mut output {
-                            !frame_ready(output, &mut partial_frame, FRAME_BYTES).await
-                        } else {
-                            false
-                        })
-            }
-        };
-        while slots_open && !guest_done && running.len() < config.max_concurrency {
+        // A queued call starts as soon as any provider slot is free.
+        while !guest_done && running.len() < config.max_concurrency {
             // Dispatch is linearized at this check; future effects may outlive cancellation.
             if cancellation.is_cancelled() || Instant::now() >= deadline {
                 break;

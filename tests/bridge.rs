@@ -95,7 +95,7 @@ impl Host {
 
     async fn begin(config: RunConfig, code: &str, tools: &[&str]) -> Self {
         let mut host = Self::start(config, RunCancellation::default());
-        host.send(json!({"type":"start","version":1,"code":code,"tools":tools}))
+        host.send(json!({"type":"start","version":2,"code":code,"tools":tools}))
             .await;
         host
     }
@@ -310,10 +310,15 @@ async fn unsupported_start_frames_are_refused_before_any_guest_runs() {
     for (start, expected) in [
         (
             json!({"type":"start","version":3,"code":"return 1;","tools":[]}),
-            "unsupported protocol version",
+            "unsupported protocol version 3; expected 2",
         ),
         (
-            json!({"type":"start","version":1,"code":"return 1;","tools":["a","a"]}),
+            json!({"type":"start","version":1,"code":"return await tools.call('host.read', {});",
+                   "tools":["host.read"]}),
+            "unsupported protocol version 1; expected 2",
+        ),
+        (
+            json!({"type":"start","version":2,"code":"return 1;","tools":["a","a"]}),
             "duplicate tool name",
         ),
         (json!({"type":"cancel"}), "first frame must be start"),
@@ -457,33 +462,6 @@ async fn a_size_without_too_large_is_a_protocol_error() {
     let (_, report) = host.report().await;
     assert_eq!(report.status, RunStatus::ProtocolError, "{report:?}");
     assert_eq!(report.calls[0].outcome, CallOutcome::Unknown);
-}
-
-#[tokio::test]
-async fn version_one_hosts_cannot_send_facts() {
-    let mut host = Host::begin(
-        config(),
-        "return await tools.call('host.read', {});",
-        &["host.read"],
-    )
-    .await;
-    let call = host.next().await;
-    host.send(json!({"type":"fact","id":call["id"],"kind":"received"}))
-        .await;
-    let (_, report) = host.report().await;
-    assert_eq!(report.status, RunStatus::ProtocolError);
-    assert_eq!(
-        report.diagnostic.as_deref(),
-        Some("fact frames need protocol version 2")
-    );
-    assert_eq!(report.calls[0].outcome, CallOutcome::Unknown);
-    // The call ended because of the protocol error, not a host cancellation.
-    let unknown = report
-        .events
-        .iter()
-        .find(|event| event.kind == "unknown")
-        .expect("unknown event");
-    assert_eq!(unknown.reason.as_deref(), Some("protocol_error"));
 }
 
 #[tokio::test]

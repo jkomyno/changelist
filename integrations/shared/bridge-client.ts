@@ -462,8 +462,6 @@ export interface PlanOutcome {
 export interface PlanBridgeRun {
   /** Absolute path of the `codemode` executable. */
   bin: string;
-  /** Legacy setting, accepted but unused by native plan execution. */
-  deno?: string;
   cwd: string;
   /** The approved plan's journal. */
   journal: string;

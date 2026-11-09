@@ -10,7 +10,7 @@
  *                                               confirm each label exists, and read each issue's labels.
  *   run|resume --config <file> --journal <file> Serve one session of an approved plan.
  *
- * Options: --bin <codemode> (codemode on PATH), --deno <path> (accepted, unused),
+ * Options: --bin <codemode> (codemode on PATH),
  * --offline <state.json> (use the offline stand-in instead of the CLI helper),
  * --drop-reply <operation> (fault injection for recovery demonstrations: after
  * the helper reports a successful mutation for that operation, never reply, so
@@ -41,7 +41,7 @@ import {
   target,
 } from "./composio-plan.ts";
 
-const VALUE_OPTIONS = new Set(["config", "journal", "plan", "bin", "deno", "offline", "drop-reply"]);
+const VALUE_OPTIONS = new Set(["config", "journal", "plan", "bin", "offline", "drop-reply"]);
 
 function options(argv: string[]): { command: string; values: Map<string, string> } {
   const [command, ...rest] = argv;

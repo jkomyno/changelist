@@ -29,9 +29,7 @@ Usage:
   codemode plan approve <plan.json> --journal <file> --provider <declaration.json>
                         --digest <sha256:...> --approver <name> [--note <text>] [policy options]
   codemode plan run     --journal <file> (--fixture <fixture.db> --account <name> | --bridge)
-                        [--deno <path>]
   codemode plan resume  --journal <file> (--fixture <fixture.db> --account <name> | --bridge)
-                        [--deno <path>]
   codemode plan inspect --journal <file> [--json] [--messages]
   codemode plan review  --journal <file> --operation <id> --as applied|not-applied
                         --reviewer <name> [--note <text>]
@@ -53,8 +51,7 @@ run and resume act through the offline fixture (--fixture, --account) or, with
 frames (start, authorize, call, reconcile, their replies, cancel, outcome). The
 host's start frame supplies its provider declaration; it authorizes, executes,
 and reconciles operations while Rust keeps the journal. Credentials stay with
-the host. Approved plans run natively; --deno is accepted for compatibility
-and has no effect.
+the host. Approved plans run natively.
 
 Policy options (approve):
   --concurrency <n>          Operations in flight at once (default 4)
@@ -64,9 +61,7 @@ Policy options (approve):
   --probe-timeout-ms <n>     Deadline per probe (default 5000)
   --session-timeout-ms <n>   Deadline per dispatch phase (default 60000)
 
-Every journal command accepts --durability storage|process (default storage:
-each commit asks the OS to flush to storage; process: survives a killed process,
-not a power loss).
+Every journal commit asks the OS to flush to storage before it returns.
 
 Exit status for run and resume: 0 every operation is applied or satisfied;
 3 work remains (a review, or another resume); 4 the session was refused;
@@ -132,14 +127,6 @@ impl Flags {
         }
     }
 
-    fn durability(&self) -> Result<Durability, CliError> {
-        match self.get("--durability") {
-            None | Some("storage") => Ok(Durability::Storage),
-            Some("process") => Ok(Durability::Process),
-            Some(_) => Err(CliError("--durability must be storage or process".into())),
-        }
-    }
-
     fn one_positional(&self, what: &str) -> Result<PathBuf, CliError> {
         match self.positional.as_slice() {
             [path] => Ok(PathBuf::from(path)),
@@ -188,7 +175,6 @@ pub(crate) async fn execute(args: Vec<OsString>) -> Result<u8, Box<dyn Error>> {
                 "--digest",
                 "--approver",
                 "--note",
-                "--durability",
                 "--concurrency",
                 "--max-attempts",
                 "--max-probes",
@@ -198,17 +184,7 @@ pub(crate) async fn execute(args: Vec<OsString>) -> Result<u8, Box<dyn Error>> {
             ],
         )?),
         Some(kind @ ("run" | "resume")) => {
-            let flags = Flags::parse(
-                rest,
-                &[
-                    "--journal",
-                    "--fixture",
-                    "--account",
-                    "--bridge",
-                    "--deno",
-                    "--durability",
-                ],
-            )?;
+            let flags = Flags::parse(rest, &["--journal", "--fixture", "--account", "--bridge"])?;
             let kind = if kind == "run" {
                 SessionKind::Run
             } else {
@@ -216,25 +192,12 @@ pub(crate) async fn execute(args: Vec<OsString>) -> Result<u8, Box<dyn Error>> {
             };
             session(flags, kind).await
         }
-        Some("inspect") => inspect(Flags::parse(
-            rest,
-            &["--journal", "--json", "--messages", "--durability"],
-        )?),
+        Some("inspect") => inspect(Flags::parse(rest, &["--journal", "--json", "--messages"])?),
         Some("review") => review(Flags::parse(
             rest,
-            &[
-                "--journal",
-                "--operation",
-                "--as",
-                "--reviewer",
-                "--note",
-                "--durability",
-            ],
+            &["--journal", "--operation", "--as", "--reviewer", "--note"],
         )?),
-        Some("trace") => trace(Flags::parse(
-            rest,
-            &["--journal", "--session", "--durability"],
-        )?),
+        Some("trace") => trace(Flags::parse(rest, &["--journal", "--session"])?),
         Some(other) => Err(CliError(format!(
             "unknown plan command '{other}'; use codemode plan --help"
         ))
@@ -353,11 +316,10 @@ fn approve(flags: Flags) -> Result<u8, Box<dyn Error>> {
     policy
         .validate()
         .map_err(|error| CliError(error.to_string()))?;
-    let durability = flags.durability()?;
     let mut journal = if journal_path.exists() {
-        Journal::open(&journal_path, durability)?
+        Journal::open(&journal_path, Durability::Storage)?
     } else {
-        Journal::create(&journal_path, &plan, durability)?
+        Journal::create(&journal_path, &plan, Durability::Storage)?
     };
     let declaration = declaration.for_plan(&plan);
     let approval = Approval {
@@ -393,13 +355,7 @@ fn exit_code(outcome: &SessionOutcome) -> u8 {
 }
 
 async fn session(flags: Flags, kind: SessionKind) -> Result<u8, Box<dyn Error>> {
-    let durability = flags.durability()?;
-    let options = SessionOptions {
-        kind,
-        deno: flags
-            .get("--deno")
-            .map_or_else(|| "deno".into(), PathBuf::from),
-    };
+    let options = SessionOptions { kind };
     if flags.has("--bridge") {
         if flags.has("--fixture") || flags.has("--account") {
             return Err(CliError(
@@ -408,9 +364,9 @@ async fn session(flags: Flags, kind: SessionKind) -> Result<u8, Box<dyn Error>> 
             )
             .into());
         }
-        return bridge_session(flags.require("--journal")?, durability, options).await;
+        return bridge_session(flags.require("--journal")?, options).await;
     }
-    let journal = Journal::open(flags.require("--journal")?, durability)?;
+    let journal = Journal::open(flags.require("--journal")?, Durability::Storage)?;
     let provider = FixtureProvider::open(flags.require("--fixture")?, flags.require("--account")?)?;
     let cancellation = RunCancellation::default();
     let signal_task = cancel_on_interrupt(&cancellation);
@@ -433,12 +389,8 @@ async fn session(flags: Flags, kind: SessionKind) -> Result<u8, Box<dyn Error>> 
 }
 
 /// Serve one session over stdio with the host as provider. stdout carries only frames.
-async fn bridge_session(
-    journal: &str,
-    durability: Durability,
-    options: SessionOptions,
-) -> Result<u8, Box<dyn Error>> {
-    let journal = match Journal::open(journal, durability) {
+async fn bridge_session(journal: &str, options: SessionOptions) -> Result<u8, Box<dyn Error>> {
+    let journal = match Journal::open(journal, Durability::Storage) {
         Ok(journal) => journal,
         Err(error) => {
             print_json(&serde_json::json!({"type": "error", "message": error.to_string()}))?;
@@ -467,7 +419,7 @@ async fn bridge_session(
 }
 
 fn inspect(flags: Flags) -> Result<u8, Box<dyn Error>> {
-    let journal = Journal::open(flags.require("--journal")?, flags.durability()?)?;
+    let journal = Journal::open(flags.require("--journal")?, Durability::Storage)?;
     let options = JournalInspectOptions {
         messages: flags.has("--messages"),
     };
@@ -481,7 +433,7 @@ fn inspect(flags: Flags) -> Result<u8, Box<dyn Error>> {
 }
 
 fn review(flags: Flags) -> Result<u8, Box<dyn Error>> {
-    let mut journal = Journal::open(flags.require("--journal")?, flags.durability()?)?;
+    let mut journal = Journal::open(flags.require("--journal")?, Durability::Storage)?;
     let resolution = match flags.require("--as")? {
         "applied" => Resolution::Applied,
         "not-applied" => Resolution::NotApplied,
@@ -499,7 +451,7 @@ fn review(flags: Flags) -> Result<u8, Box<dyn Error>> {
 }
 
 fn trace(flags: Flags) -> Result<u8, Box<dyn Error>> {
-    let journal = Journal::open(flags.require("--journal")?, flags.durability()?)?;
+    let journal = Journal::open(flags.require("--journal")?, Durability::Storage)?;
     let session: u64 = flags
         .require("--session")?
         .parse()

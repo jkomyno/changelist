@@ -110,19 +110,18 @@ mod enabled {
     }
 
     #[tokio::test]
-    async fn same_turn_batch_submission_and_output_budget_use_parent_controls() {
+    async fn same_turn_submission_and_output_budget_use_parent_controls() {
         let report = run(
             "return await Promise.all([60,0,0,0].map(ms => tools.call('mock.wait',{ms})));",
             RunConfig {
                 max_concurrency: 2,
-                dispatch: codemode::DispatchPolicy::Batch,
                 ..config()
             },
             MockProvider,
             RunCancellation::default(),
         )
         .await
-        .expect("batch report");
+        .expect("rolling report");
         assert_eq!(report.status, RunStatus::Success, "{report:?}");
         let event = |id, kind: &str| {
             report
@@ -131,8 +130,9 @@ mod enabled {
                 .position(|event| event.call_id == Some(id) && event.kind == kind)
                 .expect("event")
         };
+        // A freed slot is refilled while the slow call still runs.
         assert!(event(2, "dispatched") < event(1, "succeeded"));
-        assert!(event(3, "dispatched") > event(1, "succeeded"));
+        assert!(event(3, "dispatched") < event(1, "succeeded"));
         let limited = run(
             "return await tools.call('mock.echo', 'x'.repeat(100));",
             RunConfig {

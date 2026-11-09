@@ -112,7 +112,7 @@ fn bridge_subcommand_speaks_the_host_protocol_over_process_stdio() {
     let mut input = child.stdin.take().expect("stdin is piped");
     let mut output = BufReader::new(child.stdout.take().expect("stdout is piped"));
     let mut line = String::new();
-    let start = json!({"type":"start","version":1,"tools":["host.add"],
+    let start = json!({"type":"start","version":2,"tools":["host.add"],
         "code":"return await tools.call('host.add', {a: 2, b: 40});"});
     writeln!(input, "{start}").expect("start frame is writable");
     output.read_line(&mut line).expect("call frame is readable");

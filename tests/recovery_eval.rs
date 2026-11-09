@@ -24,8 +24,6 @@ fn recovery_evaluation_checks_every_strategy_and_mode() {
         ])
         .arg("--bin")
         .arg(env!("CARGO_BIN_EXE_codemode"))
-        .arg("--deno")
-        .arg(results.join("nonexistent-deno"))
         .arg("--out")
         .arg(&results)
         .output()

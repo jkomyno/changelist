@@ -127,36 +127,6 @@ async fn rolling_refills_before_a_held_call_and_never_exceeds_the_cap() {
 }
 
 #[tokio::test]
-async fn batch_waits_for_all_active_calls_then_drains_the_remaining_input() {
-    let calls = [80, 0, 0, 0].map(|ms| NativeCall {
-        tool: "mock.wait".into(),
-        arguments: json!({"ms": ms}),
-    });
-    let report = run_calls(
-        &calls,
-        RunConfig {
-            max_concurrency: 2,
-            dispatch: codemode::DispatchPolicy::Batch,
-            ..config()
-        },
-        MockProvider,
-        RunCancellation::default(),
-    )
-    .await
-    .expect("batch execution completes");
-    assert_eq!(report.status, RunStatus::Success, "{report:?}");
-    assert!(position(&report, 2, "dispatched") < position(&report, 1, "succeeded"));
-    assert!(position(&report, 3, "dispatched") > position(&report, 1, "succeeded"));
-    assert!(position(&report, 4, "dispatched") < position(&report, 3, "succeeded"));
-    assert!(
-        report
-            .calls
-            .iter()
-            .all(|call| matches!(call.outcome, CallOutcome::Succeeded { .. }))
-    );
-}
-
-#[tokio::test]
 async fn authorization_and_argument_rejections_consume_the_same_call_allowance() {
     let calls = [
         NativeCall {
@@ -393,7 +363,6 @@ async fn provider_panic_does_not_invent_a_known_failure_outcome() {
         &[echo(1), echo(2), echo(3)],
         RunConfig {
             max_concurrency: 1,
-            dispatch: codemode::DispatchPolicy::Batch,
             ..config()
         },
         PanicProvider,

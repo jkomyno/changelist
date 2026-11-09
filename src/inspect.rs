@@ -45,7 +45,7 @@ impl Default for InspectOptions {
 pub struct Inspection {
     /// The report's schema version.
     pub schema_version: u32,
-    /// Execution source, including the historical default of Deno.
+    /// Execution source.
     pub backend: ExecutionBackend,
     /// Terminal run status.
     pub status: RunStatus,
@@ -292,10 +292,14 @@ impl Sections {
 /// ```
 /// use codemode::{InspectOptions, RunReport, Sections, inspect};
 /// let report: RunReport = serde_json::from_str(r#"{
-///   "schema_version": 2, "code": "return 1;", "status": "success",
+///   "schema_version": 3, "backend": "deno", "code": "return 1;", "status": "success",
 ///   "limits": {"timeout_ms": 5000, "max_calls": 32, "max_concurrency": 4,
-///              "max_output_bytes": 262144, "dispatch": "rolling"},
-///   "output": 1, "calls": [], "events": [], "elapsed_ms": 40, "diagnostic": null
+///              "max_output_bytes": 262144},
+///   "output": 1, "calls": [], "events": [], "provider_facts": [],
+///   "provider_facts_dropped": 0, "elapsed_ms": 40,
+///   "clock": {"origin": "run_start", "source": "rust_monotonic", "unit": "ms_floor"},
+///   "bytes": {"from_guest": 0, "to_guest": 0, "retained": 0, "omitted": 0},
+///   "diagnostic": null
 /// }"#)?;
 /// let text = inspect(&report, &InspectOptions::default()).render(Sections::ALL);
 /// assert!(text.contains("status success"));
@@ -322,17 +326,6 @@ pub fn inspect(report: &RunReport, options: &InspectOptions) -> Inspection {
         calls: calls(report, &evidence, options),
         reconcile: reconcile(report, &evidence, options),
     }
-}
-
-/// Admission time, from the call record or, in schema 1 reports, its event.
-fn admitted(report: &RunReport, record: &CallRecord) -> Option<u64> {
-    record.admitted_ms.or_else(|| {
-        report
-            .events
-            .iter()
-            .find(|event| event.call_id == Some(record.call.id) && event.kind == "admitted")
-            .map(|event| event.at_ms)
-    })
 }
 
 fn facts(report: &RunReport, call_id: u64) -> impl Iterator<Item = (ProviderFactKind, u64)> + '_ {
@@ -398,7 +391,7 @@ const PHASES: [(&str, &str); 7] = [
     ),
     (
         "queued_by_policy",
-        "calls waiting while a slot was free: a batch barrier, or dispatch latency",
+        "calls waiting while a slot was free: dispatch latency",
     ),
     (
         "draining",
@@ -444,7 +437,7 @@ fn timing(report: &RunReport, options: &InspectOptions) -> Timing {
         .calls
         .iter()
         .map(|r| Span {
-            admitted: admitted(report, r),
+            admitted: r.admitted_ms,
             left_queue: r.started_ms.or(r.finished_ms),
             started: r.started_ms,
             finished: r.finished_ms,
@@ -517,7 +510,7 @@ fn timing(report: &RunReport, options: &InspectOptions) -> Timing {
             ("scheduler", ms[0].saturating_add(ms[1]), "host admission and scheduling with no provider call active"),
             ("tools", ms[2], "provider calls running and none waiting to start"),
             ("queued_at_cap", ms[3], "calls waiting because every concurrency slot was busy"),
-            ("queued_by_policy", ms[4], "calls waiting while a slot was free: a batch barrier, or dispatch latency"),
+            ("queued_by_policy", ms[4], "calls waiting while a slot was free: dispatch latency"),
             ("shutdown", ms[5].saturating_add(ms[6]), "after native execution stopped: settling calls, stopping provider tasks, and finishing the report"),
         ].into_iter().map(|(name, ms, meaning)| Phase { name, ms, meaning }).collect()
     } else {
@@ -550,7 +543,7 @@ fn timing(report: &RunReport, options: &InspectOptions) -> Timing {
             Some(
                 r.started_ms
                     .or(r.finished_ms)?
-                    .saturating_sub(admitted(report, r)?),
+                    .saturating_sub(r.admitted_ms?),
             )
         })
         .fold(0, u64::saturating_add);
@@ -598,7 +591,7 @@ fn call_timing(report: &RunReport, record: &CallRecord) -> CallTiming {
         id: record.call.id,
         tool: sanitize(&record.call.tool, MAX_NAME_CHARS),
         queued_ms: started
-            .zip(admitted(report, record))
+            .zip(record.admitted_ms)
             .map(|(s, a)| s.saturating_sub(a)),
         before_executor_ms: executor.zip(started).map(|(e, s)| e.saturating_sub(s)),
         permission_ms: permission_ms(report, record),
@@ -794,12 +787,6 @@ impl Inspection {
             ExecutionBackend::EmbeddedV8 => "embedded_v8",
         };
         let _ = writeln!(out, "backend {backend}");
-        if self.schema_version < 2 {
-            let _ = writeln!(
-                out,
-                "schema 1 report: no delivery times, byte counts, run-level events, or provider facts; startup and shutdown cannot be separated"
-            );
-        }
         if let Some(diagnostic) = &self.diagnostic {
             let _ = writeln!(out, "diagnostic: {diagnostic}");
         }

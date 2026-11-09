@@ -1,9 +1,9 @@
-//! Approval identity remains compatible when dependencies enable JSON map features.
+//! Pinned plan and format-3 approval digests stay stable under JSON map features.
 
-use codemode::{Approval, Digest, Plan, ProviderDeclaration, RecoveryPolicy, approval_binding};
+use codemode::{Plan, ProviderDeclaration, RecoveryPolicy, approval_binding};
 
 #[test]
-fn plans_and_both_approval_formats_match_historical_canonical_vectors() {
+fn plans_and_approvals_match_pinned_canonical_vectors() {
     let plan = Plan::parse(r#"{"version":1,"operations":[{"id":"a","tool":"t","scope":{"provider":"p","account":"x"},"arguments":{"z":[{"b":2,"a":1}],"issue":1,"label":"bug"}}]}"#)
         .expect("plan");
     let declaration: ProviderDeclaration = serde_json::from_str(r#"{"provider":"p","account":"x","contracts":{"t":{"repeat":"unsafe","reconcile":"none"}},"retention":"metadata/1"}"#).expect("declaration");
@@ -26,21 +26,8 @@ fn plans_and_both_approval_formats_match_historical_canonical_vectors() {
     );
     assert_eq!(
         approval_binding(plan.digest(), &declaration, &policy).as_str(),
-        "sha256:d2fcef73cc86e69d4f7d55957a6925aa174b67529f080b9506f36d9e29f0d5e6"
+        "sha256:7fb639beec9ffae990c759117549bf308a8a7b7675ebde3c1f8069d28a147abd"
     );
-    let legacy = Approval {
-        binding: serde_json::from_str::<Digest>(
-            "\"sha256:64087352c90ab354c722c0ee5284aa73b5e8db84daf78bd4196a03f5f8999a08\"",
-        )
-        .expect("digest"),
-        plan: plan.digest().clone(),
-        declaration,
-        policy,
-        approver: "test".into(),
-        note: None,
-        approved_unix_ms: 0,
-    };
-    assert!(legacy.predates_retention());
 }
 
 #[test]

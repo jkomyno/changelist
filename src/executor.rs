@@ -13,7 +13,6 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
-use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -30,8 +29,8 @@ use crate::recovery::{
     approval_binding, assess, machine_code,
 };
 use crate::runtime::{
-    CallContext, DispatchPolicy, NativeCall, ProviderError, RunCancellation, RunConfig, RunError,
-    RunReport, ToolCall, ToolProvider, millis, run_calls,
+    CallContext, NativeCall, ProviderError, RunCancellation, RunConfig, RunError, RunReport,
+    ToolCall, ToolProvider, millis, run_calls,
 };
 
 /// Process settings for a session that are not part of the approval.
@@ -39,15 +38,12 @@ use crate::runtime::{
 pub struct SessionOptions {
     /// `run` for the first session, `resume` afterwards.
     pub kind: SessionKind,
-    /// Legacy executable setting, accepted but unused by native plan execution.
-    pub deno: PathBuf,
 }
 
 impl Default for SessionOptions {
     fn default() -> Self {
         Self {
             kind: SessionKind::Run,
-            deno: PathBuf::from("deno"),
         }
     }
 }
@@ -509,13 +505,6 @@ fn check_approval(
             approved.provider, approved.account, current.provider, current.account
         ));
     }
-    if approval.predates_retention() {
-        return Err(
-            "this approval predates retention policies and binds none; review the plan and \
-             approve it again (facts recorded under it are kept as they are)"
-                .into(),
-        );
-    }
     if current.retention != approved.retention {
         return Err(format!(
             "the provider's retention policy changed since approval (approved {}, now {}); \
@@ -676,33 +665,6 @@ async fn probe<P: RecoverableProvider>(
     Ok(probed)
 }
 
-/// The trusted program a session runs to offer operations to the runtime's
-/// scheduler, given each operation's identity and tool, in order.
-///
-/// It names operations only; their arguments never pass through the guest, and
-/// all calls are submitted together so the rolling scheduler sees them at once.
-///
-/// # Examples
-///
-/// ```
-/// let program = codemode::dispatcher_program([("label-101", "issues.add_label")]);
-/// assert!(program.contains(r#"["label-101","issues.add_label"]"#));
-/// ```
-pub fn dispatcher_program<'op>(
-    operations: impl IntoIterator<Item = (&'op str, &'op str)>,
-) -> String {
-    let list: Vec<Value> = operations
-        .into_iter()
-        .map(|(operation, tool)| json!([operation, tool]))
-        .collect();
-    format!(
-        "const operations = {};\n\
-         const settled = await Promise.allSettled(operations.map(([operation, tool]) => tools.call(tool, {{ operation }})));\n\
-         return {{ offered: settled.length, failed: settled.filter((result) => result.status === \"rejected\").length }};\n",
-        Value::Array(list)
-    )
-}
-
 async fn dispatch_run<P: RecoverableProvider>(
     journal: &Shared,
     provider: &Arc<P>,
@@ -728,7 +690,6 @@ async fn dispatch_run<P: RecoverableProvider>(
         max_calls: operations.len(),
         max_concurrency: policy.concurrency,
         allowed_tools: tools.into_iter().collect(),
-        dispatch: DispatchPolicy::Rolling,
         ..RunConfig::default()
     };
     let journal_id = journal.id();
@@ -851,7 +812,6 @@ impl<P: RecoverableProvider> ToolProvider for JournalingProvider<P> {
             match time::timeout_at(deadline, self.provider.execute(attempt, context)).await {
                 Ok(Ok(value)) => Observed::Succeeded {
                     bytes: serde_json::to_vec(&value).map_or(0, |bytes| bytes.len() as u64),
-                    value: Some(value),
                 },
                 Ok(Err(error)) => Observed::Failed {
                     error: error.error,
@@ -889,6 +849,7 @@ mod tests {
     //! The execute future is polled by hand, so "the provider has not been entered"
     //! is checked after every step that could reach it, never after a sleep.
 
+    use std::path::PathBuf;
     use std::pin::pin;
     use std::sync::mpsc;
     use std::task::{Context, Poll, Waker};

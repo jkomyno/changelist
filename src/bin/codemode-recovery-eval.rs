@@ -28,7 +28,7 @@
 //! ```text
 //! cargo build --release --locked --bin codemode
 //! cargo run --release --locked --bin codemode-recovery-eval -- \
-//!     [--reps N] [--warmup N] [--latency 0,25] [--large N] [--out DIR] [--deno PATH] [--bin PATH]
+//!     [--reps N] [--warmup N] [--latency 0,25] [--large N] [--out DIR] [--bin PATH]
 //! ```
 
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -40,11 +40,11 @@ use std::time::{Duration, Instant};
 
 use codemode::fixture::{FaultMode, Fixture, FixtureProvider, Ledger, Seed, State};
 use codemode::{
-    Approval, Attempt, CallContext, CallOutcome, Conclusion, Digest, DispatchPolicy, Durability,
-    ExecutionBackend, FrozenPlan, Journal, NativeCall, NextStep, Operation, Plan, ProbeContext,
-    ProviderError, RecoverableProvider, RecoveryPolicy, RunCancellation, RunConfig, RunReport,
-    SessionKind, SessionOptions, ToolCall, ToolProvider, approval_binding, assess_history,
-    run_calls, run_session,
+    Approval, Attempt, CallContext, CallOutcome, Conclusion, Digest, Durability, ExecutionBackend,
+    FrozenPlan, Journal, NativeCall, NextStep, Operation, Plan, ProbeContext, ProviderError,
+    RecoverableProvider, RecoveryPolicy, RunCancellation, RunConfig, RunReport, SessionKind,
+    SessionOptions, ToolCall, ToolProvider, approval_binding, assess_history, run_calls,
+    run_session,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -90,7 +90,7 @@ const HELP: &str = "codemode-recovery-eval — compare recovery strategies after
 
 Usage:
   codemode-recovery-eval [--reps N] [--warmup N] [--latency LIST] [--large N]
-                         [--out DIR] [--deno PATH] [--bin PATH]
+                         [--out DIR] [--bin PATH]
 
 Options:
   --reps <n>         Measured repetitions (default: 15)
@@ -98,7 +98,6 @@ Options:
   --latency <list>   Fixture latency profiles in ms, comma-separated (default: 0,25)
   --large <n>        Operations in the extra label-only overhead plan; 0 skips it (default: 64)
   --out <dir>        Also write summary.json
-  --deno <path>      Legacy option, accepted but unused by native execution
   --bin <path>       codemode executable that is killed mid-run
                      (default: codemode next to this executable)
   -h, --help         Show this help
@@ -350,7 +349,6 @@ async fn runtime_run(
     fixture: &Path,
     key_prefix: String,
     number: u32,
-    deno: &Path,
 ) -> Result<RunReport, Box<dyn Error>> {
     let calls: Vec<NativeCall> = operations
         .iter()
@@ -364,9 +362,7 @@ async fn runtime_run(
         timeout_ms: RUN_TIMEOUT_MS,
         max_calls: operations.len(),
         max_concurrency: CONCURRENCY,
-        deno: deno.to_owned(),
         allowed_tools: tools.into_iter().collect(),
-        dispatch: DispatchPolicy::Rolling,
         ..RunConfig::default()
     };
     let provider = PlainProvider {
@@ -412,8 +408,7 @@ async fn crash(
         .arg(dir.join("j.db"))
         .arg("--fixture")
         .arg(&fixture_path)
-        .args(["--account", ACCOUNT, "--deno"])
-        .arg(&args.deno)
+        .args(["--account", ACCOUNT])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -584,7 +579,6 @@ async fn recover(
     dir: &Path,
     plan: &FrozenPlan,
     record: &mut RecoveryRun,
-    args: &Args,
 ) -> Result<(), Box<dyn Error>> {
     let started = Instant::now();
     match strategy {
@@ -627,7 +621,6 @@ async fn recover(
                 &dir.join("fx.db"),
                 format!("blind-{}", record.repetition),
                 2,
-                &args.deno,
             )
             .await?;
             record.recovery_us = micros(started.elapsed());
@@ -654,7 +647,6 @@ async fn recover(
             let provider = FixtureProvider::open(dir.join("fx.db"), ACCOUNT)?;
             let options = SessionOptions {
                 kind: SessionKind::Resume,
-                deno: args.deno.clone(),
             };
             let outcome =
                 run_session(journal, provider, options, RunCancellation::default()).await?;
@@ -743,7 +735,6 @@ async fn overhead_run(
     latency_ms: u64,
     mode: Mode,
     (repetition, order): (usize, usize),
-    deno: &Path,
 ) -> Result<OverheadRun, Box<dyn Error>> {
     let plan = &workload.plan;
     prepare(dir, plan, latency_ms, mode.durability())?;
@@ -771,8 +762,7 @@ async fn overhead_run(
     match mode.durability() {
         None => {
             let operations = plan.plan().operations.clone();
-            let report =
-                runtime_run(operations, &dir.join("fx.db"), "runtime".into(), 1, deno).await?;
+            let report = runtime_run(operations, &dir.join("fx.db"), "runtime".into(), 1).await?;
             record.total_us = micros(started.elapsed());
             record.dispatch_ms = report.elapsed_ms;
             record.backend = Some(report.backend);
@@ -790,7 +780,6 @@ async fn overhead_run(
             let provider = FixtureProvider::open(dir.join("fx.db"), ACCOUNT)?;
             let options = SessionOptions {
                 kind: SessionKind::Run,
-                deno: deno.to_owned(),
             };
             let outcome =
                 run_session(journal, provider, options, RunCancellation::default()).await?;
@@ -1336,7 +1325,6 @@ struct Args {
     latencies: Vec<u64>,
     large: usize,
     out: Option<PathBuf>,
-    deno: PathBuf,
     bin: PathBuf,
 }
 
@@ -1356,7 +1344,6 @@ fn parse_args() -> Result<Option<Args>, String> {
         latencies: vec![0, 25],
         large: 64,
         out: None,
-        deno: PathBuf::from("deno"),
         bin: default_bin(),
     };
     let mut input = std::env::args_os().skip(1);
@@ -1364,7 +1351,7 @@ fn parse_args() -> Result<Option<Args>, String> {
         let flag = flag.to_string_lossy().into_owned();
         match flag.as_str() {
             "-h" | "--help" => return Ok(None),
-            "--reps" | "--warmup" | "--latency" | "--large" | "--out" | "--deno" | "--bin" => {}
+            "--reps" | "--warmup" | "--latency" | "--large" | "--out" | "--bin" => {}
             _ => return Err(format!("unknown option '{flag}'; use --help for usage")),
         }
         let value = input
@@ -1387,7 +1374,6 @@ fn parse_args() -> Result<Option<Args>, String> {
                     .map_err(|_| "--latency requires comma-separated milliseconds".to_string())?;
             }
             "--out" => args.out = Some(PathBuf::from(value)),
-            "--deno" => args.deno = PathBuf::from(value),
             _ => args.bin = PathBuf::from(value),
         }
     }
@@ -1471,7 +1457,7 @@ async fn recovery_round(
     for (order, strategy) in rotation(STRATEGIES, round).enumerate() {
         let dir = scratch.0.join(format!("{strategy:?}"));
         let mut record = RecoveryRun::new(latency_ms, strategy, repetition, order);
-        recover(strategy, &dir, plan, &mut record, args).await?;
+        recover(strategy, &dir, plan, &mut record).await?;
         runs.push(record);
     }
     Ok((runs, crash_failures))
@@ -1569,7 +1555,6 @@ async fn evaluate() -> Result<ExitCode, Box<dyn Error>> {
                         latency,
                         mode,
                         (repetition.unwrap_or(0), order),
-                        &args.deno,
                     )
                     .await?;
                     if let Some(repetition) = repetition {

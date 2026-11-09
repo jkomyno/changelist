@@ -33,10 +33,7 @@ fn journal_path() -> PathBuf {
 }
 
 fn options(kind: SessionKind) -> SessionOptions {
-    SessionOptions {
-        kind,
-        deno: "/codemode-test-no-deno/deno".into(),
-    }
+    SessionOptions { kind }
 }
 
 #[derive(Clone, Copy)]

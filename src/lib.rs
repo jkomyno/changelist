@@ -35,7 +35,7 @@ pub use bridge::{BRIDGE_FRAME_BYTES, BRIDGE_PROTOCOL_VERSION, BridgeError, serve
 pub use embedded::{EmbeddedWorkerError, run_embedded_worker};
 pub use executor::{
     OperationStatus, SessionError, SessionOptions, SessionOutcome, SessionTiming, assess_history,
-    dispatcher_program, run_session,
+    run_session,
 };
 pub use inspect::{
     CallRow, CallTiming, Calls, Evidence, InspectOptions, Inspection, Phase, Reconcile,
@@ -57,16 +57,14 @@ pub use plan_inspect::{
     PlanSummary, ProbeLine, ReviewLine, SessionSummary, inspect_journal,
 };
 pub use recovery::{
-    Approval, Assessment, Attempt, AttemptError, Basis, Conclusion, DeclarationError, Fact,
+    Approval, Assessment, Attempt, AttemptError, Basis, Conclusion, DeclarationError,
     FailureEffect, NextStep, Observed, PolicyError, ProbeContext, ProviderDeclaration,
     ReconcileMethod, Reconciliation, RecoverableProvider, RecoveryContract, RecoveryPolicy,
-    RepeatSafety, Resolution, Retention, UNRECOGNIZED_CODE, Verdict, approval_binding, assess,
-    machine_code,
+    RepeatSafety, Resolution, Retention, UNRECOGNIZED_CODE, Verdict, approval_binding,
 };
 pub use runtime::{
-    BridgeTotals, ByteTotals, CallContext, CallOutcome, CallRecord, ClockInfo, DispatchPolicy,
-    ExecutionBackend, FactSink, GuestBackend, MockProvider, NativeCall, PreparedGuest,
-    ProviderError, ProviderFact, ProviderFactKind, REPORT_SCHEMA_VERSION, RunCancellation,
-    RunConfig, RunError, RunEvent, RunLimits, RunReport, RunStatus, ToolCall, ToolProvider, run,
-    run_calls, run_prepared,
+    BridgeTotals, ByteTotals, CallContext, CallOutcome, CallRecord, ClockInfo, ExecutionBackend,
+    FactSink, GuestBackend, MockProvider, NativeCall, PreparedGuest, ProviderError, ProviderFact,
+    ProviderFactKind, REPORT_SCHEMA_VERSION, RunCancellation, RunConfig, RunError, RunEvent,
+    RunLimits, RunReport, RunStatus, ToolCall, ToolProvider, run, run_calls, run_prepared,
 };
