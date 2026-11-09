@@ -131,7 +131,7 @@ impl Flags {
     fn json_value(&self, name: &str) -> Result<Option<Value>, Failure> {
         self.optional(name)?
             .map(|text| {
-                serde_json::from_str(text).map_err(|error| usage(format!("--{name}: {error}")))
+                codemode::parse_json(text).map_err(|error| usage(format!("--{name}: {error}")))
             })
             .transpose()
     }

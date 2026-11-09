@@ -23,6 +23,7 @@ mod executor;
 pub mod fixture;
 mod inspect;
 mod journal;
+mod json;
 mod plan;
 mod plan_bridge;
 mod plan_inspect;
@@ -45,6 +46,7 @@ pub use journal::{
     ObservationRecord, ProbeRecord, ReviewRecord, SessionEnd, SessionKind, SessionRecord,
     UNANSWERED,
 };
+pub use json::{parse_json, value as deserialize_json};
 pub use plan::{
     Digest, FrozenPlan, MAX_ARGUMENT_BYTES, MAX_OPERATIONS, MAX_PLAN_BYTES, Operation,
     PLAN_FORMAT_VERSION, Plan, PlanError, Scope,

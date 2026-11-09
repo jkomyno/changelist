@@ -339,8 +339,9 @@ fn approve_retention(declaration: &Value, legacy: bool) -> PathBuf {
     let binding = if legacy {
         let mut old = declaration.clone();
         old.as_object_mut().expect("object").remove("retention");
-        let value = json!({"format": "codemode-approval/1", "plan": plan.digest(),
+        let mut value = json!({"format": "codemode-approval/1", "plan": plan.digest(),
                            "declaration": old, "policy": policy});
+        value.sort_all_objects();
         codemode::Digest::of(value.to_string().as_bytes())
     } else {
         approval_binding(plan.digest(), &parsed, &policy)

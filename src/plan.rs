@@ -77,10 +77,15 @@ pub struct Operation {
     /// The provider account the operation acts through, and its destination.
     pub scope: Scope,
     /// JSON object passed to the provider; at most [`MAX_ARGUMENT_BYTES`] serialized.
+    #[serde(deserialize_with = "crate::json::value")]
     pub arguments: Value,
     /// Provider-defined conditions the provider must check when it applies the
     /// operation, for example that an issue is still open. Each is a JSON object.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::json::values"
+    )]
     pub preconditions: Vec<Value>,
 }
 
@@ -294,16 +299,14 @@ impl Plan {
     /// The same as [`Plan::parse`], except for JSON syntax.
     pub fn freeze(self) -> Result<FrozenPlan, PlanError> {
         self.validate()?;
-        // Through `Value`, whose maps are sorted, so key order never depends on input.
         let value = serde_json::to_value(&self).map_err(|e| PlanError::Format(e.to_string()))?;
-        let canonical =
-            serde_json::to_string(&value).map_err(|e| PlanError::Format(e.to_string()))?;
+        let canonical = canonical_json(value);
         // A journal stores this text and reads it back to recover: refuse a plan it
         // could not read, whether too large or nested too deeply for the parser.
         if canonical.len() > MAX_PLAN_BYTES {
             return Err(PlanError::TooLarge);
         }
-        serde_json::from_str::<Value>(&canonical).map_err(|error| {
+        serde_json::from_str::<Self>(&canonical).map_err(|error| {
             PlanError::Format(format!("the canonical plan cannot be read back: {error}"))
         })?;
         let digest = Digest::of(canonical.as_bytes());
@@ -346,6 +349,11 @@ impl Plan {
         }
         Ok(())
     }
+}
+
+pub(crate) fn canonical_json(mut value: Value) -> String {
+    value.sort_all_objects();
+    value.to_string()
 }
 
 impl Operation {

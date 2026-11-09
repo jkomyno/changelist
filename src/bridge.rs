@@ -105,7 +105,7 @@ impl From<io::Error> for BridgeError {
 pub(crate) fn present<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Value>, D::Error> {
-    Value::deserialize(deserializer).map(Some)
+    crate::json::value(deserializer).map(Some)
 }
 
 #[derive(Debug, Deserialize)]

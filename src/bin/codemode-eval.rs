@@ -111,7 +111,7 @@ enum OutputExpectation {
     /// The report must have no `output` field.
     Absent,
     /// The report's output must equal this value exactly (`null` included).
-    Equals(Value),
+    Equals(#[serde(deserialize_with = "codemode::deserialize_json")] Value),
 }
 
 fn load_manifest(path: &Path) -> Result<(Vec<Fixture>, Vec<String>), Box<dyn Error>> {

@@ -167,6 +167,7 @@ pub struct NativeCall {
     /// Tool name to check against the host's allowance.
     pub tool: String,
     /// JSON arguments, validated before provider dispatch.
+    #[serde(deserialize_with = "crate::json::value")]
     pub arguments: Value,
 }
 
@@ -192,6 +193,7 @@ pub struct ToolCall {
     /// Authorized tool name.
     pub tool: String,
     /// JSON arguments; mock-tool argument contracts are checked before dispatch.
+    #[serde(deserialize_with = "crate::json::value")]
     pub arguments: Value,
 }
 
@@ -422,6 +424,7 @@ pub enum CallOutcome {
     /// The provider returned a value observed by the host.
     Succeeded {
         /// Returned JSON value.
+        #[serde(deserialize_with = "crate::json::value")]
         value: Value,
     },
     /// The provider returned an error observed by the host.
@@ -544,7 +547,11 @@ pub struct RunReport {
     /// Limits and dispatch policy chosen by the host for this run.
     pub limits: RunLimits,
     /// Guest-returned JSON value, when observed within limits; omitted from JSON when absent.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::json::optional"
+    )]
     pub output: Option<Value>,
     /// Calls in admission order, using host-assigned identities.
     pub calls: Vec<CallRecord>,
@@ -620,9 +627,11 @@ enum GuestFrame {
     Call {
         id: u64,
         tool: String,
+        #[serde(deserialize_with = "crate::json::value")]
         arguments: Value,
     },
     Output {
+        #[serde(deserialize_with = "crate::json::value")]
         value: Value,
     },
     Error {

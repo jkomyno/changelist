@@ -19,6 +19,21 @@ fn config() -> RunConfig {
     }
 }
 
+#[tokio::test]
+async fn literal_json_keys_survive_host_replies() {
+    let expected = json!({"$serde_json::private::RawValue":"not JSON"});
+    let mut host = Host::begin(
+        config(),
+        "return await tools.call('host.echo');",
+        &["host.echo"],
+    )
+    .await;
+    let call = host.next().await;
+    host.reply(&call, expected.clone()).await;
+    let (_, report) = host.report().await;
+    assert_eq!(report.output, Some(expected));
+}
+
 /// The parent-host end of a bridge: it reads bridge frames and writes host frames.
 struct Host {
     frames: Lines<BufReader<DuplexStream>>,
@@ -66,7 +81,7 @@ impl Host {
             .await
             .expect("bridge output is readable")
             .expect("bridge wrote a frame");
-        serde_json::from_str(&line).expect("bridge frames are JSON")
+        codemode::parse_json(&line).expect("bridge frames are JSON")
     }
 
     async fn reply(&mut self, call: &Value, value: Value) {

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::time::Instant;
 
-use crate::plan::{Digest, FrozenPlan, Operation, Scope};
+use crate::plan::{Digest, FrozenPlan, Operation, Scope, canonical_json};
 use crate::runtime::{CallContext, ProviderError, RunCancellation};
 
 /// How a provider can recover one tool, declared by the provider itself.
@@ -336,7 +336,7 @@ pub fn approval_binding(
         "declaration": declaration,
         "policy": policy,
     });
-    Digest::of(value.to_string().as_bytes())
+    Digest::of(canonical_json(value).as_bytes())
 }
 
 impl Approval {
@@ -355,7 +355,7 @@ impl Approval {
             "declaration": declaration,
             "policy": self.policy,
         });
-        Digest::of(value.to_string().as_bytes()) == self.binding
+        Digest::of(canonical_json(value).as_bytes()) == self.binding
     }
 }
 
@@ -560,7 +560,11 @@ pub enum Observed {
     Succeeded {
         /// The result. Never written by this version; journals from earlier
         /// versions may hold results up to 16 KiB.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "crate::json::optional"
+        )]
         value: Option<Value>,
         /// Serialized size of the result.
         bytes: u64,
