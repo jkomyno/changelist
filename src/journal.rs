@@ -434,7 +434,7 @@ impl Journal {
                 std::io::ErrorKind::AlreadyExists => JournalError::Exists(path.clone()),
                 _ => JournalError::Storage(error.to_string()),
             })?;
-        let mut connection = lock(&path, durability)?;
+        let mut connection = lock(&path, durability, false)?;
         let id = journal_id(plan);
         let transaction = connection.transaction().map_err(storage)?;
         transaction.execute_batch(SCHEMA).map_err(storage)?;
@@ -475,43 +475,19 @@ impl Journal {
         if !path.exists() {
             return Err(JournalError::NotFound(path));
         }
-        let connection = lock(&path, durability)?;
+        let connection = lock(&path, durability, true)?;
         let corrupt = |detail: String| JournalError::Corrupt {
             path: path.clone(),
             detail,
         };
-        let check: String = connection
-            .query_row("PRAGMA quick_check", [], |row| row.get(0))
-            .map_err(|error| corrupt(error.to_string()))?;
-        if check != "ok" {
-            return Err(corrupt(format!("integrity check: {check}")));
-        }
         let meta = |key: &str| -> Result<Option<String>, JournalError> {
             connection
                 .query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| {
                     row.get(0)
                 })
                 .optional()
-                .map_err(|error| JournalError::Incompatible {
-                    path: path.clone(),
-                    detail: format!("no journal metadata ({error})"),
-                })
+                .map_err(|error| corrupt(format!("metadata: {error}")))
         };
-        if meta("format")?.as_deref() != Some(FORMAT) {
-            return Err(JournalError::Incompatible {
-                path,
-                detail: "not a codemode journal".into(),
-            });
-        }
-        let version = meta("format_version")?.unwrap_or_default();
-        if version != JOURNAL_FORMAT_VERSION.to_string() {
-            return Err(JournalError::Incompatible {
-                path,
-                detail: format!(
-                    "journal format version {version}; this build reads version {JOURNAL_FORMAT_VERSION}"
-                ),
-            });
-        }
         let id = meta("journal_id")?.ok_or_else(|| corrupt("missing journal id".into()))?;
         let (digest, canonical): (String, String) = connection
             .query_row(
@@ -1083,7 +1059,9 @@ impl Journal {
 }
 
 /// Open `path` and take SQLite's exclusive lock, failing at once if it is held.
-fn lock(path: &Path, durability: Durability) -> Result<Connection, JournalError> {
+/// For an `existing` file, check that it is a sound journal of this format under
+/// the lock and before anything is written, so a foreign file is left unchanged.
+fn lock(path: &Path, durability: Durability, existing: bool) -> Result<Connection, JournalError> {
     let connection = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -1120,8 +1098,14 @@ fn lock(path: &Path, durability: Durability) -> Result<Connection, JournalError>
              PRAGMA foreign_keys = ON;"
         ))
         .map_err(classify)?;
-    // Entering WAL mode and an immediate write transaction both need the lock;
-    // in exclusive locking mode it is then held until the connection closes.
+    // In exclusive locking mode the lock taken here is held until the connection closes.
+    connection
+        .execute_batch("BEGIN EXCLUSIVE")
+        .map_err(classify)?;
+    if existing {
+        validate(&connection, path)?;
+    }
+    connection.execute_batch("COMMIT").map_err(classify)?;
     let mode: String = connection
         .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
         .map_err(classify)?;
@@ -1131,11 +1115,48 @@ fn lock(path: &Path, durability: Durability) -> Result<Connection, JournalError>
         )));
     }
     connection
-        .execute_batch(&format!(
-            "PRAGMA synchronous = {synchronous}; BEGIN EXCLUSIVE; COMMIT;"
-        ))
+        .execute_batch(&format!("PRAGMA synchronous = {synchronous};"))
         .map_err(classify)?;
     Ok(connection)
+}
+
+/// Fail closed unless `connection` holds an intact journal of this format version.
+fn validate(connection: &Connection, path: &Path) -> Result<(), JournalError> {
+    let corrupt = |detail: String| JournalError::Corrupt {
+        path: path.to_path_buf(),
+        detail,
+    };
+    let incompatible = |detail: String| JournalError::Incompatible {
+        path: path.to_path_buf(),
+        detail,
+    };
+    let check: String = connection
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .map_err(|error| match error.sqlite_error_code() {
+            Some(ErrorCode::NotADatabase) => incompatible("not an SQLite database".into()),
+            _ => corrupt(error.to_string()),
+        })?;
+    if check != "ok" {
+        return Err(corrupt(format!("integrity check: {check}")));
+    }
+    let meta = |key: &str| -> Result<Option<String>, JournalError> {
+        connection
+            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(|error| incompatible(format!("no journal metadata ({error})")))
+    };
+    if meta("format")?.as_deref() != Some(FORMAT) {
+        return Err(incompatible("not a codemode journal".into()));
+    }
+    let version = meta("format_version")?.unwrap_or_default();
+    if version != JOURNAL_FORMAT_VERSION.to_string() {
+        return Err(incompatible(format!(
+            "journal format version {version}; this build reads version {JOURNAL_FORMAT_VERSION}"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1239,6 +1260,25 @@ mod tests {
             Err(UNANSWERED)
         );
         drop(journal);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn opening_a_foreign_database_leaves_it_unchanged() {
+        let path = scratch("foreign");
+        let foreign = Connection::open(&path).expect("create");
+        foreign
+            .execute_batch("CREATE TABLE notes (body TEXT); INSERT INTO notes VALUES ('kept');")
+            .expect("write");
+        drop(foreign);
+        let before = std::fs::read(&path).expect("read");
+        let error = Journal::open(&path, Durability::Storage).expect_err("foreign");
+        assert!(
+            matches!(error, JournalError::Incompatible { .. }),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&path).expect("read"), before);
+        assert!(!path.with_extension("db-wal").exists());
         let _ = std::fs::remove_file(&path);
     }
 }
