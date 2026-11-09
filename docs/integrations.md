@@ -221,8 +221,11 @@ declaration is `repeat: unsafe`, `reconcile: state`, retention `summary/1`.
   account, or destination, arguments naming another repository, extra
   arguments, more or fewer than one label, or any precondition is refused
   before any call.
-- **Authorization** runs each session: the account must still read the
-  repository with `triage` or `push` permission.
+- **Authorization** runs each session: `composio connections list` must show
+  the approved id as active and as no other connection's alias or word id (the
+  CLI resolves a selector as an active id first, then as an alias), and the
+  account must still read the repository with `triage` or `push` permission.
+  This is checked per session, not atomically with each call.
 - **Execution** first confirms the label exists (GitHub would otherwise create
   it); this read is not atomic with the mutation. A missing label is `refused`;
   a failed check is `not_applied` (the mutation was never sent). Any failure

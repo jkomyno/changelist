@@ -171,6 +171,33 @@ function status(result: ComposioResult): number | undefined {
 
 const sameName = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
+/** One connected GitHub account as `composio connections list` reports it. */
+export interface Connection {
+  id: string;
+  status: string;
+  alias?: string | null;
+  word_id?: string | null;
+}
+
+/** Lists the connected GitHub accounts now. */
+export type ListConnections = () => Promise<Connection[]>;
+
+/**
+ * Why `account` cannot be trusted to select exactly that account, or undefined.
+ * The CLI resolves a selector as an active account id, then as an alias or word
+ * id, so an inactive id that another connection uses as its alias would run as
+ * that other account. This is checked per session, not atomically with each call.
+ */
+export function accountProblem(account: string, connections: Connection[]): { code: string; message: string } | undefined {
+  if (!connections.some((item) => item.id === account && item.status === "ACTIVE")) {
+    return { code: "account_inactive", message: "the approved connected account is not active" };
+  }
+  if (connections.some((item) => item.id !== account && (item.alias === account || item.word_id === account))) {
+    return { code: "account_ambiguous", message: "another connection uses the approved account id as its alias or word id" };
+  }
+  return undefined;
+}
+
 /** A host for one plan session through the Composio CLI helper. */
 export interface ComposioPlanHost {
   authorize(scope: Scope): Promise<{ ok: true } | { ok: false; error: { code: string; message: string } }>;
@@ -179,7 +206,7 @@ export interface ComposioPlanHost {
 }
 
 /** Build the host's three handlers over `execute`, bound to `config`. */
-export function composioPlanHost(execute: AccountExecute, config: ComposioPlanConfig): ComposioPlanHost {
+export function composioPlanHost(execute: AccountExecute, config: ComposioPlanConfig, connections: ListConnections): ComposioPlanHost {
   const account = config.account;
   const refused = (error: unknown): PlanReply => {
     const refusal = error instanceof Refusal ? error : new Refusal("invalid_operation", "the operation is malformed");
@@ -194,6 +221,14 @@ export function composioPlanHost(execute: AccountExecute, config: ComposioPlanCo
         const refusal = error as Refusal;
         return { ok: false, error: { code: refusal.code, message: refusal.message } };
       }
+      let listed: Connection[];
+      try {
+        listed = await connections();
+      } catch {
+        return { ok: false, error: { code: "account_unverified", message: "the connected accounts could not be listed" } };
+      }
+      const problem = accountProblem(account, listed);
+      if (problem) return { ok: false, error: problem };
       const [owner, repo] = destination.split("/");
       const seen = await observe(execute, GET_REPOSITORY, { owner, repo }, account);
       if (!("result" in seen) || !seen.result.successful) {

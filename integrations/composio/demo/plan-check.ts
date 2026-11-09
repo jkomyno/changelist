@@ -8,7 +8,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PlanCall, ReconcileRequest } from "../../shared/bridge-client.ts";
 import { ADD_LABELS, type ComposioPlanConfig, composioPlanHost, parseConfig } from "../composio-plan.ts";
-import { fakeLabels, type LabelState } from "./fake-labels.ts";
+import { fakeConnections, fakeLabels, type LabelState } from "./fake-labels.ts";
 
 const ACCOUNT = "ca_fake_bot";
 const config: ComposioPlanConfig = { account: ACCOUNT, destinations: ["acme/widgets"] };
@@ -16,7 +16,7 @@ const scope = { provider: "composio.github", account: ACCOUNT, destination: "acm
 const many = Array.from({ length: 150 }, (_, index) => `area-${index}`);
 
 let count = 0;
-function setup(faults: Record<string, string> = {}) {
+function setup(faults: Record<string, string> = {}, connections?: LabelState["connections"]) {
   const path = join(Deno.args[0], `labels-${count++}.json`);
   const state: LabelState = {
     accounts: [ACCOUNT, "ca_other"],
@@ -30,9 +30,10 @@ function setup(faults: Record<string, string> = {}) {
     },
     faults,
     calls: [],
+    ...(connections ? { connections } : {}),
   };
   writeFileSync(path, JSON.stringify(state));
-  return { host: composioPlanHost(fakeLabels(path), config), ledger: () => JSON.parse(Deno.readTextFileSync(path)) as LabelState };
+  return { host: composioPlanHost(fakeLabels(path), config, fakeConnections(path)), ledger: () => JSON.parse(Deno.readTextFileSync(path)) as LabelState };
 }
 
 const call = (overrides: Partial<PlanCall> = {}, args: Record<string, unknown> = {}): PlanCall => ({
@@ -120,11 +121,24 @@ await check("authorization checks the scope, then the account's permission now",
   const { host, ledger } = setup();
   const ok = await host.authorize(scope);
   const wrong = await host.authorize({ ...scope, account: "ca_other" });
-  const denied = await composioPlanHost(fakeLabels(join(Deno.args[0], "labels-0.json")), { account: ACCOUNT, destinations: ["acme/private"] })
+  const denied = await composioPlanHost(fakeLabels(join(Deno.args[0], "labels-0.json")), { account: ACCOUNT, destinations: ["acme/private"] }, fakeConnections(join(Deno.args[0], "labels-0.json")))
     .authorize({ ...scope, destination: "acme/private" });
   if (ledger().calls.some((item) => item.account !== ACCOUNT)) return "a call used another account";
   return expect([ok.ok, wrong.ok ? "ok" : wrong.error.code, denied.ok ? "ok" : denied.error.code], [true, "account_mismatch", "not_permitted"]);
 });
+
+for (const [name, connections, code] of [
+  ["inactive", [{ id: ACCOUNT, status: "EXPIRED" }, { id: "ca_other", status: "ACTIVE" }], "account_inactive"],
+  ["missing", [{ id: "ca_other", status: "ACTIVE" }], "account_inactive"],
+  ["another connection's alias", [{ id: ACCOUNT, status: "ACTIVE" }, { id: "ca_other", status: "ACTIVE", alias: ACCOUNT }], "account_ambiguous"],
+] as const) {
+  await check(`authorization refuses an approved account that is ${name}, before any call`, async () => {
+    const { host, ledger } = setup({}, [...connections]);
+    const reply = await host.authorize(scope);
+    if (ledger().calls.length !== 0) return `made ${ledger().calls.length} calls`;
+    return expect(reply.ok ? "ok" : reply.error.code, code);
+  });
+}
 
 await check("present on the issue: satisfied", async () => {
   const { host } = setup();

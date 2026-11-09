@@ -124,6 +124,11 @@ Each operation is `{"tool": "GITHUB_ADD_LABELS_TO_AN_ISSUE", "scope": {"provider
 | Probe: label absent | `unknown` (an earlier request may still apply) | review after the probe budget; never resent |
 | Probe failed, malformed, or over 1,000 labels | probe error, still `unknown` | as above |
 
+Each session first checks, with `composio connections list`, that the approved
+id is active and is not another connection's alias or word id, then that the
+account can still triage the repository. The check is per session, not atomic
+with each call.
+
 The declaration is `repeat: unsafe`, `reconcile: state`, and retention
 `summary/1`: the journal keeps this host's fixed messages and evidence, never
 Composio's results or error text. There are no receipts, idempotency keys,

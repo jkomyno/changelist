@@ -32,6 +32,8 @@ interface Repository {
 
 export interface LabelState {
   accounts: string[];
+  /** What `composio connections list` reports; every account, active, when absent. */
+  connections?: Array<{ id: string; status: string; alias?: string }>;
   repositories: Record<string, Repository>;
   faults: Record<string, string>;
   calls: Array<{ slug: string; account: string; target: string; outcome: string }>;
@@ -43,6 +45,14 @@ const failure = (message: string, detail: Record<string, unknown>) => Object.ass
 function unsuccessful(slug: string, status: number): Error {
   const result = { successful: false, data: { status_code: status, message: `${SECRET} upstream text`, http_error: SECRET }, error: `${SECRET} ${status}` };
   return failure(result.error, { result, slug });
+}
+
+/** The stand-in's `composio connections list` for GitHub. */
+export function fakeConnections(path: string) {
+  return async () => {
+    const state: LabelState = JSON.parse(readFileSync(path, "utf8"));
+    return state.connections ?? state.accounts.map((id) => ({ id, status: "ACTIVE" }));
+  };
 }
 
 export function fakeLabels(path: string) {

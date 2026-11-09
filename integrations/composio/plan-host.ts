@@ -23,10 +23,22 @@
  * `composio run` wraps everything after the imports in a function, so this file
  * has no exports and ends with a statement.
  */
+import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { promisify } from "node:util";
 import { resolve } from "node:path";
 import { findExecutable, type PlanReply, runPlanBridge } from "../shared/bridge-client.ts";
-import { type AccountExecute, composioPlanHost, declaration, GET_LABEL, observe, parseConfig, target } from "./composio-plan.ts";
+import {
+  type AccountExecute,
+  type Connection,
+  composioPlanHost,
+  declaration,
+  GET_LABEL,
+  type ListConnections,
+  observe,
+  parseConfig,
+  target,
+} from "./composio-plan.ts";
 
 const VALUE_OPTIONS = new Set(["config", "journal", "plan", "bin", "deno", "offline", "drop-reply"]);
 
@@ -52,19 +64,34 @@ function finish(stream: NodeJS.WriteStream, line: string, code: number): void {
 
 const json = (path: string) => JSON.parse(readFileSync(resolve(process.cwd(), path), "utf8"));
 
-async function helper(args: Map<string, string>): Promise<AccountExecute> {
+/** The CLI helper and connection lister, or their offline stand-ins. */
+async function helper(args: Map<string, string>): Promise<{ execute: AccountExecute; connections: ListConnections }> {
   const offline = args.get("offline");
-  if (offline) return (await import("./demo/fake-labels.ts")).fakeLabels(resolve(process.cwd(), offline));
+  if (offline) {
+    const fake = await import("./demo/fake-labels.ts");
+    const path = resolve(process.cwd(), offline);
+    return { execute: fake.fakeLabels(path), connections: fake.fakeConnections(path) };
+  }
   const execute = (globalThis as { execute?: AccountExecute }).execute;
   if (!execute) throw new Error("run under `composio run`, or pass --offline <state.json>");
-  return execute;
+  return { execute, connections: listConnections };
+}
+
+/** `composio connections list`, GitHub entries only. */
+async function listConnections(): Promise<Connection[]> {
+  // `composio run` sets BUN_BE_BUN, which makes a nested `composio` act as its embedded Bun.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "BUN_BE_BUN"));
+  const { stdout } = await promisify(execFile)("composio", ["connections", "list"], { maxBuffer: 1024 * 1024, env });
+  const github = (JSON.parse(stdout) as { github?: unknown }).github;
+  if (!Array.isArray(github)) throw new Error("unexpected connections list");
+  return github as Connection[];
 }
 
 /** Read-only checks of every operation in a plan; prints projected facts only. */
-async function preflight(execute: AccountExecute, args: Map<string, string>): Promise<void> {
+async function preflight({ execute, connections }: { execute: AccountExecute; connections: ListConnections }, args: Map<string, string>): Promise<void> {
   const config = parseConfig(json(args.get("config") ?? ""));
   const plan = json(args.get("plan") ?? "") as { operations?: Array<Record<string, any>> };
-  const host = composioPlanHost(execute, config);
+  const host = composioPlanHost(execute, config, connections);
   const report = [];
   let ready = true;
   for (const operation of plan.operations ?? []) {
@@ -97,9 +124,10 @@ async function main(): Promise<void> {
     finish(process.stdout, JSON.stringify(declaration(parseConfig(json(args.get("config") ?? "")))), 0);
     return;
   }
-  const execute = await helper(args);
+  const providers = await helper(args);
+  const { execute } = providers;
   if (command === "preflight") {
-    await preflight(execute, args);
+    await preflight(providers, args);
     return;
   }
   if (command !== "run" && command !== "resume") throw new Error("command must be declare, preflight, run, or resume");
@@ -112,7 +140,7 @@ async function main(): Promise<void> {
   const controller = new AbortController();
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => controller.abort());
 
-  const host = composioPlanHost(execute, config);
+  const host = composioPlanHost(execute, config, providers.connections);
   const result = await runPlanBridge({
     bin: findExecutable(args.get("bin") ?? "target/debug/codemode", cwd),
     deno: findExecutable(args.get("deno") ?? "deno", cwd),
