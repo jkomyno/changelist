@@ -215,16 +215,17 @@ fn ledger(scratch: &Scratch) -> codemode::fixture::Ledger {
         .expect("ledger reads")
 }
 
-/// Wait until the fixture has received `count` held requests, then SIGKILL the executor.
-fn kill_when_held(scratch: &Scratch, mut child: Child, count: usize) {
+/// Wait for both the held requests and the intended provider ledger checkpoint.
+fn kill_when_held(scratch: &Scratch, mut child: Child, count: usize, requests: usize) {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let held = ledger(scratch)
+        let checkpoint = ledger(scratch);
+        let held = checkpoint
             .rows
             .iter()
             .filter(|row| row.outcome == "held")
             .count();
-        if held >= count {
+        if held >= count && checkpoint.rows.len() >= requests {
             break;
         }
         if let Some(status) = child.try_wait().expect("poll") {
@@ -301,7 +302,19 @@ fn a_killed_executor_is_reconciled_without_repeating_effects() {
     let child = session(&scratch, "run", ACCOUNT)
         .spawn()
         .expect("run starts");
-    kill_when_held(&scratch, child, 1);
+    // Concurrent provider entry can differ from dispatch order. Do not kill
+    // until the lost-response effects have reached the independent ledger too.
+    kill_when_held(&scratch, child, 1, operations.len());
+    let checkpoint = ledger(&scratch);
+    for (tool, issue) in [("issues.add_label", 104), ("issues.add_comment", 105)] {
+        assert!(
+            checkpoint
+                .rows
+                .iter()
+                .any(|row| row.tool == tool && row.issue == Some(issue) && row.effect),
+            "missing intended lost-response effect: {tool} #{issue}: {checkpoint:?}"
+        );
+    }
 
     // The effect of 104 happened; its response never arrived.
     assert_intent_preceded_every_request(&scratch);
@@ -404,12 +417,12 @@ fn repeated_crashes_stop_at_the_attempt_budget() {
     let child = session(&scratch, "run", ACCOUNT)
         .spawn()
         .expect("run starts");
-    kill_when_held(&scratch, child, 1);
+    kill_when_held(&scratch, child, 1, 1);
     // Reconciliation fences attempt 1, then attempt 2 is held too.
     let child = session(&scratch, "resume", ACCOUNT)
         .spawn()
         .expect("resume starts");
-    kill_when_held(&scratch, child, 2);
+    kill_when_held(&scratch, child, 2, 2);
     assert_intent_preceded_every_request(&scratch);
 
     let output = session(&scratch, "resume", ACCOUNT)
@@ -448,7 +461,7 @@ fn a_second_executor_cannot_take_over_a_running_journal() {
         .expect("resume");
     assert_eq!(second.status.code(), Some(2), "{second:?}");
     assert!(String::from_utf8_lossy(&second.stderr).contains("locked by another codemode process"));
-    kill_when_held(&scratch, first, 1);
+    kill_when_held(&scratch, first, 1, 1);
     assert_eq!(ledger(&scratch).rows.len(), 1);
 }
 
@@ -460,7 +473,7 @@ fn revoked_authorization_or_another_account_sends_nothing() {
     let child = session(&scratch, "run", ACCOUNT)
         .spawn()
         .expect("run starts");
-    kill_when_held(&scratch, child, 1);
+    kill_when_held(&scratch, child, 1, 1);
     let requests = ledger(&scratch).rows.len();
 
     let fixture = scratch.fixture();
