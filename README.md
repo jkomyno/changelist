@@ -25,6 +25,13 @@ verified to do.
 
 ## Run it
 
+For a versioned binary and matching adapters usable outside a checkout, follow
+the [source installation guide](docs/installation.md). It installs one explicit
+commit, preserves earlier versions for rollback, and includes an offline check
+of the installed bridge, OpenCode adapter, trace inspection, and native plans.
+
+For development from this checkout:
+
 Install Git, mise, and your platform's Rust compiler/linker prerequisites, then:
 
 ```sh
@@ -164,6 +171,7 @@ mise run composio-live-check  # read-only, needs `composio login`
 ```sh
 mise run check
 mise run embedded-check
+mise run typecheck
 mise exec -- cargo +1.85.0 test --locked
 ```
 

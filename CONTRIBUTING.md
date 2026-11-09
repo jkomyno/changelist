@@ -38,12 +38,16 @@ Before submitting a code or build change, run:
 ```sh
 mise run check
 mise run embedded-check
+mise run typecheck
 ```
 
 The task checks formatting, runs Clippy on all targets and features, runs tests
 including doc tests, and builds documentation. Clippy and rustdoc warnings fail
 the check. `embedded-check` executes the real embedded-worker and backend tests;
 CI runs it after `check`. To fix formatting, run `mise exec -- cargo fmt --all`.
+`typecheck` installs the locked development-only npm dependencies without install
+scripts and checks delivered adapters against the pinned Pi and OpenCode APIs.
+Node is managed by mise; it is not needed to use the installed Rust CLI.
 
 For changes to the bridge or `integrations/`, also run the host checks, which
 fetch Pi 1.4.0 and OpenCode 1.19.5 through mise and need no credentials:
@@ -68,8 +72,25 @@ Keep that MSRV run on default features. Use the current mise compiler for
 `--features embedded-v8` or `--all-features`; enabling the optional engine does
 not change the compatibility promise of the default library and native plans.
 
-Both [CI jobs](.github/workflows/ci.yml) install tools with mise and run Cargo
-through Mr Boxington. CI currently runs on Linux. Check platform-specific changes
+The [CI workflow](.github/workflows/ci.yml) installs tools with mise and runs Cargo
+through Mr Boxington. It also installs the exact CI commit and exercises its
+binary, adapters, trace inspection, and native plan workflow from an empty
+directory. Pi and OpenCode checks run on bridge, integration, build, and test
+changes, and on manual workflow runs. These offline checks do not establish live
+model, interactive UI, or live-provider behavior.
+
+For installation changes, commit the complete bundle before running the real
+source-install boundary check; the installer intentionally excludes uncommitted
+files. Use an isolated prefix:
+
+```sh
+scripts/install.sh --revision "$(git rev-parse HEAD)" --prefix /tmp/codemode-install
+mise exec -- scripts/install-check.sh /tmp/codemode-install/current
+```
+
+See [installation and compatibility](docs/installation.md) for upgrade, rollback,
+engine selection, format versions, and deprecation rules.
+CI currently runs on Linux. Check platform-specific changes
 on the affected platform and report what you tested.
 
 ## Manage dependencies and build storage
