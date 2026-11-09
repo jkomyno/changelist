@@ -88,8 +88,11 @@ impl Remote {
             .insert(operation.into(), behavior);
     }
 
+    /// Operations the provider received, sorted: concurrent dispatch has no fixed order.
     fn requests(&self) -> Vec<String> {
-        self.requests.lock().unwrap().clone()
+        let mut requests = self.requests.lock().unwrap().clone();
+        requests.sort();
+        requests
     }
 }
 
