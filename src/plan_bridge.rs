@@ -58,7 +58,7 @@ use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::bridge::{BRIDGE_FRAME_BYTES, Outbound, encode, present, write_frames};
+use crate::bridge::{BRIDGE_FRAME_BYTES, Outbound, drain_writer, encode, present, write_frames};
 use crate::executor::{SessionError, SessionOptions, SessionOutcome, run_session};
 use crate::journal::Journal;
 use crate::plan::{Operation, Scope};
@@ -71,7 +71,7 @@ use crate::runtime::{CallContext, ProviderError, ProviderFactKind, RunCancellati
 /// The bridge protocol version that serves plan sessions.
 pub const PLAN_BRIDGE_PROTOCOL_VERSION: u32 = 3;
 
-/// Failure of a plan bridge session; the bridge has already written its last frame.
+/// Failure of a plan bridge session or delivery of its final frame.
 #[derive(Debug)]
 pub enum PlanBridgeError {
     /// The host sent an invalid or missing start frame; no session began.
@@ -487,6 +487,9 @@ async fn route<R: AsyncRead + Unpin>(
 /// [`PlanBridgeError::Session`] when [`run_session`] fails or refuses the session,
 /// and [`PlanBridgeError::Io`] when the output fails. The last frame (`outcome`,
 /// including a refusal, or `error`) is written first when possible.
+/// After the session ends, output has a one-second drain grace period. A stalled
+/// reader returns [`PlanBridgeError::Io`] with [`io::ErrorKind::TimedOut`]. The
+/// journal retains the session even when its final frame cannot be delivered.
 pub async fn serve_plan_bridge<R, W>(
     input: R,
     output: W,
@@ -538,7 +541,7 @@ where
         let _ = outbox.send(Outbound::Last(bytes));
     }
     drop(outbox);
-    writer.await.map_err(io::Error::other)??;
+    drain_writer(writer).await?;
     result
 }
 

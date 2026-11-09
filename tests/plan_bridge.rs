@@ -11,7 +11,7 @@ use codemode::{
     SessionOptions, SessionOutcome, Verdict, approval_binding, serve_plan_bridge,
 };
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, Lines};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, DuplexStream, Lines};
 use tokio::task::JoinHandle;
 
 static SCRATCH: AtomicU64 = AtomicU64::new(0);
@@ -91,6 +91,54 @@ async fn reopen(path: &Path) -> Journal {
         }
     }
     panic!("the bridge never released the journal");
+}
+
+#[tokio::test]
+async fn stalled_plan_output_is_bounded_and_the_session_remains_inspectable() {
+    let path = approved_journal();
+    let journal = Journal::open(&path, Durability::Process).expect("open");
+    let (mut input, bridge_input) = tokio::io::duplex(4096);
+    let (bridge_output, mut unread_output) = tokio::io::duplex(16);
+    let cancellation = RunCancellation::default();
+    let bridge = tokio::spawn(serve_plan_bridge(
+        bridge_input,
+        bridge_output,
+        journal,
+        SessionOptions::default(),
+        cancellation.clone(),
+    ));
+    let start = json!({"type":"start","version":3,"declaration":declaration()});
+    input
+        .write_all(format!("{start}\n").as_bytes())
+        .await
+        .expect("start");
+    tokio::time::timeout(Duration::from_secs(2), unread_output.read_u8())
+        .await
+        .expect("authorization began")
+        .expect("first output byte");
+    cancellation.cancel();
+    let error = tokio::time::timeout(Duration::from_secs(3), bridge)
+        .await
+        .expect("bounded shutdown")
+        .expect("bridge joined")
+        .expect_err("output stalled");
+    assert!(
+        matches!(error, PlanBridgeError::Io(ref error) if error.kind() == std::io::ErrorKind::TimedOut),
+        "{error}"
+    );
+    let journal = reopen(&path).await;
+    let history = journal.history().expect("history");
+    assert!(history.attempts.is_empty(), "no mutation was sent");
+    assert!(
+        history
+            .sessions
+            .last()
+            .expect("session recorded")
+            .end
+            .is_some()
+    );
+    drop(journal);
+    std::fs::remove_file(path).expect("remove test journal");
 }
 
 /// The parent-host end of a plan bridge.

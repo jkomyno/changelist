@@ -44,6 +44,7 @@ use std::fmt;
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -63,6 +64,7 @@ pub const BRIDGE_PROTOCOL_VERSION: u32 = 2;
 pub const BRIDGE_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_TOOLS: usize = 256;
 const MAX_TOOL_NAME_BYTES: usize = 128;
+const DRAIN_GRACE: Duration = Duration::from_secs(1);
 
 /// Failure before a run report could be produced.
 #[derive(Debug)]
@@ -207,6 +209,24 @@ pub(crate) async fn write_frames<W: AsyncWrite + Unpin>(
         }
     }
     Ok(())
+}
+
+/// Stop a stalled transport without detaching its writer. Once execution ends,
+/// a peer has a finite grace period to receive the remaining complete frames.
+pub(crate) async fn drain_writer(
+    mut writer: tokio::task::JoinHandle<io::Result<()>>,
+) -> io::Result<()> {
+    match tokio::time::timeout(DRAIN_GRACE, &mut writer).await {
+        Ok(result) => result.map_err(io::Error::other)?,
+        Err(_) => {
+            writer.abort();
+            let _ = writer.await;
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "host did not drain bridge output within the 1 second shutdown grace period",
+            ))
+        }
+    }
 }
 
 /// Forwards each dispatched call to the host and waits for its correlated reply.
@@ -414,6 +434,9 @@ async fn route<R: AsyncRead + Unpin>(
 /// Returns [`BridgeError`] when the start frame is missing or invalid, the run cannot
 /// start, or the output stream fails. An `error` frame is written first when possible.
 /// Host protocol violations after start end the run with a report instead.
+/// After execution ends, output has a one-second drain grace period. A stalled
+/// reader returns [`BridgeError::Io`] with [`io::ErrorKind::TimedOut`]; the final
+/// report cannot be guaranteed when the peer stops reading.
 pub async fn serve_bridge<R, W>(
     input: R,
     output: W,
@@ -438,7 +461,7 @@ where
         let _ = outbox.send(Outbound::Last(bytes));
     }
     drop(outbox);
-    writer.await.map_err(io::Error::other)??;
+    drain_writer(writer).await?;
     result
 }
 

@@ -20,6 +20,32 @@ fn config() -> RunConfig {
 }
 
 #[tokio::test]
+async fn a_host_that_stops_reading_cannot_hold_bridge_shutdown_open() {
+    let (mut input, bridge_input) = tokio::io::duplex(4096);
+    let (bridge_output, _unread_output) = tokio::io::duplex(64);
+    let bridge = tokio::spawn(serve_bridge(
+        bridge_input,
+        bridge_output,
+        config(),
+        RunCancellation::default(),
+    ));
+    let start = json!({"type":"start","version":2,"code":"return 42;","tools":[]});
+    input
+        .write_all(format!("{start}\n").as_bytes())
+        .await
+        .expect("start");
+    let error = tokio::time::timeout(Duration::from_secs(5), bridge)
+        .await
+        .expect("bounded shutdown")
+        .expect("bridge joined")
+        .expect_err("output stalled");
+    assert!(
+        matches!(error, BridgeError::Io(ref error) if error.kind() == std::io::ErrorKind::TimedOut),
+        "{error}"
+    );
+}
+
+#[tokio::test]
 async fn literal_json_keys_survive_host_replies() {
     let expected = json!({"$serde_json::private::RawValue":"not JSON"});
     let mut host = Host::begin(
