@@ -100,10 +100,12 @@ is a stated name, not an authenticated identity.
 
 The journal is a SQLite database (format version 1) holding the frozen plan and
 append-only facts, each with an ordinal from one counter: approvals, sessions,
-dispatch intents (attempts), observations, reconciliation probes, reviews, and
+dispatch intents (attempts), observations, reconciliation probes and their
+answers, reviews, and
 each session's end with its dispatch run's execution record (schema version 2,
 readable by `codemode inspect`). Facts are never updated. An attempt key is
-`<journal id>-<operation id>-<attempt number>`; the trace call identity is
+`<journal id>-<operation id>-<attempt number>`, where the journal id is generated
+per journal, so two journals never share keys; the trace call identity is
 recorded with the attempt, so recovery evidence links to the existing trace
 without rewriting it.
 
@@ -118,7 +120,9 @@ Ordering per attempt:
    scheduler or to anyone else. A failed observation write stops the run; the
    attempt then stays unknown.
 4. When a session's run ends with attempts still waiting (deadline,
-   cancellation), each is recorded as `unobserved`: still unknown.
+   cancellation), the executor first waits for journal writes the run left
+   queued, then records each attempt without a result as `unobserved`: still
+   unknown.
 
 **Durability.** The journal uses the write-ahead log with exclusive locking.
 With the default `--durability storage` (`synchronous=FULL`, and `F_FULLFSYNC`
@@ -174,8 +178,11 @@ error is `unknown`.
 | `unknown` | An attempt may have reached the provider | an intent without a settling fact |
 | `pending` | Never dispatched | no facts |
 
-A later refusal never settles an earlier unknown attempt: if attempt 1 is
-unknown and attempt 2 fails a precondition, the operation stays unknown.
+Each attempt is settled only by its own result, a reconciliation, or a review:
+if attempt 1 is unknown and attempt 2 fails a precondition or is not applied, the
+operation stays unknown. A `state` probe can only show that the desired state
+holds, so its `applied` is read as `satisfied` and its `not_applied` as
+`unknown`; only a receipt probe can confirm our effect or its absence.
 
 ### What may happen next
 
@@ -188,7 +195,8 @@ unknown and attempt 2 fails a precondition, the operation stays unknown.
 | `unknown` | reconcile if the contract has a method, probes remain, and it was not probed this session; otherwise dispatch if `repeat` is `safe` and attempts remain; otherwise review |
 
 Budgets (`--max-attempts`, `--max-probes`) count across all sessions, so a crash
-loop cannot retry or probe forever. Every probe and retry is journaled against
+loop cannot retry or probe forever: like an attempt's intent, a probe is journaled
+before the provider is asked, and an unanswered probe still counts. Every probe and retry is journaled against
 the operation's identity, with the session that made it.
 
 Reading current state does not establish causation (`satisfied` is not

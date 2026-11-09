@@ -14,7 +14,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -215,16 +215,85 @@ pub fn assess_history(
         .collect()
 }
 
-type Shared = Arc<Mutex<Journal>>;
+/// The session's journal, and a count of journal writes queued on blocking threads.
+///
+/// A write keeps running after the runtime drops the call that queued it, so the
+/// count lets the session wait for every such write before it records which
+/// attempts were never observed.
+#[derive(Clone)]
+struct Shared {
+    journal: Arc<Mutex<Journal>>,
+    writes: Arc<(Mutex<usize>, Condvar)>,
+}
+
+/// Counts one queued write until it is dropped, after the write ran or was discarded.
+struct QueuedWrite(Arc<(Mutex<usize>, Condvar)>);
+
+impl Drop for QueuedWrite {
+    fn drop(&mut self) {
+        let (count, finished) = &*self.0;
+        *count.lock().unwrap_or_else(PoisonError::into_inner) -= 1;
+        finished.notify_all();
+    }
+}
+
+impl Shared {
+    fn new(journal: Journal) -> Self {
+        Self {
+            journal: Arc::new(Mutex::new(journal)),
+            writes: Arc::default(),
+        }
+    }
+
+    fn id(&self) -> String {
+        self.journal
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .id()
+            .to_string()
+    }
+}
 
 /// Run `body` against the journal on a blocking thread.
 async fn journaled<T: Send + 'static>(
-    journal: &Shared,
+    shared: &Shared,
     body: impl FnOnce(&mut Journal) -> Result<T, JournalError> + Send + 'static,
 ) -> Result<T, JournalError> {
-    let journal = Arc::clone(journal);
+    *shared
+        .writes
+        .0
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) += 1;
+    let queued = QueuedWrite(Arc::clone(&shared.writes));
+    let journal = Arc::clone(&shared.journal);
     tokio::task::spawn_blocking(move || {
+        let _queued = queued;
         let mut guard = journal.lock().unwrap_or_else(PoisonError::into_inner);
+        body(&mut guard)
+    })
+    .await
+    .map_err(|error| JournalError::Storage(error.to_string()))?
+}
+
+/// Like [`journaled`], but first waits until every queued write has finished.
+async fn after_queued_writes<T: Send + 'static>(
+    shared: &Shared,
+    body: impl FnOnce(&mut Journal) -> Result<T, JournalError> + Send + 'static,
+) -> Result<T, JournalError> {
+    let shared = shared.clone();
+    tokio::task::spawn_blocking(move || {
+        let (count, finished) = &*shared.writes;
+        let mut queued = count.lock().unwrap_or_else(PoisonError::into_inner);
+        while *queued > 0 {
+            queued = finished
+                .wait(queued)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        drop(queued);
+        let mut guard = shared
+            .journal
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         body(&mut guard)
     })
     .await
@@ -251,7 +320,7 @@ pub async fn run_session<P: RecoverableProvider>(
         return Err(SessionError::AlreadyStarted);
     }
     let plan = journal.plan().clone();
-    let journal: Shared = Arc::new(Mutex::new(journal));
+    let journal = Shared::new(journal);
     let kind = options.kind;
     let session = journaled(&journal, move |journal| journal.begin_session(kind)).await?;
     let provider = Arc::new(provider);
@@ -338,7 +407,9 @@ pub async fn run_session<P: RecoverableProvider>(
 
     // An attempt the run stopped waiting for keeps an unknown outcome, with the reason.
     let reason = interrupted.clone().unwrap_or_else(|| "run_finished".into());
-    let history = journaled(&journal, move |journal| {
+    // Writes the run abandoned may still commit; wait for them so a recorded result
+    // is never replaced by "unobserved", and a late intent is still marked.
+    let history = after_queued_writes(&journal, move |journal| {
         journal.record_unobserved(session, &reason)?;
         journal.history()
     })
@@ -498,6 +569,14 @@ async fn probe<P: RecoverableProvider>(
                 .filter(|attempt| attempt.operation == operation.id)
                 .map(|attempt| attempt.key.clone())
                 .collect();
+
+            // Charged before the provider is asked, so a crash loop cannot probe forever.
+            let start = (operation.id.clone(), keys.clone());
+            let probe = journaled(journal, move |journal| {
+                let (operation, keys) = start;
+                journal.record_probe_start(&operation, session, &keys)
+            })
+            .await?;
             let provider = Arc::clone(provider);
             let timeout = Duration::from_millis(policy.probe_timeout_ms);
             let context = ProbeContext {
@@ -517,17 +596,17 @@ async fn probe<P: RecoverableProvider>(
                         message: "the reconciliation probe did not answer in time".into(),
                     })
                 });
-                (operation.id, keys, millis(started.elapsed()), outcome)
+                (probe, operation.id, millis(started.elapsed()), outcome)
             });
         }
         let Some(result) = running.join_next().await else {
             break;
         };
-        let (operation, keys, elapsed, outcome) =
+        let (probe, operation, elapsed, outcome) =
             result.map_err(|error| JournalError::Storage(error.to_string()))?;
-        probed.insert(operation.clone());
+        probed.insert(operation);
         journaled(journal, move |journal| {
-            journal.record_probe(&operation, session, &keys, elapsed, &outcome)
+            journal.record_probe(probe, elapsed, &outcome)
         })
         .await?;
     }
@@ -572,11 +651,7 @@ async fn dispatch_run<P: RecoverableProvider>(
         dispatch: DispatchPolicy::Rolling,
         ..RunConfig::default()
     };
-    let journal_id = journal
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .id()
-        .to_string();
+    let journal_id = journal.id();
     let entries = operations
         .into_iter()
         .map(|(operation, number)| {
@@ -585,7 +660,7 @@ async fn dispatch_run<P: RecoverableProvider>(
         })
         .collect();
     let journaling = JournalingProvider {
-        journal: Arc::clone(journal),
+        journal: journal.clone(),
         provider: Arc::clone(provider),
         entries,
         dispatched: Mutex::new(HashSet::new()),

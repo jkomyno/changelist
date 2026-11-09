@@ -38,6 +38,7 @@ pub use inspect::{
 pub use journal::{
     AttemptRecord, Durability, History, JOURNAL_FORMAT_VERSION, Journal, JournalError,
     ObservationRecord, ProbeRecord, ReviewRecord, SessionEnd, SessionKind, SessionRecord,
+    UNANSWERED,
 };
 pub use plan::{
     Digest, FrozenPlan, MAX_ARGUMENT_BYTES, MAX_OPERATIONS, MAX_PLAN_BYTES, Operation,

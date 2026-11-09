@@ -23,9 +23,12 @@
 //! [`Journal`] is dropped or its process exits, so two executors can never own
 //! one journal. A second open fails with [`JournalError::Busy`].
 
+use std::collections::hash_map::RandomState;
 use std::fmt;
 use std::fs::OpenOptions;
+use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, params};
@@ -39,6 +42,9 @@ pub const JOURNAL_FORMAT_VERSION: u32 = 1;
 const FORMAT: &str = "codemode-journal";
 /// Largest provider result kept per observation; larger results keep only their size.
 const MAX_VALUE_BYTES: usize = 16 * 1024;
+/// Error code of a probe whose answer was never recorded, for example because
+/// the executor was killed while the provider was answering it.
+pub const UNANSWERED: &str = "unanswered";
 /// Largest kept message, evidence, note, or diagnostic.
 const MAX_TEXT_BYTES: usize = 1024;
 
@@ -87,11 +93,16 @@ CREATE TABLE observations (
   unix_ms INTEGER NOT NULL,
   record TEXT NOT NULL
 ) STRICT;
-CREATE TABLE reconciliations (
+CREATE TABLE probes (
   ordinal INTEGER PRIMARY KEY,
   operation TEXT NOT NULL,
   session INTEGER NOT NULL REFERENCES sessions (session),
   keys TEXT NOT NULL,
+  unix_ms INTEGER NOT NULL
+) STRICT;
+CREATE TABLE reconciliations (
+  probe INTEGER PRIMARY KEY REFERENCES probes (ordinal),
+  ordinal INTEGER NOT NULL UNIQUE,
   unix_ms INTEGER NOT NULL,
   elapsed_ms INTEGER NOT NULL,
   verdict TEXT CHECK (verdict IN ('applied', 'satisfied', 'not_applied', 'unknown')),
@@ -267,7 +278,7 @@ pub struct ObservationRecord {
 /// A recorded reconciliation probe.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProbeRecord {
-    /// Fact ordinal.
+    /// Fact ordinal of the probe's start, recorded before the provider was asked.
     pub ordinal: u64,
     /// The operation probed.
     pub operation: String,
@@ -275,11 +286,12 @@ pub struct ProbeRecord {
     pub session: u64,
     /// The attempt keys probed.
     pub keys: Vec<String>,
-    /// Completion time, Unix milliseconds.
+    /// Start time, Unix milliseconds.
     pub unix_ms: u64,
-    /// Probe duration.
+    /// Probe duration; 0 when no answer was recorded.
     pub elapsed_ms: u64,
-    /// The provider's answer, or the probe's own failure.
+    /// The provider's answer, or the probe's own failure; [`UNANSWERED`] when the
+    /// executor stopped before an answer was recorded.
     pub outcome: Result<Reconciliation, ProviderError>,
 }
 
@@ -350,6 +362,30 @@ fn bounded(text: &str) -> String {
     text[..end].to_string()
 }
 
+/// Journals created by this process, so two in one process never share an identity.
+static CREATED: AtomicU64 = AtomicU64::new(0);
+
+/// A new journal's identity. Attempt keys embed it, and providers may keep keys
+/// across journals, so it must differ between journals: it mixes the process, a
+/// per-process counter, the time in nanoseconds, and a randomly keyed hash.
+fn journal_id(plan: &FrozenPlan) -> String {
+    let random = RandomState::new().hash_one((plan.digest(), std::process::id()));
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let seed = format!(
+        "{}:{}:{}:{nanos}:{random}",
+        plan.digest(),
+        std::process::id(),
+        CREATED.fetch_add(1, Ordering::Relaxed)
+    );
+    // 64 bits of the digest: an attempt key names its journal, not a secret.
+    Digest::of(seed.as_bytes())
+        .as_str()
+        .trim_start_matches("sha256:")[..16]
+        .to_string()
+}
+
 fn storage(error: rusqlite::Error) -> JournalError {
     JournalError::Storage(error.to_string())
 }
@@ -399,10 +435,7 @@ impl Journal {
                 _ => JournalError::Storage(error.to_string()),
             })?;
         let mut connection = lock(&path, durability)?;
-        let id =
-            Digest::of(format!("{}:{}:{}", plan.digest(), std::process::id(), now_ms()).as_bytes())
-                .short()
-                .to_string();
+        let id = journal_id(plan);
         let transaction = connection.transaction().map_err(storage)?;
         transaction.execute_batch(SCHEMA).map_err(storage)?;
         for (key, value) in [
@@ -694,23 +727,43 @@ impl Journal {
         transaction.commit().map_err(storage)
     }
 
-    /// Record a reconciliation probe and its outcome.
+    /// Durably record that a reconciliation probe is about to ask the provider,
+    /// before it can reach the provider, and return the probe's identity. The
+    /// probe counts against the probe budget even if its answer is never recorded.
+    ///
+    /// # Errors
+    /// Returns a storage error, in which case the probe must not be sent.
+    pub fn record_probe_start(
+        &mut self,
+        operation: &str,
+        session: u64,
+        keys: &[String],
+    ) -> Result<u64, JournalError> {
+        let keys = serde_json::to_string(keys)
+            .map_err(|error| JournalError::Storage(error.to_string()))?;
+        self.write(|transaction, ordinal| {
+            transaction.execute(
+                "INSERT INTO probes VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![ordinal, operation, session as i64, keys, now_ms() as i64],
+            )?;
+            Ok(sql_u64(ordinal))
+        })
+    }
+
+    /// Record the provider's answer to the probe `probe` returned by
+    /// [`Journal::record_probe_start`], or the probe's own failure.
     ///
     /// # Errors
     /// Returns a storage error.
     pub fn record_probe(
         &mut self,
-        operation: &str,
-        session: u64,
-        keys: &[String],
+        probe: u64,
         elapsed_ms: u64,
         outcome: &Result<Reconciliation, ProviderError>,
     ) -> Result<(), JournalError> {
-        let keys = serde_json::to_string(keys)
-            .map_err(|error| JournalError::Storage(error.to_string()))?;
         let (verdict, evidence, code, message) = match outcome {
             Ok(reconciliation) => (
-                Some(reconciliation.verdict.to_string()),
+                Some(reconciliation.verdict.as_str()),
                 Some(bounded(&reconciliation.evidence)),
                 None,
                 None,
@@ -724,12 +777,10 @@ impl Journal {
         };
         self.write(|transaction, ordinal| {
             transaction.execute(
-                "INSERT INTO reconciliations VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO reconciliations VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
+                    probe as i64,
                     ordinal,
-                    operation,
-                    session as i64,
-                    keys,
                     now_ms() as i64,
                     elapsed_ms as i64,
                     verdict,
@@ -924,8 +975,10 @@ impl Journal {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT ordinal, operation, session, keys, unix_ms, elapsed_ms, verdict, evidence,
-                        error_code, error_message FROM reconciliations ORDER BY ordinal",
+                "SELECT p.ordinal, p.operation, p.session, p.keys, p.unix_ms, r.elapsed_ms,
+                        r.verdict, r.evidence, r.error_code, r.error_message, r.probe IS NOT NULL
+                 FROM probes p LEFT JOIN reconciliations r ON r.probe = p.ordinal
+                 ORDER BY p.ordinal",
             )
             .map_err(storage)?;
         let rows = statement
@@ -936,11 +989,12 @@ impl Journal {
                     sql_u64(row.get(2)?),
                     row.get::<_, String>(3)?,
                     sql_u64(row.get(4)?),
-                    sql_u64(row.get(5)?),
+                    row.get::<_, Option<i64>>(5)?.map_or(0, sql_u64),
                     row.get::<_, Option<String>>(6)?,
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, Option<String>>(8)?,
                     row.get::<_, Option<String>>(9)?,
+                    row.get::<_, bool>(10)?,
                 ))
             })
             .map_err(storage)?;
@@ -956,10 +1010,15 @@ impl Journal {
                 evidence,
                 code,
                 message,
+                answered,
             ) = row.map_err(storage)?;
             let keys: Vec<String> =
                 serde_json::from_str(&keys).map_err(|error| corrupt("reconciliations", &error))?;
             let outcome = match verdict.as_deref() {
+                None if !answered => Err(ProviderError {
+                    code: UNANSWERED.into(),
+                    message: "the executor stopped before the probe's answer was recorded".into(),
+                }),
                 Some(verdict) => Ok(Reconciliation {
                     verdict: Verdict::parse(verdict)
                         .ok_or_else(|| corrupt("reconciliations", &format!("verdict {verdict}")))?,
@@ -1151,6 +1210,35 @@ mod tests {
             error.to_string().contains("does not match its digest"),
             "{error}"
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn journals_for_one_plan_never_share_an_identity() {
+        let ids: std::collections::HashSet<String> = (0..64).map(|_| journal_id(&plan())).collect();
+        assert_eq!(ids.len(), 64);
+    }
+
+    #[test]
+    fn a_probe_counts_from_its_start_even_without_an_answer() {
+        let path = scratch("probe");
+        let mut journal = Journal::create(&path, &plan(), Durability::Process).expect("create");
+        let session = journal.begin_session(SessionKind::Resume).expect("session");
+        journal
+            .record_probe_start("a", session, &["k1".into()])
+            .expect("probe start");
+        drop(journal);
+        let journal = Journal::open(&path, Durability::Process).expect("reopen");
+        let probes = journal.history().expect("history").probes;
+        assert_eq!(probes.len(), 1);
+        assert_eq!(
+            probes[0]
+                .outcome
+                .as_ref()
+                .map_err(|error| error.code.as_str()),
+            Err(UNANSWERED)
+        );
+        drop(journal);
         let _ = std::fs::remove_file(&path);
     }
 }

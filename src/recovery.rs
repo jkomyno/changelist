@@ -463,7 +463,8 @@ pub enum Fact<'a> {
         /// What was observed.
         observed: &'a Observed,
     },
-    /// A reconciliation probe, or `None` when the probe itself failed.
+    /// A reconciliation probe, charged when it started, with its verdict, or `None`
+    /// when the probe failed or its answer was never recorded.
     Probe(Option<Verdict>),
     /// A person's review.
     Review(Resolution),
@@ -488,10 +489,28 @@ pub struct Assessment {
 
 /// Fold an operation's facts, in journal order, into its conclusion and next step.
 ///
-/// An attempt that may have reached the provider stays unknown until an observed
-/// result, a reconciliation, or a review settles it. A later refusal does not
-/// settle an earlier unknown attempt. `probed_this_session` prevents probing the
-/// same operation twice in one session.
+/// An attempt that may have reached the provider stays unknown until its own
+/// observed result, a reconciliation, or a review settles it. A later attempt's
+/// refusal or non-application never settles an earlier unknown attempt. A
+/// `state` reconciliation can only show that the desired state holds, so its
+/// `applied` counts as `satisfied` and its `not_applied` as `unknown`.
+/// `probed_this_session` prevents probing the same operation twice in one session.
+///
+/// # Examples
+///
+/// ```
+/// use codemode::{
+///     Conclusion, Fact, NextStep, ReconcileMethod, RecoveryContract, RecoveryPolicy,
+///     RepeatSafety, assess,
+/// };
+///
+/// // Dispatched, then the executor died before the result arrived.
+/// let facts = [Fact::Intent { number: 1 }];
+/// let comment = RecoveryContract { repeat: RepeatSafety::Unsafe, reconcile: ReconcileMethod::None };
+/// let assessment = assess(&facts, comment, &RecoveryPolicy::default(), false);
+/// assert_eq!(assessment.conclusion, Conclusion::Unknown);
+/// assert_eq!(assessment.next, NextStep::Review);
+/// ```
 #[must_use]
 pub fn assess(
     facts: &[Fact<'_>],
@@ -503,32 +522,46 @@ pub fn assess(
     let mut basis = Basis::None;
     let mut attempts = 0;
     let mut probes = 0;
+    // Attempts whose outcome is unknown and not yet settled.
+    let mut open = std::collections::BTreeSet::new();
     for fact in facts {
         match *fact {
             Fact::Intent { number } => {
                 attempts = attempts.max(number);
+                open.insert(number);
                 conclusion = Conclusion::Unknown;
                 basis = Basis::None;
             }
-            Fact::Observation { observed, .. } => {
+            Fact::Observation { number, observed } => {
                 basis = Basis::Observed;
-                match observed.conclusion() {
-                    Conclusion::Applied => conclusion = Conclusion::Applied,
-                    Conclusion::Unknown => conclusion = Conclusion::Unknown,
-                    // Not applied by this attempt; an earlier unknown one may have applied.
-                    settled => {
-                        conclusion = if unsettled_before(facts, fact) {
-                            Conclusion::Unknown
-                        } else {
-                            settled
-                        };
+                conclusion = match observed.conclusion() {
+                    Conclusion::Applied => {
+                        open.clear();
+                        Conclusion::Applied
                     }
-                }
+                    Conclusion::Unknown => Conclusion::Unknown,
+                    settled => {
+                        open.remove(&number);
+                        if open.is_empty() {
+                            settled
+                        } else {
+                            Conclusion::Unknown
+                        }
+                    }
+                };
             }
             Fact::Probe(verdict) => {
                 probes += 1;
                 let Some(verdict) = verdict else { continue };
+                let verdict = match (contract.reconcile, verdict) {
+                    (ReconcileMethod::State, Verdict::Applied) => Verdict::Satisfied,
+                    (ReconcileMethod::State, Verdict::NotApplied) => Verdict::Unknown,
+                    (_, verdict) => verdict,
+                };
                 basis = Basis::Reconciled;
+                if verdict != Verdict::Unknown {
+                    open.clear();
+                }
                 conclusion = match verdict {
                     Verdict::Applied => Conclusion::Applied,
                     Verdict::Satisfied => Conclusion::Satisfied,
@@ -538,6 +571,7 @@ pub fn assess(
             }
             Fact::Review(resolution) => {
                 basis = Basis::Review;
+                open.clear();
                 conclusion = match resolution {
                     Resolution::Applied => Conclusion::Applied,
                     Resolution::NotApplied => Conclusion::NotApplied,
@@ -561,33 +595,6 @@ pub fn assess(
         next,
         reason,
     }
-}
-
-/// Whether an attempt before the one `current` observes ended unknown and was
-/// not settled before `current`.
-fn unsettled_before(facts: &[Fact<'_>], current: &Fact<'_>) -> bool {
-    let Fact::Observation { number, .. } = current else {
-        return false;
-    };
-    let mut unsettled = false;
-    for fact in facts {
-        if std::ptr::eq(fact, current) {
-            break;
-        }
-        match fact {
-            Fact::Intent { number: n } if n < number => unsettled = true,
-            Fact::Observation {
-                number: n,
-                observed,
-            } if n < number => {
-                unsettled = observed.conclusion() == Conclusion::Unknown;
-            }
-            Fact::Probe(Some(verdict)) if *verdict != Verdict::Unknown => unsettled = false,
-            Fact::Review(_) => unsettled = false,
-            _ => {}
-        }
-    }
-    unsettled
 }
 
 fn next_step(
@@ -823,5 +830,71 @@ mod tests {
             assessment.reason.contains("all 2 attempts"),
             "{assessment:?}"
         );
+    }
+
+    #[test]
+    fn a_later_attempt_settles_only_itself() {
+        let not_applied = Observed::Failed {
+            error: ProviderError {
+                code: "rate_limited".into(),
+                message: "slow down".into(),
+            },
+            effect: FailureEffect::NotApplied,
+        };
+        let refused = Observed::Failed {
+            error: ProviderError {
+                code: "precondition_failed".into(),
+                message: "closed".into(),
+            },
+            effect: FailureEffect::Refused,
+        };
+        let repeat = RecoveryContract {
+            repeat: RepeatSafety::Safe,
+            reconcile: ReconcileMethod::None,
+        };
+        // Attempt 1 may have applied; attempts 2 and 3 say nothing about it.
+        let facts = [
+            Fact::Intent { number: 1 },
+            Fact::Observation {
+                number: 1,
+                observed: &Observed::TimedOut,
+            },
+            Fact::Intent { number: 2 },
+            Fact::Observation {
+                number: 2,
+                observed: &not_applied,
+            },
+            Fact::Intent { number: 3 },
+            Fact::Observation {
+                number: 3,
+                observed: &refused,
+            },
+        ];
+        assert_eq!(
+            step(&facts, repeat),
+            (Conclusion::Unknown, NextStep::Review)
+        );
+    }
+
+    #[test]
+    fn a_state_reading_never_proves_our_effect_or_its_absence() {
+        let state = RecoveryContract {
+            repeat: RepeatSafety::Unsafe,
+            reconcile: ReconcileMethod::State,
+        };
+        let not_applied = [
+            Fact::Intent { number: 1 },
+            Fact::Probe(Some(Verdict::NotApplied)),
+        ];
+        let assessment = assess(&not_applied, state, &RecoveryPolicy::default(), true);
+        assert_eq!(
+            (assessment.conclusion, assessment.next),
+            (Conclusion::Unknown, NextStep::Review)
+        );
+        let applied = [
+            Fact::Intent { number: 1 },
+            Fact::Probe(Some(Verdict::Applied)),
+        ];
+        assert_eq!(step(&applied, state).0, Conclusion::Satisfied);
     }
 }
