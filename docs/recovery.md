@@ -11,13 +11,18 @@ result arrives, and, after a crash, asks the provider what happened before doing
 anything else. Where nothing can establish the outcome and repeating could
 duplicate the effect, it stops and asks a person.
 
+Approved operation identities submit natively to the existing Rust scheduler.
+Plans do not find or launch Deno and create no guest process; legacy `--deno`
+options remain accepted and unused. Provider accounts, permissions, retention,
+journal ordering, and recovery contracts are unchanged by this dispatch path.
+
 ```mermaid
 flowchart LR
     Plan[plan.json] -->|check: digest + preview| Review[Person]
     Review -->|approve --digest| Journal[(SQLite journal)]
     Journal --> Session[run / resume session]
     Session -->|authorize, reconcile| Provider[Trusted provider]
-    Session -->|dispatcher program| Runtime[Runtime: admission, rolling scheduler, deadline]
+    Session -->|native operation identities| Runtime[Runtime: admission, rolling scheduler, deadline]
     Runtime -->|intent, then call| Provider
     Provider -->|result| Runtime -->|observation| Journal
     Journal --> Inspect[plan inspect: five answers]
@@ -105,7 +110,7 @@ The journal is a SQLite database (format version 1) holding the frozen plan and
 append-only facts, each with an ordinal from one counter: approvals, sessions,
 dispatch intents (attempts), observations, reconciliation probes and their
 answers, reviews, and
-each session's end with its dispatch run's execution record (schema version 2,
+each session's end with its native dispatch run's execution record (schema version 3,
 readable by `codemode inspect`). Facts are never updated. An attempt key is
 `<journal id>-<operation id>-<attempt number>`, where the journal id is generated
 per journal, so two journals never share keys; the trace call identity is
@@ -189,7 +194,8 @@ treat such a journal file as possibly holding them. Inspection reports how many
 approvals predate retention and then shows probe evidence only with `--messages`.
 
 Provider credentials stay in the trusted provider and are never passed to the
-journal, the guest, or the dispatcher program, which names operations only.
+journal or any guest. Native dispatch requests name operation identities only;
+the trusted journaling provider reads their approved arguments.
 
 ## 4. Provider-owned recovery contracts
 
@@ -253,15 +259,15 @@ person.
 
 A session runs, in order: approval and declaration checks, authorization of
 every scope, reconciliation probes (at most `concurrency` at a time, each with
-the probe deadline), and one dispatch run. The dispatch run is an ordinary
-`codemode::run`: Rust generates a short program that calls
-`tools.call(tool, {operation: id})` for each operation to dispatch, and the
+the probe deadline), and one dispatch run. `codemode::run_calls` submits each
+tool and `{operation: id}` directly, and the
 existing admission, rolling scheduler, concurrency cap, session deadline,
 cancellation, and execution record apply unchanged. A journaling provider
 resolves each call to its frozen arguments, refuses anything not approved for
 this session or already dispatched in it, and wraps the trusted provider's call
-with the intent and observation commits. The program never sees arguments or
-results; its replies are `{operation, attempt}` only.
+with the intent and observation commits. Scheduler requests name operation
+identities only; the wrapper returns small `{operation, attempt}` receipts.
+No program is generated or guest process started.
 
 Cancellation (Ctrl-C, SIGTERM) stops new dispatches; attempts already sent stay
 unknown. `run` refuses a journal that already has sessions; `resume` reconciles
@@ -326,13 +332,14 @@ support for any other adapter.
 
 ## Measured tradeoffs
 
-[The recovery evaluation](recovery-evaluation.md) recovers one identical crashed
+[The final native recovery evaluation](../eval/recovery-native-final/summary.md) recovers one identical crashed
 state (the demonstration's) three ways on one Apple M1 Pro, 15 runs each. Resume
 reached the intended state in every run with no duplicate effect and left the
 comment for review; blind retry duplicated the comment in every run while
 claiming success; stopping on uncertainty left five operations unresolved.
-Resume is the slowest: 124 ms at p50 against 43 ms for blind retry, without
-provider latency, mostly durable commits and 24 ms of guest startup. With
-`storage` durability each commit costs about 6 ms here (`F_FULLFSYNC`), so the
+Resume is the slowest: 89.2 ms at p50 against 17.0 ms for blind retry, without
+provider latency. Native execution has no guest startup; durable commits
+dominate. With `storage` durability each commit costs about 6 ms here (`F_FULLFSYNC`), so the
 journal, not the provider, limits a large batch; with `process` durability the
-journal added under 1 ms per operation.
+journal added under 1 ms per operation. The [evaluation document](recovery-evaluation.md)
+keeps the earlier Deno results, including their guest startup, clearly separate.

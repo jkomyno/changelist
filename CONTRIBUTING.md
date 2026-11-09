@@ -14,7 +14,9 @@ mise run check
 Use mise for both development and CI. Nix is not part of the toolchain.
 `mise.toml` selects stable Rust, a specific Mr Boxington release, and the
 prototype's Deno execution backend.
-`Cargo.toml` declares the minimum supported Rust version, currently 1.85.
+`Cargo.toml` declares the default build's minimum supported Rust version, currently
+1.85. The optional `embedded-v8` feature uses newer Deno embedding dependencies;
+it is tested on Rust 1.99.1, with no complete minimum claimed for that feature.
 
 ## Make a change
 
@@ -35,11 +37,13 @@ Before submitting a code or build change, run:
 
 ```sh
 mise run check
+mise run embedded-check
 ```
 
 The task checks formatting, runs Clippy on all targets and features, runs tests
 including doc tests, and builds documentation. Clippy and rustdoc warnings fail
-the check. To fix formatting, run `mise exec -- cargo fmt --all`.
+the check. `embedded-check` executes the real embedded-worker and backend tests;
+CI runs it after `check`. To fix formatting, run `mise exec -- cargo fmt --all`.
 
 For changes to the bridge or `integrations/`, also run the host checks, which
 fetch Pi 1.4.0 and OpenCode 1.19.5 through mise and need no credentials:
@@ -59,6 +63,10 @@ For compatibility changes, also test the declared MSRV:
 mise exec -- rustup toolchain install 1.85.0 --profile minimal
 mise exec -- cargo +1.85.0 test --locked
 ```
+
+Keep that MSRV run on default features. Use the current mise compiler for
+`--features embedded-v8` or `--all-features`; enabling the optional engine does
+not change the compatibility promise of the default library and native plans.
 
 Both [CI jobs](.github/workflows/ci.yml) install tools with mise and run Cargo
 through Mr Boxington. CI currently runs on Linux. Check platform-specific changes

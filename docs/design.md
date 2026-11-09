@@ -9,6 +9,8 @@ provider adapter attach to that core.
 flowchart LR
     Agent[Pi / OpenCode / Codex / Composio CLI] --> CLI[Rust library or CLI]
     CLI --> Guest[Restricted TS/JS guest]
+    CLI --> Native[Approved operation identities]
+    Native --> Control
     Guest -->|untrusted call request| Control[Rust admission and scheduler]
     Control --> Provider[Trusted provider: mock, or a parent host via codemode bridge]
     Provider -->|observed result| Control
@@ -28,6 +30,14 @@ critical path. Each started guest serves exactly one run and is killed with it;
 nothing is reused between runs. The deadline then starts when the program is
 handed over, and the report's `prewarmed_ms` says how long the guest had waited.
 Without prewarming, the deadline includes guest startup.
+
+Programs select external Deno or an optional `deno_core` embedding. Both remain
+child processes: the Rust controller can terminate them independently of guest
+progress. The embedded worker owns one fresh V8 isolate and an in-memory
+TypeScript transpiler, with no filesystem or network module loader. A native
+stdin reader exits the worker on parent input closure even during a JavaScript
+CPU loop. The embedding lives behind a default-off feature so the default build
+retains Rust 1.85 support. See [its evaluation](embedded-evaluation.md).
 
 A stop request cannot reverse an external side effect. Guest termination also
 does not automatically make a still-observable provider result unknown. Collect
@@ -73,17 +83,18 @@ not an inherent Rust speed claim; [the evaluation](evaluation.md) measures it.
 
 ## Execution evidence
 
-A versioned JSON record (schema version 2) contains source, host-assigned call
+A versioned JSON record (schema version 3) identifies the backend and contains
+source for program runs, host-assigned call
 identities, arguments, observed results or errors, event ordering, timing, final
 output, and run status. Queued, dispatched, completed, rejected, and unknown work
 remain separate. The CLI can keep the full record in a file while returning
 compact status and output to its caller.
 
-Every time in the record comes from one clock: Rust's monotonic clock, in whole
+Rust timestamps come from one clock: its monotonic clock, in whole
 milliseconds since run start. Each call records when it was admitted, dispatched,
-finished, and when its reply was completely written to the guest's input, so
+finished, and, for program runs, when its reply was completely written to the guest's input, so
 queue waiting, provider time, and delivery are separate. Run-level events mark the
-guest's spawn, its finish (with output, an error, or by exiting), a deadline or
+guest's spawn and finish for program runs (with output, an error, or by exiting), a deadline or
 cancellation observed by Rust, and guest termination. An `unknown` or
 `cancelled_before_dispatch` event names the run status that caused it. Byte
 counts cover arguments, observed values, reply frames, bytes exchanged with the
@@ -132,9 +143,14 @@ approved. A SQLite journal records each operation's intent before the provider
 can see it and its observation before anyone is told; after a crash, the trusted
 provider's declared contract decides whether an uncertain operation is
 reconciled by receipt, by state, repeated, or handed to a person. Dispatch
-reuses `run` with a generated program that names operations only, so admission,
-the rolling scheduler, deadlines, cancellation, and the execution record are
-the same. It is not a workflow engine: no dependencies, no control flow, and no
+uses `run_calls` to submit operation identities directly to the same admission,
+rolling scheduler, deadline, cancellation, and result-accounting loop. Native
+input exhaustion drains queued work; a guest returning still prevents its
+queued calls from starting. Native reports have backend `native`, empty source,
+no final guest output, and no invented guest IDs, lifecycle events, transport
+bytes, or delivery times. Report schema 3 also reads historical schema 1/2
+records, whose absent backend defaults to Deno. This is not a workflow engine:
+no dependencies, no control flow, and no
 replay of the agent's program.
 
 ## Presentation shape

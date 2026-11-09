@@ -28,6 +28,21 @@ Validate launch, framing, tool scope, failure states, approval behavior, and
 cancellation for each host/version before marking it compatible. Do not install
 configuration or expose additional tools implicitly.
 
+Approved plans now submit operation identities natively; the CLI, Pi plan
+adapter, and Composio plan adapter are checked with a nonexistent inner Deno
+path. Plan `--deno` and the shared plan client's `deno` option remain accepted
+and unused. This does not change either host's tool access or permission gates.
+
+Arbitrary programs still default to Deno. `codemode run|bridge --backend embedded-v8`
+and the shared client's `BridgeLimits.backend = "embedded-v8"` select the
+optional engine when the binary includes that build feature. The generic bridge
+client resolves Deno on the trusted host's PATH when its path is omitted; an
+embedded selection never looks up Deno. Child environments remain empty.
+Library and generic bridge paths are verified; the named Pi/OpenCode/Composio arbitrary-program
+adapters have not separately been checked with embedding. Their existing
+verification continues to describe the Deno path. See [engine limits and
+measurements](embedded-evaluation.md).
+
 ## Bridge protocol (version 2)
 
 `codemode bridge [limit options]` serves one run over stdin and stdout. It starts
@@ -86,6 +101,7 @@ trusted provider: it declares the recovery contracts, executes each attempt
 through its own permission gates, and answers reconciliation probes. Rust checks
 the approval against that declaration, owns the journal, and decides what may
 happen next. The library entry point is `codemode::serve_plan_bridge`.
+No guest process is used in plan mode; `--deno` is a compatibility option only.
 
 | Direction | Frame | Meaning |
 | --- | --- | --- |
@@ -242,12 +258,13 @@ declaration is `repeat: unsafe`, `reconcile: state`, retention `summary/1`.
 What has been verified: offline, through the real plan bridge with the
 stand-in helper (`tests/composio_plan.rs`); and live, read-only, the helper's
 account selection, the three read tools, and a wrong selector failing closed
-(`mise run composio-plan-preflight`). A live mutation and recovery has not been
-run; it needs an explicitly authorized repository, issue, and label.
+(`mise run composio-plan-preflight`). One scoped live label mutation and recovery
+was also verified before the native-dispatch change; see the [live record](composio-live-validation.md).
+The native path has been rechecked offline, not with an additional live write.
 
 ## Guest protocol
 
-The Deno launcher is an implementation detail, not a host API. It receives one
+The selected guest worker is an implementation detail, not a host API. It receives one
 `{ "type": "run", "code": "..." }` object. Guest requests are `call` objects with
 an untrusted correlation `id`, a `tool` name, and JSON `arguments`. Rust supplies
 `result` replies; the guest can return an `output` value or an `error` message.

@@ -75,6 +75,10 @@ with an empty environment. Rust checks the approval, owns the journal, and
 records each attempt's intent before Pi sees it; Pi executes every attempt with
 `ctx.executeTool()`.
 
+Plan execution submits operation identities natively inside Rust, with no Deno
+lookup or guest process. `--codemode-deno` still selects the ordinary program
+guest and has no effect on plans. The plan check uses a nonexistent Deno path.
+
 ```text
 Pi model ── rust_codemode_plan ──► extension ── start {declaration} ──► codemode plan run --bridge
                                      ▲   │◄── authorize / call / reconcile ──┤  (approval check,

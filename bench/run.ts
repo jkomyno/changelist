@@ -88,8 +88,6 @@ for (const s of selected) {
   for (const profile of usable) cells.push({ scenario: s, profile });
 }
 
-// Share absolute executable paths with every adapter and child. Embedded-only runs
-// never resolve Deno, including while gathering the environment fingerprint.
 process.env.CODEMODE_BIN = resolve(process.env.CODEMODE_BIN ?? join(ROOT, "target/release/codemode"));
 const usesDeno = engines.some((engine) => ["codemode", "codemode-c4", "codemode-prewarm"].includes(engine));
 if (usesDeno) {
@@ -330,7 +328,6 @@ async function sampleTree(root: number, otherNames: Set<string>): Promise<Tree |
       }
     }
   }
-  // Maximize this simultaneous total across snapshots, never add independent peaks.
   tree.treeKiB = tree.selfKiB + tree.descendantsKiB;
   return tree;
 }

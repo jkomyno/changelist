@@ -27,6 +27,7 @@ jobs:
           mise exec -- rustc --version
           mise exec -- mbx --version
       - run: mise run check
+      - run: mise run embedded-check
 
   msrv:
     name: Rust 1.85 (MSRV)

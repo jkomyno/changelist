@@ -20,6 +20,17 @@ run = [
 description = "Compare sequential, batch, and rolling dispatch on offline fixtures"
 run = "cargo run --release --locked --bin codemode-eval -- --reps 21 --out eval/results"
 
+[tasks.embedded-check]
+description = "Exercise the optional embedded worker and program backend contracts"
+run = "cargo test --locked --features embedded-v8 --test embedded --test backend --test bridge_client"
+
+[tasks.embedded-bench]
+description = "Compare Deno and embedded workers, including prewarming, on shared offline fixtures"
+run = [
+    "cargo build --release --locked --features embedded-v8 --bin codemode",
+    "mise exec bun@1.4.4 -- bun bench/run.ts --engines codemode,codemode-prewarm,codemode-embedded,codemode-embedded-prewarm --scenarios noop,triage,triage-large --profiles zero,mixed --reps 15 --warmup 2 --cold 5 --out bench/results/embedded-local",
+]
+
 [tasks.pi-demo]
 description = "Run the offline Pi 1.4.0 integration example"
 run = "integrations/pi/run-demo.sh"
@@ -79,5 +90,6 @@ run = "examples/recovery/demo.sh"
 description = "Compare recovery strategies after a killed run, and measure journal overhead"
 run = [
     "cargo build --release --locked --bin codemode",
-    "cargo run --release --locked --bin codemode-recovery-eval -- --reps 15 --out eval/recovery > eval/recovery/summary.md",
+    "mkdir -p eval/recovery-local",
+    "cargo run --release --locked --bin codemode-recovery-eval -- --reps 15 --out eval/recovery-local > eval/recovery-local/summary.md",
 ]

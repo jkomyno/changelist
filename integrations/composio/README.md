@@ -92,8 +92,15 @@ environment. `composio run` copies the script next to itself while it runs, so
 [`plan-host.ts`](plan-host.ts) makes the Composio CLI the trusted provider of a
 recoverable [plan](../../docs/recovery.md): Rust journals each attempt, and the
 host adds one existing label to one GitHub issue per operation through
-`execute(slug, data, { account })`. Write a host-owned config with the stable
-connected-account id (`composio connections list`) and the allowed repositories:
+`execute(slug, data, { account })`.
+
+The approved list runs natively in Rust, without an inner Deno guest or executable
+lookup. Legacy plan `--deno` options are accepted and unused; the offline plan
+check deliberately supplies a nonexistent path. `composio run` remains the outer
+trusted host for authenticated provider calls.
+
+Write a host-owned config with the stable connected-account id
+(`composio connections list`) and the allowed repositories:
 
 ```json
 {"account": "<connected account id>", "destinations": ["owner/repo"]}

@@ -8,7 +8,10 @@ Rust owns three things: **run-level control**, **rolling tool scheduling**, and
 **execution evidence**. A replaceable backend executes the guest program;
 a trusted provider executes explicitly authorized tools outside it.
 
-The current prototype uses Deno 2.9.8 as its guest backend. `codemode run` uses an
+The default program backend uses Deno 2.9.8. An optional Rust embedding of V8
+runs JavaScript/TypeScript in a dedicated worker without an external Deno
+executable. Approved plans run directly through Rust and need neither engine.
+`codemode run` uses an
 offline mock provider; `codemode bridge` lets a parent host execute the tools.
 A native [Pi 1.4.0 integration](integrations/pi/README.md) uses the bridge to run
 Pi's own tools with Pi's permission gates. An [OpenCode 1.19.5 plugin](integrations/opencode/README.md)
@@ -52,6 +55,18 @@ mise exec -- cargo run -- inspect /tmp/codemode-trace.json
 ```
 Run `mise exec -- cargo run -- --help` for limits, stdin input, and exit behavior.
 
+To try the optional embedded program backend:
+
+```sh
+mise exec -- cargo run --features embedded-v8 -- run --backend embedded-v8 --code examples/compose.ts
+mise run embedded-check
+```
+
+The default build supports Rust 1.85. The embedding feature is tested on Rust
+1.99.1 and requires a newer compiler; its complete minimum is unverified.
+See [embedded execution and measurements](docs/embedded-evaluation.md) for the
+supported globals, deployment costs, and comparison with Deno and prewarming.
+
 ## Execution contract
 
 - One absolute deadline includes child startup and provider work. Cancellation
@@ -87,6 +102,8 @@ each tool's recovery contract, and `codemode plan approve --digest ...` binds an
 approval to that digest, the provider's contracts, and the budgets.
 `codemode plan run` executes it through the same scheduler, journaling each
 operation in SQLite before it can reach the provider and after its result.
+It submits the approved operation identities natively, with no generated program
+or guest process. Legacy plan `--deno` options are accepted and unused.
 After a crash, `codemode plan resume` asks the provider what happened, by
 receipt or by current state, as the provider's own contract allows, continues
 only what is safe, and leaves the rest for a person (`codemode plan review`).
@@ -115,6 +132,12 @@ or `ProviderError`. Configure the authorized names separately from guest code.
 Provider credentials belong on this trusted side. A host adapter must preserve
 its own permission and approval behavior; a type declaration does not supply it.
 
+Use `run_calls` with finite `NativeCall` requests when code execution is unnecessary.
+For arbitrary programs, `RunConfig::backend` selects `GuestBackend::Deno` or
+`GuestBackend::EmbeddedV8 { executable }`. Library users explicitly supply the
+embedded worker binary; the CLI uses its own executable. Reports record the
+actual backend, with no guest transport or lifecycle evidence for native runs.
+
 `serve_bridge` (and `codemode bridge`) supplies a provider whose calls are sent
 to the parent host over a versioned stdio protocol and answered by it. The host
 decides which tool names are authorized; Rust still rejects everything else,
@@ -140,17 +163,26 @@ mise run composio-live-check  # read-only, needs `composio login`
 
 ```sh
 mise run check
+mise run embedded-check
 mise exec -- cargo +1.85.0 test --locked
 ```
 
 Tests execute real guest programs with the mock provider and an in-process fake
 bridge host, so Deno must be on the mise-managed PATH. `mise run pi-check` runs
 the ignored Pi 1.4.0 integration tests and `mise run opencode-check` the OpenCode
-1.19.5 ones; mise fetches each host on first use. Rust 1.85 is the MSRV. One Cargo package, safe Rust, and default
+1.19.5 ones; mise fetches each host on first use. Rust 1.85 is the default-build MSRV;
+the optional embedding feature is checked separately on the current compiler.
+One Cargo package, safe Rust, and default
 build profiles are retained. `target/` belongs to Mr Boxington; use
 `mise exec -- mbx clean` for project cleanup.
 
 ## Evaluation
+
+The [embedded-engine comparison](docs/embedded-evaluation.md) measures the same
+workflow at 18.9 ms with embedding versus 37.8 ms with Deno at zero provider
+latency; prewarming lowers those to 8.0 and 12.6 ms. All 400 timed runs passed
+the output and ledger checks. This trades a newer compiler and a 75 MiB binary
+for lower local overhead; the default binary is 6 MiB. Deno remains the default.
 
 `mise run bench` runs one realistic workflow, its large-result variant, a
 permission denial, a deadline, a guest exception, a lost response, and a holdout
