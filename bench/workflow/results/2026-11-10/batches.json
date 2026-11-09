@@ -1,0 +1,250 @@
+[
+  {
+    "scenario": "no-fault",
+    "row": "host-default",
+    "load_readings": [
+      1.86
+    ],
+    "started": "2026-11-09T22:49:25.490Z"
+  },
+  {
+    "scenario": "no-fault",
+    "row": "equal-limits",
+    "load_readings": [
+      1.92
+    ],
+    "started": "2026-11-09T22:50:38.587Z"
+  },
+  {
+    "scenario": "lost-response",
+    "row": "host-default",
+    "load_readings": [
+      1.74
+    ],
+    "started": "2026-11-09T22:51:59.135Z"
+  },
+  {
+    "scenario": "lost-response",
+    "row": "equal-limits",
+    "load_readings": [
+      1.82
+    ],
+    "started": "2026-11-09T22:52:27.188Z"
+  },
+  {
+    "scenario": "kill-before-first-write",
+    "row": "host-default",
+    "load_readings": [
+      2.29
+    ],
+    "started": "2026-11-09T22:52:55.341Z"
+  },
+  {
+    "scenario": "kill-before-first-write",
+    "row": "equal-limits",
+    "load_readings": [
+      1.99
+    ],
+    "started": "2026-11-09T22:53:24.501Z"
+  },
+  {
+    "scenario": "kill-after-first-write",
+    "row": "host-default",
+    "load_readings": [
+      1.58
+    ],
+    "started": "2026-11-09T22:53:55.312Z"
+  },
+  {
+    "scenario": "kill-after-first-write",
+    "row": "equal-limits",
+    "load_readings": [
+      1.68
+    ],
+    "started": "2026-11-09T22:54:24.035Z"
+  },
+  {
+    "scenario": "late-effect",
+    "row": "host-default",
+    "load_readings": [
+      1.36
+    ],
+    "started": "2026-11-09T22:54:52.191Z"
+  },
+  {
+    "scenario": "late-effect",
+    "row": "equal-limits",
+    "load_readings": [
+      1.81
+    ],
+    "started": "2026-11-09T22:55:21.265Z"
+  },
+  {
+    "scenario": "scope-changed",
+    "row": "host-default",
+    "load_readings": [
+      1.73
+    ],
+    "started": "2026-11-09T22:55:51.551Z"
+  },
+  {
+    "scenario": "scope-changed",
+    "row": "equal-limits",
+    "load_readings": [
+      1.37
+    ],
+    "started": "2026-11-09T22:56:12.309Z"
+  },
+  {
+    "scenario": "account-revoked",
+    "row": "host-default",
+    "load_readings": [
+      1.68
+    ],
+    "started": "2026-11-09T22:56:34.956Z"
+  },
+  {
+    "scenario": "account-revoked",
+    "row": "equal-limits",
+    "load_readings": [
+      1.69
+    ],
+    "started": "2026-11-09T22:56:53.361Z"
+  },
+  {
+    "scenario": "account-switched",
+    "row": "host-default",
+    "load_readings": [
+      1.56
+    ],
+    "started": "2026-11-09T22:57:12.099Z"
+  },
+  {
+    "scenario": "account-switched",
+    "row": "equal-limits",
+    "load_readings": [
+      1.83
+    ],
+    "started": "2026-11-09T22:57:36.412Z"
+  },
+  {
+    "scenario": "ignore-cancel",
+    "row": "host-default",
+    "load_readings": [
+      2.58
+    ],
+    "started": "2026-11-09T22:58:01.183Z"
+  },
+  {
+    "scenario": "ignore-cancel",
+    "row": "equal-limits",
+    "load_readings": [
+      1.88
+    ],
+    "started": "2026-11-09T22:59:21.337Z"
+  },
+  {
+    "scenario": "slow-reply",
+    "row": "host-default",
+    "load_readings": [
+      1.27
+    ],
+    "started": "2026-11-09T23:00:48.094Z"
+  },
+  {
+    "scenario": "slow-reply",
+    "row": "equal-limits",
+    "load_readings": [
+      1.27
+    ],
+    "started": "2026-11-09T23:02:05.916Z"
+  },
+  {
+    "scenario": "broken-transport",
+    "row": "host-default",
+    "load_readings": [
+      1.38
+    ],
+    "started": "2026-11-09T23:02:52.080Z"
+  },
+  {
+    "scenario": "broken-transport",
+    "row": "equal-limits",
+    "load_readings": [
+      1.4
+    ],
+    "started": "2026-11-09T23:03:15.677Z"
+  },
+  {
+    "scenario": "repeated-crash",
+    "row": "host-default",
+    "load_readings": [
+      1.32
+    ],
+    "started": "2026-11-09T23:03:41.523Z"
+  },
+  {
+    "scenario": "repeated-crash",
+    "row": "equal-limits",
+    "load_readings": [
+      1.14
+    ],
+    "started": "2026-11-09T23:04:38.910Z"
+  },
+  {
+    "scenario": "probe-budget",
+    "row": "host-default",
+    "load_readings": [
+      1.89
+    ],
+    "started": "2026-11-09T23:05:46.501Z"
+  },
+  {
+    "scenario": "probe-budget",
+    "row": "equal-limits",
+    "load_readings": [
+      1.62
+    ],
+    "started": "2026-11-09T23:06:15.932Z"
+  },
+  {
+    "scenario": "widen",
+    "row": "host-default",
+    "load_readings": [
+      1.53
+    ],
+    "started": "2026-11-09T23:06:47.158Z"
+  },
+  {
+    "scenario": "cpu-loop",
+    "row": "host-default",
+    "load_readings": [
+      1.4
+    ],
+    "started": "2026-11-09T23:06:51.646Z"
+  },
+  {
+    "scenario": "cpu-loop",
+    "row": "equal-limits",
+    "load_readings": [
+      1.68
+    ],
+    "started": "2026-11-09T23:10:39.272Z"
+  },
+  {
+    "scenario": "memory-growth",
+    "row": "host-default",
+    "load_readings": [
+      1.32
+    ],
+    "started": "2026-11-09T23:11:28.670Z"
+  },
+  {
+    "scenario": "memory-growth",
+    "row": "equal-limits",
+    "load_readings": [
+      3.33
+    ],
+    "started": "2026-11-09T23:14:55.350Z"
+  }
+]

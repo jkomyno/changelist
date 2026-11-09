@@ -1,0 +1,184 @@
+{
+  "protocol": {
+    "latency_reps": 15,
+    "latency_warmup": 2,
+    "fault_reps": 5,
+    "provider_latency_ms": 20,
+    "wall_ms": 60000,
+    "limit_wall_ms": 20000,
+    "load_max": 4,
+    "load_wait_ms": 30000,
+    "rss_sample_ms": 200,
+    "tie": { "p50_within": 0.1, "iqr_overlap": true }
+  },
+  "engines": ["codemode", "pi-durable", "opencode", "composio-script"],
+  "rows": {
+    "host-default": {},
+    "equal-limits": { "deadline_ms": 10000, "heap_mb": 64, "max_calls": 64, "concurrency": 1 }
+  },
+  "scenarios": [
+    {
+      "id": "no-fault",
+      "kind": "latency",
+      "rows": ["host-default", "equal-limits"],
+      "expect": "all"
+    },
+    {
+      "id": "lost-response",
+      "rows": ["host-default", "equal-limits"],
+      "faults": [{ "kind": "lost_response", "slug": "GITHUB_CREATE_AN_ISSUE_COMMENT", "nth": 1 }],
+      "kill_on_armed": true,
+      "max_recoveries": 4,
+      "expect": "all",
+      "fault_op": "comment-1"
+    },
+    {
+      "id": "kill-before-first-write",
+      "rows": ["host-default", "equal-limits"],
+      "faults": [{ "kind": "pause_before", "class": "write", "nth": 1 }],
+      "kill_on_armed": true,
+      "max_recoveries": 4,
+      "expect": "all"
+    },
+    {
+      "id": "kill-after-first-write",
+      "rows": ["host-default", "equal-limits"],
+      "faults": [{ "kind": "pause_after", "class": "write", "nth": 1 }],
+      "kill_on_armed": true,
+      "max_recoveries": 4,
+      "expect": "all"
+    },
+    {
+      "id": "late-effect",
+      "rows": ["host-default", "equal-limits"],
+      "faults": [{ "kind": "hold", "slug": "GITHUB_CREATE_AN_ISSUE_COMMENT", "nth": 1 }],
+      "kill_on_armed": true,
+      "probe_properties": true,
+      "release_after_attempt": 1,
+      "max_recoveries": 4,
+      "expect": "all",
+      "fault_op": "comment-1"
+    },
+    {
+      "id": "scope-changed",
+      "rows": ["host-default", "equal-limits"],
+      "faults": [
+        {
+          "kind": "mutate_after",
+          "slug": "GITHUB_LIST_REPOSITORY_ISSUES",
+          "nth": 1,
+          "change": { "slug": "GITHUB_UPDATE_AN_ISSUE", "args": { "owner": "bench", "repo": "widgets", "issue_number": 1, "state": "closed", "state_reason": "completed" } }
+        }
+      ],
+      "max_recoveries": 2,
+      "expect": "scope_changed"
+    },
+    {
+      "id": "account-revoked",
+      "rows": ["host-default", "equal-limits"],
+      "faults": [{ "kind": "lost_response", "slug": "GITHUB_CREATE_AN_ISSUE_COMMENT", "nth": 1 }],
+      "kill_on_armed": true,
+      "after_kill": [{ "action": "account", "status": "revoked" }],
+      "max_recoveries": 2,
+      "expect": "stop_after_control"
+    },
+    {
+      "id": "account-switched",
+      "rows": ["host-default", "equal-limits"],
+      "faults": [{ "kind": "lost_response", "slug": "GITHUB_CREATE_AN_ISSUE_COMMENT", "nth": 1 }],
+      "kill_on_armed": true,
+      "after_kill": [{ "action": "account", "login": "intruder-bot" }],
+      "max_recoveries": 2,
+      "expect": "stop_after_control"
+    },
+    {
+      "id": "ignore-cancel",
+      "rows": ["host-default", "equal-limits"],
+      "row_overrides": { "equal-limits": { "deadline_ms": 1500 } },
+      "faults": [{ "kind": "ignore_cancel", "slug": "GITHUB_ADD_LABELS_TO_AN_ISSUE", "nth": 1, "delayMs": 3000 }],
+      "wait_for_late_effect": true,
+      "recover_once": true,
+      "max_recoveries": 2,
+      "expect": "all",
+      "fault_op": "add-label-1"
+    },
+    {
+      "id": "slow-reply",
+      "rows": ["host-default", "equal-limits"],
+      "row_overrides": { "equal-limits": { "deadline_ms": 1500 } },
+      "faults": [{ "kind": "slow_reply", "slug": "GITHUB_CREATE_AN_ISSUE_COMMENT", "nth": 1, "delayMs": 3000 }],
+      "max_recoveries": 2,
+      "expect": "all",
+      "fault_op": "comment-1"
+    },
+    {
+      "id": "broken-transport",
+      "rows": ["host-default", "equal-limits"],
+      "faults": [{ "kind": "reset_after_effect", "slug": "GITHUB_CREATE_AN_ISSUE_COMMENT", "nth": 1 }],
+      "max_recoveries": 2,
+      "expect": "all",
+      "fault_op": "comment-1"
+    },
+    {
+      "id": "repeated-crash",
+      "rows": ["host-default", "equal-limits"],
+      "faults": [{ "kind": "hold", "class": "write", "nth": 1 }],
+      "faults_every_attempt": true,
+      "kill_on_armed": true,
+      "release_after_kill": true,
+      "max_recoveries": 12,
+      "expect": "all"
+    },
+    {
+      "id": "probe-budget",
+      "rows": ["host-default", "equal-limits"],
+      "faults": [{ "kind": "hold", "slug": "GITHUB_CREATE_AN_ISSUE_COMMENT", "nth": 1 }],
+      "kill_on_armed": true,
+      "max_recoveries": 4,
+      "release_at_end": true,
+      "expect": "all",
+      "fault_op": "comment-1"
+    },
+    {
+      "id": "widen",
+      "widen": true,
+      "reps": 1,
+      "max_recoveries": 0,
+      "expect": "widen"
+    },
+    {
+      "id": "cpu-loop",
+      "workload": "cpu-loop",
+      "rows": ["host-default", "equal-limits"],
+      "row_overrides": { "equal-limits": { "deadline_ms": 3000 } },
+      "limit": true,
+      "max_recoveries": 0,
+      "expect": "terminated",
+      "unsupported": { "composio-script": "no guest program: the script is the workflow itself" }
+    },
+    {
+      "id": "memory-growth",
+      "workload": "memory-growth",
+      "rows": ["host-default", "equal-limits"],
+      "row_overrides": { "equal-limits": { "deadline_ms": 3000 } },
+      "limit": true,
+      "max_recoveries": 0,
+      "expect": "terminated",
+      "unsupported": { "composio-script": "no guest program: the script is the workflow itself" }
+    }
+  ],
+  "capabilities": {
+    "opencode": {
+      "durable_recovery": "unsupported: OpenCode Code Mode 2.2.6 keeps no state across processes; a restart reruns the program from scratch, and the cell reports that rerun"
+    }
+  },
+  "harness_checks": [
+    {
+      "id": "oracle-blind-retry",
+      "scenario": "lost-response",
+      "engine": "composio-script",
+      "extra_args": ["--blind-retry"],
+      "expect_flag": "unsafe_duplicate"
+    }
+  ]
+}

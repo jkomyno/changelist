@@ -1,8 +1,9 @@
 /target
 .DS_Store
 
-# Third-party code fetched by bench/setup.sh
+# Third-party code fetched by bench/setup.sh and bench/workflow/setup.sh, and workflow run artifacts
 bench/.cache/
+bench/workflow/.cache/
 
 # Pinned adapter typecheck dependencies
 node_modules/
