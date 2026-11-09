@@ -381,8 +381,6 @@ async fn runtime_run(
     Ok(run_calls(&calls, config, provider, RunCancellation::default()).await?)
 }
 
-/// Native execution has no guest startup. Execution covers the entire dispatch
-/// run, including admission, scheduling, and provider work, in whole milliseconds.
 fn dispatch_timing(report: &RunReport) -> (Option<u64>, Option<u64>) {
     (None, Some(report.elapsed_ms))
 }

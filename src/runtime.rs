@@ -1098,7 +1098,6 @@ pub async fn run_prepared(
     .await
 }
 
-/// Check limits shared by native and program execution.
 fn validate_limits(config: &RunConfig) -> Result<(), RunError> {
     if config.timeout_ms == 0 || config.max_concurrency == 0 || config.max_output_bytes == 0 {
         return Err(RunError::Config(
@@ -1188,7 +1187,6 @@ enum ExecutionInput<'a> {
     Native(&'a [NativeCall]),
 }
 
-/// Input events without transport-specific identities for host-owned requests.
 enum Submission {
     Call {
         guest_id: Option<u64>,
@@ -1404,6 +1402,7 @@ async fn execute(
                 record.finished_ms = Some(elapsed(start));
                 let kind = if result.is_ok() { "succeeded" } else { "provider_failed" };
                 let remaining = config.max_output_bytes.saturating_sub(response_bytes);
+                let result_bytes = match &result { Ok(value) => json_len(value), Err(error) => json_len(error) };
                 let bytes = if let Some(id) = record.guest_id {
                     let response = Reply {
                         frame_type: "result", id, ok: result.is_ok(),
@@ -1411,14 +1410,14 @@ async fn execute(
                     };
                     bounded_json(&response, (REPLY_FRAME_BYTES - 1).min(remaining))
                 } else {
-                    match &result {
-                        Ok(value) => bounded_json(value, remaining),
-                        Err(error) => bounded_json(error, remaining),
-                    }
+                    None
                 };
+                let counted = if native {
+                    usize::try_from(result_bytes).ok().filter(|count| *count <= remaining)
+                } else { bytes.as_ref().map(Vec::len) };
                 let call_id = record.call.id;
-                record.result_bytes = Some(match &result { Ok(value) => json_len(value), Err(error) => json_len(error) });
-                if bytes.is_some() {
+                record.result_bytes = Some(result_bytes);
+                if counted.is_some() {
                     record.outcome = match result {
                         Ok(value) => CallOutcome::Succeeded { value },
                         Err(error) => CallOutcome::ProviderFailed { error },
@@ -1427,9 +1426,9 @@ async fn execute(
                     record.outcome = CallOutcome::ResultTooLarge;
                 }
                 event(&mut report, start, Some(call_id), kind);
-                let Some(bytes) = bytes else { report.status = RunStatus::OutputLimit; break; };
-                response_bytes += bytes.len();
-                if !native && !guest_done {
+                let Some(counted) = counted else { report.status = RunStatus::OutputLimit; break; };
+                response_bytes += counted;
+                if let Some(bytes) = bytes.filter(|_| !guest_done) {
                     report.calls[index].reply_bytes = Some(bytes.len() as u64 + 1);
                     responses.push_back((Some(index), bytes));
                 }
@@ -1483,11 +1482,11 @@ async fn execute(
                         });
                         event(&mut report, start, Some(call_id), "admitted");
                         if let Some(error) = rejection {
-                            report.calls[index].result_bytes = Some(json_len(&error));
+                            let error_bytes = json_len(&error);
+                            report.calls[index].result_bytes = Some(error_bytes);
                             let reply = guest_id.filter(|_| !over_limit).map(|id| {
                                 serde_json::to_vec(&json!({"type":"result", "id":id, "ok":false, "error":error})).map_err(io::Error::other)
                             }).transpose()?;
-                            let error_bytes = json_len(&error);
                             report.calls[index].outcome = CallOutcome::Rejected { error };
                             report.calls[index].finished_ms = Some(elapsed(start));
                             event(&mut report, start, Some(call_id), "rejected");
