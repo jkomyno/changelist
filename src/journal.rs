@@ -7,7 +7,7 @@
 //!
 //! # Durability
 //!
-//! The journal uses SQLite's write-ahead log in exclusive locking mode. With
+//! The journal uses SQLite's write-ahead log in normal locking mode. With
 //! [`Durability::Storage`] (`synchronous=FULL`, plus `F_FULLFSYNC` on macOS), a
 //! write that returns `Ok` has committed and SQLite has asked the operating
 //! system to flush it to stable storage. Whether that survives power loss depends
@@ -19,17 +19,29 @@
 //!
 //! # Ownership
 //!
-//! Opening a journal takes SQLite's exclusive lock and holds it until the
-//! [`Journal`] is dropped or its process exits, so two executors can never own
-//! one journal. A second open fails with [`JournalError::Busy`].
+//! A writer ([`Journal::create`], [`Journal::open`]) first takes an exclusive
+//! operating-system lock on the sidecar file `<journal>.lock`, created beside
+//! the journal and never removed, and holds it until the [`Journal`] is dropped
+//! (after its SQLite connection closes) or its process exits, so two executors
+//! can never own one journal. A second writer fails with [`JournalError::Busy`].
+//! The lock file is part of the journal: deleting it while an executor holds it
+//! lets a second executor in, which is tampering outside this guarantee.
+//!
+//! A reader ([`JournalReader::open`]) never touches the lock file. It opens
+//! SQLite read-only, changes no durability or journal-mode setting, and reads
+//! one consistent snapshot of committed facts, so it works while an executor
+//! runs. It writes no journal data and never checkpoints the write-ahead log;
+//! SQLite may create the log's shared-memory index (`<journal>-shm`) and an
+//! empty `<journal>-wal`.
 
 use std::collections::hash_map::RandomState;
+use std::ffi::OsString;
 use std::fmt;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions, TryLockError};
 use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, params};
 
@@ -45,8 +57,13 @@ const FORMAT: &str = "codemode-journal";
 /// Error code of a probe whose answer was never recorded, for example because
 /// the executor was killed while the provider was answering it.
 pub const UNANSWERED: &str = "unanswered";
-/// Largest kept message, evidence, note, or diagnostic.
+/// Largest kept message, evidence, name, note, or diagnostic.
 const MAX_TEXT_BYTES: usize = 1024;
+/// How long a connection waits on SQLite's own locks. Executors exclude each
+/// other through the lock file, so SQLite contention is only between one writer
+/// and readers over the write-ahead log's shared-memory index, for example while
+/// one of them rebuilds it after a crash; that takes milliseconds.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
 
 const SCHEMA: &str = "
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
@@ -133,8 +150,17 @@ pub enum Durability {
 /// Why a journal could not be created, opened, or written.
 #[derive(Debug)]
 pub enum JournalError {
-    /// Another process holds the journal's lock.
+    /// Another executor holds the journal's lock file.
     Busy(PathBuf),
+    /// The journal could not be opened read-only, for example because SQLite
+    /// cannot create the write-ahead log's shared-memory index beside it.
+    /// Inspection never falls back to opening a journal for writing.
+    ReadOnly {
+        /// The journal path.
+        path: PathBuf,
+        /// What SQLite reported.
+        detail: String,
+    },
     /// The file is missing.
     NotFound(PathBuf),
     /// `create` found an existing file.
@@ -164,8 +190,16 @@ impl fmt::Display for JournalError {
         match self {
             Self::Busy(path) => write!(
                 formatter,
-                "journal {} is locked by another codemode process (a run, resume, review, or \
-                 inspection); wait for it to exit",
+                "journal {} is locked by another codemode executor (a run, resume, approve, or \
+                 review); wait for it to exit. `codemode plan inspect` can read it meanwhile",
+                path.display()
+            ),
+            Self::ReadOnly { path, detail } => write!(
+                formatter,
+                "journal {} could not be opened read-only ({detail}). Reading it needs SQLite's \
+                 shared-memory index ({}-shm), which must exist or be creatable beside the \
+                 journal; inspection never opens a journal for writing",
+                path.display(),
                 path.display()
             ),
             Self::NotFound(path) => write!(formatter, "journal {} does not exist", path.display()),
@@ -224,7 +258,8 @@ pub struct SessionRecord {
     pub pid: u32,
     /// Start time, Unix milliseconds.
     pub started_unix_ms: u64,
-    /// How it ended; absent when the executor stopped without recording an end.
+    /// How it ended; absent while no end is recorded: the executor is still
+    /// running, or stopped without recording one.
     pub end: Option<SessionEnd>,
 }
 
@@ -327,14 +362,34 @@ pub struct History {
     pub reviews: Vec<ReviewRecord>,
 }
 
-/// An open, exclusively locked journal for one plan.
+/// An open journal for one plan, owned by this writer through its lock file.
 pub struct Journal {
+    // Fields drop in order: the connection closes before the lock is released.
     connection: Connection,
+    _lock: File,
     path: PathBuf,
     id: String,
     plan: FrozenPlan,
     #[cfg(test)]
     hook: Option<test_hook::CommitHook>,
+}
+
+/// A read-only snapshot of a journal; see [`JournalReader::open`].
+pub struct JournalReader {
+    connection: Connection,
+    path: PathBuf,
+    id: String,
+    plan: FrozenPlan,
+}
+
+impl fmt::Debug for JournalReader {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("JournalReader")
+            .field("path", &self.path)
+            .field("plan", self.plan.digest())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Which fact a write records; only test hooks look at it.
@@ -481,18 +536,22 @@ impl Journal {
     /// assert!(journal.history()?.attempts[0].observation.is_none());
     /// # drop(journal);
     /// # std::fs::remove_file(&path)?;
-    /// # let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    /// # for suffix in ["db-wal", "db-shm", "db.lock"] {
+    /// #     let _ = std::fs::remove_file(path.with_extension(suffix));
+    /// # }
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     ///
     /// # Errors
-    /// Returns [`JournalError::Exists`] if the file exists, or a storage error.
+    /// Returns [`JournalError::Busy`] if another executor holds the lock file,
+    /// [`JournalError::Exists`] if the journal exists, or a storage error.
     pub fn create(
         path: impl AsRef<Path>,
         plan: &FrozenPlan,
         durability: Durability,
     ) -> Result<Self, JournalError> {
         let path = path.as_ref().to_path_buf();
+        let lock = acquire(&path)?;
         OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -501,7 +560,7 @@ impl Journal {
                 std::io::ErrorKind::AlreadyExists => JournalError::Exists(path.clone()),
                 _ => JournalError::Storage(error.to_string()),
             })?;
-        let (mut connection, _) = lock(&path, durability, false)?;
+        let (mut connection, _) = connect(&path, durability, false)?;
         let id = journal_id(plan);
         let transaction = connection.transaction().map_err(storage)?;
         transaction.execute_batch(SCHEMA).map_err(storage)?;
@@ -525,6 +584,7 @@ impl Journal {
         transaction.commit().map_err(storage)?;
         Ok(Self {
             connection,
+            _lock: lock,
             path,
             id,
             plan: plan.clone(),
@@ -533,22 +593,26 @@ impl Journal {
         })
     }
 
-    /// Open and lock an existing journal, checking its integrity and format.
+    /// Open an existing journal for writing, taking its lock file first and
+    /// then checking the journal's integrity and format.
     ///
     /// # Errors
-    /// Returns [`JournalError::Busy`] if another process holds it,
-    /// [`JournalError::Corrupt`] or [`JournalError::Incompatible`] if it cannot be
-    /// trusted, or [`JournalError::NotFound`].
+    /// Returns [`JournalError::Busy`] if another executor holds the lock file,
+    /// [`JournalError::Conflict`] if the lock file was replaced while it was
+    /// being locked, [`JournalError::Corrupt`] or [`JournalError::Incompatible`]
+    /// if the journal cannot be trusted, or [`JournalError::NotFound`].
     pub fn open(path: impl AsRef<Path>, durability: Durability) -> Result<Self, JournalError> {
         let path = path.as_ref().to_path_buf();
         if !path.exists() {
             return Err(JournalError::NotFound(path));
         }
-        let (connection, stored) = lock(&path, durability, true)?;
+        let lock = acquire(&path)?;
+        let (connection, stored) = connect(&path, durability, true)?;
         let (id, plan) =
             stored.ok_or_else(|| JournalError::Storage("journal was not validated".into()))?;
         Ok(Self {
             connection,
+            _lock: lock,
             path,
             id,
             plan,
@@ -623,7 +687,13 @@ impl Journal {
                 approval.plan
             )));
         }
-        let record = serde_json::to_string(approval)
+        // The binding does not cover the approver or note, so bounding them keeps it valid.
+        let bounded_approval = Approval {
+            approver: bounded(&approval.approver),
+            note: approval.note.as_deref().map(bounded),
+            ..approval.clone()
+        };
+        let record = serde_json::to_string(&bounded_approval)
             .map_err(|error| JournalError::Storage(error.to_string()))?;
         self.write(WriteKind::Other, |transaction, ordinal| {
             transaction.execute(
@@ -879,6 +949,165 @@ impl Journal {
     /// # Errors
     /// Returns [`JournalError::Corrupt`] if the stored record cannot be read.
     pub fn trace(&self, session: u64) -> Result<Option<RunReport>, JournalError> {
+        self.view().trace(session)
+    }
+
+    /// Read every recorded fact.
+    ///
+    /// # Errors
+    /// Returns [`JournalError::Corrupt`] if a stored value cannot be read.
+    pub fn history(&self) -> Result<History, JournalError> {
+        self.view().history()
+    }
+
+    fn view(&self) -> View<'_> {
+        View {
+            connection: &self.connection,
+            path: &self.path,
+            plan: &self.plan,
+        }
+    }
+}
+
+impl JournalReader {
+    /// Open `path` read-only and take one consistent snapshot of its committed
+    /// facts, checking its integrity, format, and plan digest without writing.
+    ///
+    /// The reader never touches the executor lock file, changes no durability
+    /// or journal-mode setting (it only waits up to two seconds on SQLite's own
+    /// locks), and reads inside one deferred transaction, so it works while an executor
+    /// runs and sees only facts committed before it opened. It never
+    /// checkpoints the write-ahead log. SQLite may create the log's
+    /// shared-memory index (`<journal>-shm`) and an empty `<journal>-wal`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use codemode::{Durability, Journal, JournalReader, Plan, SessionKind};
+    ///
+    /// let plan = Plan::parse(r#"{"version": 1, "operations": [
+    ///   {"id": "label-101", "tool": "issues.add_label",
+    ///    "scope": {"provider": "fixture.issues", "account": "triage-bot"},
+    ///    "arguments": {"issue": 101, "label": "triage"}}]}"#)?;
+    /// let path = std::env::temp_dir().join(format!("codemode-reader-{}.db", std::process::id()));
+    /// # let _ = std::fs::remove_file(&path);
+    /// let mut journal = Journal::create(&path, &plan, Durability::Process)?;
+    /// journal.begin_session(SessionKind::Run)?;
+    /// // The writer is still open; a reader sees its committed session.
+    /// let reader = JournalReader::open(&path)?;
+    /// let session = &reader.history()?.sessions[0];
+    /// assert!(session.end.is_none(), "no end recorded yet");
+    /// # drop((reader, journal));
+    /// # std::fs::remove_file(&path)?;
+    /// # for suffix in ["db-wal", "db-shm", "db.lock"] {
+    /// #     let _ = std::fs::remove_file(path.with_extension(suffix));
+    /// # }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    /// Returns [`JournalError::NotFound`], [`JournalError::ReadOnly`] if SQLite
+    /// cannot read the journal without writing (for example, a write-ahead log
+    /// in a read-only directory whose shared-memory index is missing), or
+    /// [`JournalError::Corrupt`] or [`JournalError::Incompatible`] if it cannot
+    /// be trusted.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, JournalError> {
+        let path = path.as_ref().to_path_buf();
+        if !path.exists() {
+            return Err(JournalError::NotFound(path));
+        }
+        let classify = |error: rusqlite::Error| match error.sqlite_error_code() {
+            Some(ErrorCode::CannotOpen | ErrorCode::ReadOnly) => JournalError::ReadOnly {
+                path: path.clone(),
+                detail: error.to_string(),
+            },
+            Some(ErrorCode::NotADatabase) => JournalError::Incompatible {
+                path: path.clone(),
+                detail: "not an SQLite database".into(),
+            },
+            Some(ErrorCode::DatabaseCorrupt) => JournalError::Corrupt {
+                path: path.clone(),
+                detail: error.to_string(),
+            },
+            _ => storage(error),
+        };
+        let connection = Connection::open_with_flags(
+            &path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(classify)?;
+        connection.busy_timeout(BUSY_TIMEOUT).map_err(storage)?;
+        // The first read starts the snapshot every later read in this reader shares.
+        connection
+            .execute_batch("BEGIN DEFERRED")
+            .map_err(classify)?;
+        connection
+            .query_row("SELECT count(*) FROM sqlite_schema", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(classify)?;
+        let (id, plan) = validate(&connection, &path)?;
+        Ok(Self {
+            connection,
+            path,
+            id,
+            plan,
+        })
+    }
+
+    /// The journal file.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The journal's identity; see [`Journal::id`].
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// The plan this journal records.
+    #[must_use]
+    pub fn plan(&self) -> &FrozenPlan {
+        &self.plan
+    }
+
+    /// The execution record stored for `session`'s dispatch run, if any, as of
+    /// this reader's snapshot.
+    ///
+    /// # Errors
+    /// Returns [`JournalError::Corrupt`] if the stored record cannot be read.
+    pub fn trace(&self, session: u64) -> Result<Option<RunReport>, JournalError> {
+        self.view().trace(session)
+    }
+
+    /// Every fact committed as of this reader's snapshot.
+    ///
+    /// # Errors
+    /// Returns [`JournalError::Corrupt`] if a stored value cannot be read.
+    pub fn history(&self) -> Result<History, JournalError> {
+        self.view().history()
+    }
+
+    fn view(&self) -> View<'_> {
+        View {
+            connection: &self.connection,
+            path: &self.path,
+            plan: &self.plan,
+        }
+    }
+}
+
+/// Reads shared by writers and readers.
+struct View<'a> {
+    connection: &'a Connection,
+    path: &'a Path,
+    plan: &'a FrozenPlan,
+}
+
+impl View<'_> {
+    fn trace(&self, session: u64) -> Result<Option<RunReport>, JournalError> {
         let text: Option<Option<String>> = self
             .connection
             .query_row(
@@ -896,16 +1125,12 @@ impl Journal {
 
     fn corrupt(&self, detail: String) -> JournalError {
         JournalError::Corrupt {
-            path: self.path.clone(),
+            path: self.path.to_path_buf(),
             detail,
         }
     }
 
-    /// Read every recorded fact.
-    ///
-    /// # Errors
-    /// Returns [`JournalError::Corrupt`] if a stored value cannot be read.
-    pub fn history(&self) -> Result<History, JournalError> {
+    fn history(&self) -> Result<History, JournalError> {
         let corrupt =
             |table: &str, error: &dyn fmt::Display| self.corrupt(format!("{table}: {error}"));
         let mut approvals = Vec::new();
@@ -1128,13 +1353,74 @@ impl Journal {
     }
 }
 
-/// Open `path` and take SQLite's exclusive lock, failing at once if it is held.
-/// For an `existing` file, check that it is a sound journal of this format under
-/// the lock and before anything is written, so a foreign file is left unchanged.
-/// The journal identity and plan read and checked under the lock.
+/// The executor lock file for the journal at `path`: `<path>.lock`.
+fn lock_path(path: &Path) -> PathBuf {
+    let mut name = OsString::from(path.as_os_str());
+    name.push(".lock");
+    PathBuf::from(name)
+}
+
+/// Take the executor lock for the journal at `path`, failing at once if another
+/// executor holds it. The returned file holds the lock until it is closed.
+fn acquire(path: &Path) -> Result<File, JournalError> {
+    acquire_with(path, |_| {})
+}
+
+/// [`acquire`], running `before_lock` between opening and locking the lock file
+/// so tests can replace it in that window.
+fn acquire_with(path: &Path, before_lock: impl FnOnce(&Path)) -> Result<File, JournalError> {
+    let lock_path = lock_path(path);
+    let failed = |error: std::io::Error| {
+        JournalError::Storage(format!("lock file {}: {error}", lock_path.display()))
+    };
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(failed)?;
+    before_lock(&lock_path);
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => return Err(JournalError::Busy(path.to_path_buf())),
+        Err(TryLockError::Error(error)) => return Err(failed(error)),
+    }
+    // A lock on a file that no longer has this name excludes nobody: another
+    // executor opening the name now would lock a different file.
+    let named = std::fs::metadata(&lock_path).ok();
+    if !named.is_some_and(|named| same_file(&file, &named)) {
+        return Err(JournalError::Conflict(format!(
+            "lock file {} was removed or replaced while it was being locked; another process \
+             is changing the journal's files, so this executor will not start",
+            lock_path.display()
+        )));
+    }
+    Ok(file)
+}
+
+/// Whether `file` is the file `named` describes.
+#[cfg(unix)]
+fn same_file(file: &File, named: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    file.metadata()
+        .is_ok_and(|held| (held.dev(), held.ino()) == (named.dev(), named.ino()))
+}
+
+/// Without device and inode numbers, a still-existing name is all that is checked.
+#[cfg(not(unix))]
+fn same_file(_file: &File, _named: &std::fs::Metadata) -> bool {
+    true
+}
+
+/// The journal identity and plan, read and checked before anything is written.
 type Stored = (String, FrozenPlan);
 
-fn lock(
+/// Open `path` for writing in normal locking mode with the write-ahead log. For
+/// an `existing` file, check that it is a sound journal of this format inside a
+/// write transaction, before anything is written, so a foreign file is left
+/// unchanged. Callers hold the executor lock.
+fn connect(
     path: &Path,
     durability: Durability,
     existing: bool,
@@ -1145,8 +1431,9 @@ fn lock(
     )
     .map_err(storage)?;
     let classify = |error: rusqlite::Error| match error.sqlite_error_code() {
+        // Executors exclude each other through the lock file, so this is not one.
         Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked) => {
-            JournalError::Busy(path.to_path_buf())
+            JournalError::Storage(format!("SQLite stayed busy for {BUSY_TIMEOUT:?}: {error}"))
         }
         Some(ErrorCode::NotADatabase) => JournalError::Incompatible {
             path: path.to_path_buf(),
@@ -1166,16 +1453,14 @@ fn lock(
         Durability::Storage => "ON",
         Durability::Process => "OFF",
     };
+    connection.busy_timeout(BUSY_TIMEOUT).map_err(storage)?;
     connection
         .execute_batch(&format!(
-            "PRAGMA busy_timeout = 0;
-             PRAGMA locking_mode = EXCLUSIVE;
-             PRAGMA fullfsync = {fullfsync};
+            "PRAGMA fullfsync = {fullfsync};
              PRAGMA checkpoint_fullfsync = {fullfsync};
              PRAGMA foreign_keys = ON;"
         ))
         .map_err(classify)?;
-    // In exclusive locking mode the lock taken here is held until the connection closes.
     connection
         .execute_batch("BEGIN EXCLUSIVE")
         .map_err(classify)?;
@@ -1258,8 +1543,9 @@ mod tests {
     fn scratch(name: &str) -> PathBuf {
         let path =
             std::env::temp_dir().join(format!("codemode-journal-{}-{name}.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        for suffix in ["db", "db-wal", "db-shm", "db.lock"] {
+            let _ = std::fs::remove_file(path.with_extension(suffix));
+        }
         path
     }
 
@@ -1277,21 +1563,40 @@ mod tests {
         let mut journal = Journal::create(&path, &plan(), Durability::Storage).expect("create");
         assert!(matches!(
             Journal::create(&path, &plan(), Durability::Storage),
-            Err(JournalError::Exists(_))
-        ));
-        assert!(matches!(
-            Journal::open(&path, Durability::Storage),
             Err(JournalError::Busy(_))
         ));
+        let busy = Journal::open(&path, Durability::Storage).expect_err("second writer");
+        assert!(matches!(busy, JournalError::Busy(_)), "{busy}");
+        assert!(
+            busy.to_string()
+                .contains("locked by another codemode executor")
+        );
+        assert!(lock_path(&path).exists());
         let session = journal.begin_session(SessionKind::Run).expect("session");
         journal
             .record_intent("k1", "a", 1, session, Some(1))
             .expect("intent");
+        // A reader sees committed facts while the writer holds the journal.
+        let reader = JournalReader::open(&path).expect("reader");
+        assert_eq!(reader.history().expect("history").attempts.len(), 1);
+        journal
+            .record_intent("k2", "a", 2, session, Some(2))
+            .expect("intent");
+        assert_eq!(
+            reader.history().expect("history").attempts.len(),
+            1,
+            "one reader reads one snapshot"
+        );
+        drop(reader);
         drop(journal);
+        assert!(matches!(
+            Journal::create(&path, &plan(), Durability::Storage),
+            Err(JournalError::Exists(_))
+        ));
 
         let journal = Journal::open(&path, Durability::Process).expect("reopen");
         let history = journal.history().expect("history");
-        assert_eq!(history.attempts.len(), 1);
+        assert_eq!(history.attempts.len(), 2);
         assert_eq!(history.attempts[0].observation, None);
         assert_eq!(history.sessions[0].end, None);
         drop(journal);
@@ -1433,6 +1738,57 @@ mod tests {
         );
         assert_eq!(std::fs::read(&path).expect("read"), before);
         assert!(!path.with_extension("db-wal").exists());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_executor_refuses_a_lock_file_replaced_before_it_was_locked() {
+        let path = scratch("replaced-lock");
+        drop(Journal::create(&path, &plan(), Durability::Process).expect("create"));
+        let error = acquire_with(&path, |lock| {
+            std::fs::remove_file(lock).expect("unlink");
+            std::fs::write(lock, b"").expect("replace");
+        })
+        .expect_err("replaced lock file");
+        assert!(matches!(error, JournalError::Conflict(_)), "{error}");
+        assert!(error.to_string().contains("removed or replaced"), "{error}");
+
+        let error = acquire_with(&path, |lock| std::fs::remove_file(lock).expect("unlink"))
+            .expect_err("removed lock file");
+        assert!(error.to_string().contains("removed or replaced"), "{error}");
+        // With the lock file in place, the journal opens.
+        drop(Journal::open(&path, Durability::Process).expect("open"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn approver_and_note_are_kept_to_one_kib() {
+        let path = scratch("approval-text");
+        let plan = plan();
+        let mut journal = Journal::create(&path, &plan, Durability::Process).expect("create");
+        let declaration = crate::recovery::ProviderDeclaration {
+            provider: "p".into(),
+            account: "x".into(),
+            contracts: std::collections::BTreeMap::new(),
+            retention: Retention::default(),
+        };
+        let policy = crate::recovery::RecoveryPolicy::default();
+        let long = "\u{e9}".repeat(MAX_TEXT_BYTES);
+        let approval = Approval {
+            binding: crate::recovery::approval_binding(plan.digest(), &declaration, &policy),
+            plan: plan.digest().clone(),
+            declaration,
+            policy,
+            approver: long.clone(),
+            note: Some(long),
+            approved_unix_ms: 0,
+        };
+        journal.approve(&approval).expect("approve");
+        let stored = journal.history().expect("history").approvals.remove(0);
+        assert_eq!(stored.approver.len(), MAX_TEXT_BYTES);
+        assert_eq!(stored.note.as_deref().map(str::len), Some(MAX_TEXT_BYTES));
+        assert_eq!(stored.binding, approval.binding);
+        drop(journal);
         let _ = std::fs::remove_file(&path);
     }
 }

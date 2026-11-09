@@ -213,10 +213,10 @@ fn rpc_events(child: &mut Child) -> mpsc::Receiver<Value> {
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
             let Ok(line) = line else { return };
-            if let Ok(event) = serde_json::from_str(&line) {
-                if sender.send(event).is_err() {
-                    return;
-                }
+            if let Ok(event) = serde_json::from_str(&line)
+                && sender.send(event).is_err()
+            {
+                return;
             }
         }
     });

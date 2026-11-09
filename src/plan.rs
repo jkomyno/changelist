@@ -369,15 +369,14 @@ impl Operation {
             ("scope.destination", self.scope.destination.as_ref()),
         ];
         for (field, value) in names {
-            if let Some(value) = value {
-                if value.is_empty()
+            if let Some(value) = value
+                && (value.is_empty()
                     || value.len() > MAX_NAME_BYTES
-                    || value.chars().any(char::is_control)
-                {
-                    return Err(invalid(&format!(
-                        "{field} must be 1 to {MAX_NAME_BYTES} bytes without control characters"
-                    )));
-                }
+                    || value.chars().any(char::is_control))
+            {
+                return Err(invalid(&format!(
+                    "{field} must be 1 to {MAX_NAME_BYTES} bytes without control characters"
+                )));
             }
         }
         if !self.arguments.is_object() {

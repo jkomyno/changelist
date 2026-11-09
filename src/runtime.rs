@@ -1308,10 +1308,10 @@ async fn execute(
         if (guest_done || source_exhausted) && running.is_empty() && queue.is_empty() {
             break;
         }
-        if let Some((_, bytes)) = responses.front_mut() {
-            if bytes.last() != Some(&b'\n') {
-                bytes.push(b'\n');
-            }
+        if let Some((_, bytes)) = responses.front_mut()
+            && bytes.last() != Some(&b'\n')
+        {
+            bytes.push(b'\n');
         }
         tokio::select! {
             biased;
@@ -1474,13 +1474,11 @@ async fn execute(
                         report.bytes.retained += bytes.len() as u64;
                         guest_done = true;
                         responses.clear();
-                        if let Some(child) = &mut child {
-                            if let Err(error) = child.start_kill() { io_failure = Some(error); break; }
-                        }
+                        if let Some(child) = &mut child
+                            && let Err(error) = child.start_kill() { io_failure = Some(error); break; }
                     }
-                    Submission::Error(message) => { report.status = RunStatus::GuestError; report.diagnostic = Some(message); event_because(&mut report, start, None, "guest_finished", Some("error")); guest_done = true; responses.clear(); if let Some(child) = &mut child {
-                            if let Err(error) = child.start_kill() { io_failure = Some(error); break; }
-                        } }
+                    Submission::Error(message) => { report.status = RunStatus::GuestError; report.diagnostic = Some(message); event_because(&mut report, start, None, "guest_finished", Some("error")); guest_done = true; responses.clear(); if let Some(child) = &mut child
+                            && let Err(error) = child.start_kill() { io_failure = Some(error); break; } }
                     Submission::InvalidFrame => {
                         report.status = RunStatus::ProtocolError;
                         report.diagnostic = Some("invalid child stdout frame".into());
@@ -1496,9 +1494,8 @@ async fn execute(
                             event_because(&mut report, start, None, "guest_finished", Some("exited"));
                             guest_done = true;
                             responses.clear();
-                            if let Some(child) = &mut child {
-                                if let Err(error) = child.start_kill() { io_failure = Some(error); break; }
-                            }
+                            if let Some(child) = &mut child
+                                && let Err(error) = child.start_kill() { io_failure = Some(error); break; }
                         }
                     }
                 }

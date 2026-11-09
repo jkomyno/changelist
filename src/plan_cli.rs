@@ -9,9 +9,10 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use codemode::{
-    Approval, Durability, Journal, JournalError, JournalInspectOptions, Plan, PlanBridgeError,
-    ProviderDeclaration, RecoveryPolicy, Resolution, RunCancellation, SessionError, SessionKind,
-    SessionOptions, SessionOutcome, approval_binding, inspect_journal, serve_plan_bridge,
+    Approval, Durability, Journal, JournalError, JournalInspectOptions, JournalReader, Plan,
+    PlanBridgeError, ProviderDeclaration, RecoveryPolicy, Resolution, RunCancellation,
+    SessionError, SessionKind, SessionOptions, SessionOutcome, approval_binding, inspect_journal,
+    serve_plan_bridge,
 };
 
 use crate::{CliError, cancel_on_interrupt, read_input};
@@ -41,8 +42,10 @@ resume reconciles uncertain operations with the provider and continues the
 safely recoverable work. Both revalidate the approval and the provider's
 current authorization first. inspect answers what was approved, attempted,
 changed, uncertain, and what can safely happen next, without argument or
-result values. review records a person's finding for an operation that needs
-one. trace prints a session's execution record for `codemode inspect`.
+result values. It reads the journal read-only, so it works while a session
+runs; an open session may be running or may have been killed. review records
+a person's finding for an operation that needs one. trace prints a session's
+execution record for `codemode inspect`.
 
 run and resume act through a parent host (--bridge): stdin and stdout carry
 protocol version 3 frames (start, authorize, call, reconcile, their replies,
@@ -392,7 +395,7 @@ async fn bridge_session(journal: &str, options: SessionOptions) -> Result<u8, Bo
 }
 
 fn inspect(flags: Flags) -> Result<u8, Box<dyn Error>> {
-    let journal = Journal::open(flags.require("--journal")?, Durability::Storage)?;
+    let journal = JournalReader::open(flags.require("--journal")?)?;
     let options = JournalInspectOptions {
         messages: flags.has("--messages"),
     };
@@ -424,14 +427,14 @@ fn review(flags: Flags) -> Result<u8, Box<dyn Error>> {
 }
 
 fn trace(flags: Flags) -> Result<u8, Box<dyn Error>> {
-    let journal = Journal::open(flags.require("--journal")?, Durability::Storage)?;
+    let journal = JournalReader::open(flags.require("--journal")?)?;
     let session: u64 = flags
         .require("--session")?
         .parse()
         .map_err(|_| CliError("--session requires a session number".into()))?;
     let Some(report) = journal.trace(session)? else {
         return Err(JournalError::Conflict(format!(
-            "session {session} has no stored execution record (it dispatched nothing, or did not finish)"
+            "session {session} has no stored execution record (it dispatched nothing, or has not finished)"
         ))
         .into());
     };

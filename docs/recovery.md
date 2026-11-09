@@ -138,7 +138,7 @@ Ordering per attempt:
    queued, then records each attempt without a result as `unobserved`: still
    unknown.
 
-**Durability.** The journal uses the write-ahead log with exclusive locking.
+**Durability.** The journal uses SQLite's write-ahead log in normal locking mode.
 With the default `--durability storage` (`synchronous=FULL`, and `F_FULLFSYNC`
 on macOS), a commit returns after SQLite has asked the operating system to flush
 it to stable storage. Whether that survives power loss depends on the device
@@ -147,15 +147,32 @@ honoring flushes; no test here establishes it. With `--durability process`
 may be lost on an OS crash or power failure. The tests kill processes with
 SIGKILL; they establish process-crash durability only.
 
-**One owner.** Opening a journal takes SQLite's exclusive lock until the process
-exits, including after SIGKILL, when the OS releases it. A second executor,
-resume, review, or inspection fails at once with "locked by another codemode
-process"; inspection therefore waits until a session ends.
+**One owner.** Every command that writes the journal (`approve`, `run`,
+`resume`, `review`) first takes an exclusive operating-system lock on the lock
+file `<journal>.lock` beside it, and holds it until the process exits, including
+after SIGKILL, when the OS releases it. A second executor fails at once with
+"locked by another codemode executor" and changes nothing. The lock file is part
+of the journal: copy, move, or delete it only together with the journal files
+(`<journal>`, `<journal>-wal`, `<journal>-shm`) and never while a command runs.
+Deleting or replacing it while an executor holds it lets a second executor in;
+that is tampering outside the exclusion guarantee. An executor that finds its
+lock file replaced while it was taking the lock refuses to start.
+
+**Concurrent inspection.** `plan inspect` and `plan trace` open the journal
+read-only, never touch the lock file, and work while a session runs. They read
+one consistent snapshot of committed facts, write no journal data, change no
+durability setting, and never checkpoint the write-ahead log. SQLite may create
+its shared-memory index (`<journal>-shm`) and an empty `<journal>-wal` beside the
+journal, so inspection needs a writable directory unless those files exist; if
+SQLite cannot read the journal without writing, inspection fails with "could not
+be opened read-only" rather than opening it for writing. A session without a
+recorded end is shown as `open — no end recorded; this does not show that an
+executor is running`: the executor may be running, or may have been killed.
 
 **Failing closed.** A file that is not SQLite, not a codemode journal, of
 another format version, fails `quick_check`, or whose stored plan does not match
 its digest is refused with a diagnostic and left unchanged: these checks run under
-the lock before anything is written.
+the executor lock, in a write transaction, before anything is written.
 
 **What is stored.** Plan arguments (needed to retry) and, from the provider,
 only what its approved **retention policy** keeps. The provider declares the
@@ -287,9 +304,10 @@ journal, or startup errors.
 
 - **What was approved?** Plan digest and summary, tools, scopes, approver,
   binding, provider and account, contracts, and policy.
-- **What was attempted and observed?** Sessions (including ones that never
-  recorded an end, such as a killed executor), and per operation its attempts,
-  probes, and reviews in journal order, with trace call identities.
+- **What was attempted and observed?** The latest 20 sessions, with a count of
+  earlier ones (including open sessions, which recorded no end: a running or a
+  killed executor), and per operation its attempts, probes, and reviews in
+  journal order, with trace call identities.
 - **What changed or is currently satisfied?** Operations the provider
   confirmed it executed for us, and operations satisfied with unknown
   attribution. `applied` means the provider executed our operation; under set
@@ -302,7 +320,9 @@ journal, or startup errors.
 It prints tools, argument keys, error codes, verdicts, the retention policy, and
 probe evidence the policy kept, but not argument values, error messages, or
 approval and review notes unless `--messages` is given. `--messages` cannot show
-what the journal never kept. `--json` returns the same answers as one object.
+what the journal never kept. `--json` returns the same answers as one object;
+it is the diagnosis to share: it holds no argument or result values, and the
+journal keeps approver names, notes, and other stored text to 1 KiB each.
 
 ## Host integration
 
@@ -329,8 +349,8 @@ support for any other adapter.
   operation can be undone later by someone else; inspection reports what was
   established, not current state at inspection time.
 - Operations are independent; there is no ordering or dependency between them.
-- One journal per plan, one executor per journal; inspection waits for a running
-  session.
+- One journal per plan, one executor per journal; inspection reads committed
+  facts while a session runs and cannot tell a running executor from a killed one.
 - The approver name is not authenticated; host permissions and provider
   authorization remain the enforcement points.
 - The credential-key check catches obvious mistakes only; values are stored as

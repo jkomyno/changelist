@@ -6,9 +6,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use codemode::{
-    Approval, Conclusion, Durability, FailureEffect, Journal, JournalError, NextStep, Observed,
-    Plan, PlanBridgeError, ProviderDeclaration, RecoveryPolicy, RunCancellation, SessionKind,
-    SessionOptions, SessionOutcome, Verdict, approval_binding, serve_plan_bridge,
+    Approval, Conclusion, Durability, FailureEffect, Journal, JournalError, JournalReader,
+    NextStep, Observed, Plan, PlanBridgeError, ProviderDeclaration, RecoveryPolicy,
+    RunCancellation, SessionKind, SessionOptions, SessionOutcome, Verdict, approval_binding,
+    serve_plan_bridge,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, DuplexStream, Lines};
@@ -81,7 +82,7 @@ fn approved_journal() -> PathBuf {
     path
 }
 
-/// Open a journal once the bridge that owned it has released its lock.
+/// Open a journal for writing once an aborted bridge has released its lock.
 async fn reopen(path: &Path) -> Journal {
     for _ in 0..100 {
         match Journal::open(path, Durability::Process) {
@@ -126,7 +127,7 @@ async fn stalled_plan_output_is_bounded_and_the_session_remains_inspectable() {
         matches!(error, PlanBridgeError::Io(ref error) if error.kind() == std::io::ErrorKind::TimedOut),
         "{error}"
     );
-    let journal = reopen(&path).await;
+    let journal = JournalReader::open(&path).expect("read");
     let history = journal.history().expect("history");
     assert!(history.attempts.is_empty(), "no mutation was sent");
     assert!(
@@ -237,6 +238,7 @@ async fn host_executes_journaled_attempts_and_answers_probes() {
     drop(host);
 
     // Nothing ran after the host saw the call, so its intent was already durable.
+    // The resume below needs the aborted bridge to have released the journal.
     let history = reopen(&path).await.history().expect("history");
     assert_eq!(history.attempts.len(), 1, "{:?}", history.attempts);
     let attempt = &history.attempts[0];
@@ -297,7 +299,10 @@ async fn host_executes_journaled_attempts_and_answers_probes() {
         "a host error without an effect is not a refusal"
     );
 
-    let history = reopen(&path).await.history().expect("history");
+    let history = JournalReader::open(&path)
+        .expect("read")
+        .history()
+        .expect("history");
     let probe = &history.probes[0];
     let reconciliation = probe.outcome.as_ref().expect("probe answered");
     assert_eq!(
@@ -546,7 +551,7 @@ async fn provider_text_scenario(
 /// write-ahead log as raw bytes, the reopened history, every stored trace,
 /// inspection with messages (JSON and text), and every bridge frame read.
 async fn everything_kept(path: &Path) -> String {
-    let journal = reopen(path).await;
+    let journal = JournalReader::open(path).expect("read");
     let mut kept = String::new();
     for file in [
         path.to_path_buf(),
@@ -580,7 +585,10 @@ async fn the_default_retention_keeps_no_provider_text() {
     let kept = everything_kept(&path).await;
     assert!(!kept.contains("MARK-"), "provider text was kept: {kept}");
     // The facts recovery needs are still there.
-    let history = reopen(&path).await.history().expect("history");
+    let history = JournalReader::open(&path)
+        .expect("read")
+        .history()
+        .expect("history");
     let observed: Vec<&Observed> = history
         .attempts
         .iter()
@@ -592,9 +600,12 @@ async fn the_default_retention_keeps_no_provider_text() {
         Observed::Failed { error, effect: FailureEffect::Refused }
             if error.code == codemode::UNRECOGNIZED_CODE && error.message.is_empty()
     ));
-    let render = codemode::inspect_journal(&reopen(&path).await, &Default::default())
-        .expect("inspects")
-        .render();
+    let render = codemode::inspect_journal(
+        &JournalReader::open(&path).expect("read"),
+        &Default::default(),
+    )
+    .expect("inspects")
+    .render();
     assert!(render.contains("retention metadata/1"), "{render}");
     assert!(
         render.contains("applied - evidence not retained"),
@@ -622,9 +633,12 @@ async fn a_summary_policy_keeps_the_hosts_explanations_and_the_same_decisions() 
         !kept.contains("MARK-CODE") && !kept.contains("MARK-AUTH-CODE"),
         "codes stay codes"
     );
-    let render = codemode::inspect_journal(&reopen(&path).await, &Default::default())
-        .expect("inspects")
-        .render();
+    let render = codemode::inspect_journal(
+        &JournalReader::open(&path).expect("read"),
+        &Default::default(),
+    )
+    .expect("inspects")
+    .render();
     assert!(render.contains("retention summary/1"), "{render}");
     assert!(
         render.contains(&format!("applied - {EVIDENCE}")),
@@ -681,7 +695,7 @@ async fn an_approval_bound_under_the_previous_format_is_refused_before_any_host_
             .is_some_and(|detail| detail.contains("does not bind this plan")),
         "{frame}"
     );
-    let journal = reopen(&path).await;
+    let journal = JournalReader::open(&path).expect("read");
     assert!(
         journal.history().expect("history").attempts.is_empty(),
         "nothing ran"
@@ -707,7 +721,7 @@ async fn a_fact_frame_is_a_protocol_error_and_nothing_is_dispatched() {
             .is_some_and(|diagnostic| diagnostic.starts_with("invalid host frame")),
         "{frame}"
     );
-    let journal = reopen(&path).await;
+    let journal = JournalReader::open(&path).expect("read");
     assert!(
         journal.history().expect("history").attempts.is_empty(),
         "nothing was dispatched"

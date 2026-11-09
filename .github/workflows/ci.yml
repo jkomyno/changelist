@@ -74,7 +74,7 @@ jobs:
         run: mise run opencode-check
 
   msrv:
-    name: Rust 1.85 (MSRV)
+    name: Rust 1.89 (MSRV)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -82,8 +82,8 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
       - name: Install minimum supported Rust
-        run: mise exec -- rustup toolchain install 1.85.0 --profile minimal
+        run: mise exec -- rustup toolchain install 1.89.0 --profile minimal
       - name: Test MSRV through mise and Mr Boxington
         run: |
           mise exec -- mbx --version
-          mise exec -- cargo +1.85.0 test --locked
+          mise exec -- cargo +1.89.0 test --locked

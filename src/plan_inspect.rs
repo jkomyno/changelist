@@ -3,10 +3,15 @@
 //! can safely happen next.
 //!
 //! Inspection prints tools, argument keys, error codes, verdicts, the approved
-//! retention policy, and probe evidence the policy kept. It leaves out argument
-//! values, error messages, and notes unless [`JournalInspectOptions::messages`] is
-//! set; the journal holds no result values or provider prose it did not keep, so
-//! `messages` cannot reveal them.
+//! retention policy, and probe evidence the policy kept. It never prints
+//! argument values, and leaves out error messages and notes unless
+//! [`JournalInspectOptions::messages`] is set; the journal holds no result values
+//! or provider prose it did not keep, so `messages` cannot reveal them.
+//!
+//! Inspection reads a [`JournalReader`] snapshot, so it can run while an
+//! executor holds the journal. A session without a recorded end is reported as
+//! `open`, which does not show that an executor is running: it may be running,
+//! or it may have been killed.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
@@ -15,7 +20,7 @@ use serde::Serialize;
 
 use crate::executor::assess_history;
 use crate::inspect::sanitize;
-use crate::journal::{History, Journal, JournalError};
+use crate::journal::{History, JournalError, JournalReader};
 use crate::plan::Digest;
 use crate::recovery::{
     Approval, Basis, Conclusion, FailureEffect, NextStep, Observed, Resolution, Retention,
@@ -24,6 +29,10 @@ use crate::recovery::{
 
 /// Characters of a message, evidence, or note printed before truncation.
 const MAX_TEXT_CHARS: usize = 300;
+/// Sessions inspection lists, the most recent ones; earlier ones are counted.
+const MAX_SESSIONS: usize = 20;
+/// What an open session's report says about it.
+const OPEN_NOTE: &str = "no end recorded; this does not show that an executor is running";
 
 /// What [`inspect_journal`] includes.
 #[derive(Debug, Clone, Copy, Default)]
@@ -42,8 +51,10 @@ pub struct JournalInspection {
     pub plan: PlanSummary,
     /// The approval in force, if any.
     pub approval: Option<ApprovalSummary>,
-    /// Sessions, oldest first.
+    /// The most recent sessions (at most 20), oldest first.
     pub sessions: Vec<SessionSummary>,
+    /// Earlier sessions left out of `sessions`.
+    pub sessions_omitted: usize,
     /// Operations in plan order.
     pub operations: Vec<OperationReport>,
     /// Operations per conclusion.
@@ -86,8 +97,14 @@ pub struct SessionSummary {
     pub pid: u32,
     /// Start, Unix milliseconds.
     pub started_unix_ms: u64,
-    /// The recorded end status, or `unfinished` when the executor stopped first.
+    /// `ended` when an end was recorded, otherwise `open`.
+    pub state: SessionState,
+    /// The recorded end status, or `open` when no end was recorded.
     pub status: String,
+    /// For an open session: that no end was recorded, which does not show that
+    /// an executor is running (it may have been killed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     /// Explanation, when recorded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
@@ -97,6 +114,17 @@ pub struct SessionSummary {
     pub attempts: usize,
     /// Probes made in this session.
     pub probes: usize,
+}
+
+/// Whether a session recorded its end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionState {
+    /// No end is recorded: the executor is still running, or stopped without
+    /// recording one (for example, it was killed).
+    Open,
+    /// The executor recorded how the session ended.
+    Ended,
 }
 
 /// One operation's history and status.
@@ -191,12 +219,12 @@ pub struct ReviewLine {
     pub note: Option<String>,
 }
 
-/// Read and answer a journal.
+/// Read and answer a journal from one read-only snapshot.
 ///
 /// # Errors
 /// Returns [`JournalError`] if the history cannot be read.
 pub fn inspect_journal(
-    journal: &Journal,
+    journal: &JournalReader,
     options: &JournalInspectOptions,
 ) -> Result<JournalInspection, JournalError> {
     let history = journal.history()?;
@@ -204,7 +232,7 @@ pub fn inspect_journal(
 }
 
 fn build(
-    journal: &Journal,
+    journal: &JournalReader,
     history: &History,
     options: &JournalInspectOptions,
 ) -> JournalInspection {
@@ -218,18 +246,24 @@ fn build(
             scopes.push(scope);
         }
     }
-    let sessions = history
-        .sessions
+    let sessions_omitted = history.sessions.len().saturating_sub(MAX_SESSIONS);
+    let sessions = history.sessions[sessions_omitted..]
         .iter()
         .map(|session| SessionSummary {
             session: session.session,
             kind: session.kind.clone(),
             pid: session.pid,
             started_unix_ms: session.started_unix_ms,
+            state: if session.end.is_some() {
+                SessionState::Ended
+            } else {
+                SessionState::Open
+            },
             status: session
                 .end
                 .as_ref()
-                .map_or_else(|| "unfinished".into(), |end| end.status.clone()),
+                .map_or_else(|| "open".into(), |end| end.status.clone()),
+            note: session.end.is_none().then(|| OPEN_NOTE.to_string()),
             detail: session.end.as_ref().and_then(|end| end.detail.clone()),
             trace: session.end.as_ref().is_some_and(|end| end.has_trace),
             attempts: history
@@ -392,6 +426,7 @@ fn build(
             approvals: history.approvals.len(),
         }),
         sessions,
+        sessions_omitted,
         operations,
         conclusions,
         next,
@@ -514,6 +549,14 @@ impl JournalInspection {
         }
 
         let _ = writeln!(out, "\n## What was attempted and observed?");
+        if self.sessions_omitted > 0 {
+            let _ = writeln!(
+                out,
+                "{} earlier sessions omitted; the latest {} follow",
+                self.sessions_omitted,
+                self.sessions.len()
+            );
+        }
         for session in &self.sessions {
             let _ = write!(
                 out,
@@ -524,8 +567,8 @@ impl JournalInspection {
                 utc(session.started_unix_ms),
                 session.status
             );
-            if session.status == "unfinished" {
-                let _ = write!(out, " - the executor stopped without recording an end");
+            if let Some(note) = &session.note {
+                let _ = write!(out, " — {note}");
             }
             if let Some(detail) = &session.detail {
                 let _ = write!(out, " - {detail}");

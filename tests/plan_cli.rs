@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use codemode::fixture::Fixture;
-use codemode::{Conclusion, Durability, Journal, NextStep, assess_history};
+use codemode::{Conclusion, JournalReader, NextStep, assess_history};
 use serde_json::{Value, json};
 
 static SCRATCH: AtomicU64 = AtomicU64::new(0);
@@ -210,7 +210,7 @@ fn kill_when_held(scratch: &Scratch, mut child: Child, count: usize, requests: u
 }
 
 fn statuses(scratch: &Scratch) -> Vec<(String, Conclusion, NextStep)> {
-    let journal = Journal::open(scratch.journal(), Durability::Process).expect("journal opens");
+    let journal = JournalReader::open(scratch.journal()).expect("journal opens");
     let history = journal.history().expect("history");
     assess_history(journal.plan(), &history, &std::collections::HashSet::new())
         .into_iter()
@@ -228,7 +228,7 @@ fn statuses(scratch: &Scratch) -> Vec<(String, Conclusion, NextStep)> {
 /// membership after the fact; the order (intent committed before the provider is
 /// entered) is proved in the executor's unit tests.
 fn assert_intent_preceded_every_request(scratch: &Scratch) {
-    let journal = Journal::open(scratch.journal(), Durability::Process).expect("journal opens");
+    let journal = JournalReader::open(scratch.journal()).expect("journal opens");
     let keys: std::collections::HashSet<String> = journal
         .history()
         .expect("history")
@@ -431,7 +431,9 @@ fn a_second_executor_cannot_take_over_a_running_journal() {
         .output()
         .expect("resume");
     assert_eq!(second.status.code(), Some(2), "{second:?}");
-    assert!(String::from_utf8_lossy(&second.stderr).contains("locked by another codemode process"));
+    assert!(
+        String::from_utf8_lossy(&second.stderr).contains("locked by another codemode executor")
+    );
     kill_when_held(&scratch, first, 1, 1);
     assert_eq!(ledger(&scratch).rows.len(), 1);
 }

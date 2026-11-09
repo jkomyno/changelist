@@ -47,8 +47,8 @@ pub use inspect::{
 };
 pub use journal::{
     AttemptRecord, Durability, History, JOURNAL_FORMAT_VERSION, Journal, JournalError,
-    ObservationRecord, ProbeRecord, ReviewRecord, SessionEnd, SessionKind, SessionRecord,
-    UNANSWERED,
+    JournalReader, ObservationRecord, ProbeRecord, ReviewRecord, SessionEnd, SessionKind,
+    SessionRecord, UNANSWERED,
 };
 pub use json::{parse_json, value as deserialize_json};
 pub use plan::{
@@ -58,7 +58,7 @@ pub use plan::{
 pub use plan_bridge::{PLAN_BRIDGE_PROTOCOL_VERSION, PlanBridgeError, serve_plan_bridge};
 pub use plan_inspect::{
     ApprovalSummary, AttemptLine, JournalInspectOptions, JournalInspection, OperationReport,
-    PlanSummary, ProbeLine, ReviewLine, SessionSummary, inspect_journal,
+    PlanSummary, ProbeLine, ReviewLine, SessionState, SessionSummary, inspect_journal,
 };
 pub use recovery::{
     Approval, Assessment, Attempt, AttemptError, Basis, Conclusion, DeclarationError,

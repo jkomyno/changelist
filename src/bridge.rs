@@ -559,19 +559,18 @@ where
         }
     }
     // A cancellation caused by the bridge input explains itself in the report.
-    if report.status == RunStatus::Cancelled {
-        if let Some((status, message)) = failure
+    if report.status == RunStatus::Cancelled
+        && let Some((status, message)) = failure
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take()
-        {
-            report.status = status;
-            report.diagnostic = Some(message);
-            // Calls this ended carry the bridge's cause, not the cancellation it used.
-            for event in &mut report.events {
-                if event.reason.as_deref() == Some(RunStatus::Cancelled.as_str()) {
-                    event.reason = Some(status.as_str().into());
-                }
+    {
+        report.status = status;
+        report.diagnostic = Some(message);
+        // Calls this ended carry the bridge's cause, not the cancellation it used.
+        for event in &mut report.events {
+            if event.reason.as_deref() == Some(RunStatus::Cancelled.as_str()) {
+                event.reason = Some(status.as_str().into());
             }
         }
     }
