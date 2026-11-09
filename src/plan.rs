@@ -298,10 +298,14 @@ impl Plan {
         let value = serde_json::to_value(&self).map_err(|e| PlanError::Format(e.to_string()))?;
         let canonical =
             serde_json::to_string(&value).map_err(|e| PlanError::Format(e.to_string()))?;
-        // A larger plan could be journaled but never read back by `parse` to recover it.
+        // A journal stores this text and reads it back to recover: refuse a plan it
+        // could not read, whether too large or nested too deeply for the parser.
         if canonical.len() > MAX_PLAN_BYTES {
             return Err(PlanError::TooLarge);
         }
+        serde_json::from_str::<Value>(&canonical).map_err(|error| {
+            PlanError::Format(format!("the canonical plan cannot be read back: {error}"))
+        })?;
         let digest = Digest::of(canonical.as_bytes());
         Ok(FrozenPlan {
             plan: self,
@@ -501,5 +505,30 @@ mod tests {
                 "{error} should mention {expected}"
             );
         }
+    }
+
+    #[test]
+    fn a_plan_frozen_in_code_must_read_back() {
+        let mut nested = Value::from(1);
+        for _ in 0..130 {
+            nested = Value::Array(vec![nested]);
+        }
+        let plan = Plan {
+            version: PLAN_FORMAT_VERSION,
+            summary: None,
+            operations: vec![Operation {
+                id: "a".into(),
+                tool: "t".into(),
+                scope: Scope {
+                    provider: "p".into(),
+                    account: "x".into(),
+                    destination: None,
+                },
+                arguments: serde_json::json!({ "deep": nested }),
+                preconditions: Vec::new(),
+            }],
+        };
+        let error = plan.freeze().expect_err("too deep to read back");
+        assert!(error.to_string().contains("cannot be read back"), "{error}");
     }
 }

@@ -60,7 +60,8 @@ A plan (format version 1) is JSON:
   Preconditions are provider-defined objects the provider checks atomically when
   it applies the operation.
 - Unknown fields, unsupported versions, duplicate identities, more than 256
-  operations, a canonical plan over 1 MiB, integers outside ±(2^53−1) (a
+  operations, a canonical plan over 1 MiB or nested too deeply to read back,
+  integer values outside ±(2^53−1) (a
   JavaScript host such as Pi would round them and act on a value nobody
   approved), and argument keys that name credentials (`token`, `password`,
   `api_key`, ...) are refused. The credential check is a guard against obvious
