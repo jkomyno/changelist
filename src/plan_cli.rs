@@ -53,7 +53,8 @@ run and resume act through the offline fixture (--fixture, --account) or, with
 frames (start, authorize, call, reconcile, their replies, cancel, outcome). The
 host's start frame supplies its provider declaration; it authorizes, executes,
 and reconciles operations while Rust keeps the journal. Credentials stay with
-the host.
+the host. Approved plans run natively; --deno is accepted for compatibility
+and has no effect.
 
 Policy options (approve):
   --concurrency <n>          Operations in flight at once (default 4)

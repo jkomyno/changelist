@@ -14,22 +14,22 @@ cd "$root"
 command -v composio >/dev/null || { echo "composio CLI not found; see https://docs.composio.dev/docs/cli" >&2; exit 2; }
 composio --version
 mise exec -- cargo build --quiet --locked
-deno=$(mise which deno)
 work=$(mktemp -d "${TMPDIR:-/tmp}/codemode-composio-plan.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
 account=${COMPOSIO_GITHUB_ACCOUNT:-}
 [ -n "$account" ] || { echo "set COMPOSIO_GITHUB_ACCOUNT to a connected-account id (ca_...); see composio connections list" >&2; exit 2; }
 
-"$deno" eval '
-const [work, account, destination, issue, label] = Deno.args;
+composio run '
+const { writeFileSync } = await import("node:fs");
+const [work, account, destination, issue, label] = process.argv.slice(1);
 const [owner, repo] = destination.split("/");
-Deno.writeTextFileSync(`${work}/config.json`, JSON.stringify({ account, destinations: [destination] }));
-Deno.writeTextFileSync(`${work}/plan.json`, JSON.stringify({ version: 1, operations: [{
+writeFileSync(`${work}/config.json`, JSON.stringify({ account, destinations: [destination] }));
+writeFileSync(`${work}/plan.json`, JSON.stringify({ version: 1, operations: [{
   id: "preflight", tool: "GITHUB_ADD_LABELS_TO_AN_ISSUE",
   scope: { provider: "composio.github", account, destination },
   arguments: { owner, repo, issue_number: Number(issue), labels: [label] } }] }));
-' "$work" "$account" "$1" "$2" "$3"
+' -- "$work" "$account" "$1" "$2" "$3"
 
 status=0
 composio run --file integrations/composio/plan-host.ts -- preflight \

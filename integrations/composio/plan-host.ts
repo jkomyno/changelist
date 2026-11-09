@@ -10,7 +10,7 @@
  *                                               confirm each label exists, and read each issue's labels.
  *   run|resume --config <file> --journal <file> Serve one session of an approved plan.
  *
- * Options: --bin <codemode> (target/debug/codemode), --deno <deno> (deno),
+ * Options: --bin <codemode> (target/debug/codemode), --deno <path> (accepted, unused),
  * --offline <state.json> (use the offline stand-in instead of the CLI helper),
  * --drop-reply <operation> (fault injection for recovery demonstrations: after
  * the helper reports a successful mutation for that operation, never reply, so
@@ -143,7 +143,6 @@ async function main(): Promise<void> {
   const host = composioPlanHost(execute, config, providers.connections);
   const result = await runPlanBridge({
     bin: findExecutable(args.get("bin") ?? "target/debug/codemode", cwd),
-    deno: findExecutable(args.get("deno") ?? "deno", cwd),
     cwd,
     journal: resolve(cwd, journal),
     kind: command,

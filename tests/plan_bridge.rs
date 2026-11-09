@@ -1,5 +1,5 @@
-//! Plan-mode bridge (protocol version 3) with an in-process fake host. Real guest
-//! programs run, so Deno must be on the PATH (or named by CODEMODE_TEST_DENO).
+//! Plan-mode bridge (protocol version 3) with an in-process fake host and no
+//! JavaScript engine.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -112,7 +112,7 @@ impl Host {
         let (bridge_output, output) = tokio::io::duplex(1 << 20);
         let options = SessionOptions {
             kind,
-            deno: std::env::var_os("CODEMODE_TEST_DENO").map_or_else(|| "deno".into(), Into::into),
+            deno: "/codemode-test-no-deno/deno".into(),
         };
         let bridge = tokio::spawn(serve_plan_bridge(
             bridge_input,
@@ -184,7 +184,7 @@ async fn host_executes_journaled_attempts_and_answers_probes() {
     assert_eq!(
         call["arguments"],
         label_arguments(),
-        "the frozen arguments, not the guest's"
+        "the approved frozen arguments"
     );
     assert_eq!(call["preconditions"], json!([]));
     let key = call["attempt"].as_str().expect("attempt key").to_string();

@@ -441,8 +441,8 @@ export interface PlanOutcome {
 export interface PlanBridgeRun {
   /** Absolute path of the `codemode` executable. */
   bin: string;
-  /** Absolute path of the Deno executable for the dispatch run. */
-  deno: string;
+  /** Legacy setting, accepted but unused by native plan execution. */
+  deno?: string;
   cwd: string;
   /** The approved plan's journal. */
   journal: string;
@@ -499,7 +499,7 @@ function resultFrame(id: number, reply: PlanReply): string {
  * environment, explicit paths, and `cancel` then SIGKILL after two seconds on abort.
  */
 export async function runPlanBridge(run: PlanBridgeRun): Promise<PlanBridgeResult> {
-  const child = spawn(run.bin, ["plan", run.kind, "--journal", run.journal, "--bridge", "--deno", run.deno], {
+  const child = spawn(run.bin, ["plan", run.kind, "--journal", run.journal, "--bridge"], {
     cwd: run.cwd,
     env: {},
     stdio: ["pipe", "pipe", "pipe"],

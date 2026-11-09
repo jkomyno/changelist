@@ -223,3 +223,52 @@ fn a_bridge_whose_guest_exits_before_its_program_reports_it() {
         "{output:?}"
     );
 }
+
+/// Guest cleanup still applies to programs after approved plans stop using guests.
+#[cfg(unix)]
+#[test]
+fn killing_a_program_host_does_not_leave_its_deno_guest_running() {
+    use std::io::{BufRead, BufReader};
+    use std::time::{Duration, Instant};
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_codemode"))
+        .args(["bridge", "--timeout-ms", "20000"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("program host starts");
+    let mut input = child.stdin.take().expect("host stdin");
+    let mut output = BufReader::new(child.stdout.take().expect("host stdout"));
+    writeln!(
+        input,
+        "{}",
+        json!({"type":"start","version":2,"tools":["host.wait"],
+        "code":"return await tools.call('host.wait');"})
+    )
+    .expect("send program");
+    let mut line = String::new();
+    output.read_line(&mut line).expect("guest submitted a call");
+    let call: Value = serde_json::from_str(&line).expect("call frame");
+    assert_eq!(call["type"], "call");
+
+    let pattern = format!("codemode-{}-[0-9]+\\.ts", child.id());
+    let guest_running = || {
+        Command::new("pgrep")
+            .args(["-f", &pattern])
+            .status()
+            .expect("find this host's guest")
+            .success()
+    };
+    assert!(
+        guest_running(),
+        "guest must exist before the host is killed"
+    );
+    child.kill().expect("SIGKILL program host");
+    child.wait().expect("reap program host");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while guest_running() {
+        assert!(Instant::now() < deadline, "guest outlived its killed host");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}

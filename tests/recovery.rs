@@ -1,6 +1,5 @@
 //! Sessions against an in-test provider: what each conclusion leads to, and what
-//! is refused before anything is sent. Real guest programs run, so Deno must be
-//! on the PATH (or named by CODEMODE_TEST_DENO).
+//! is refused before anything is sent. Approved plans run without a JavaScript engine.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -34,7 +33,7 @@ fn journal_path() -> PathBuf {
 fn options(kind: SessionKind) -> SessionOptions {
     SessionOptions {
         kind,
-        deno: std::env::var_os("CODEMODE_TEST_DENO").map_or_else(|| "deno".into(), Into::into),
+        deno: "/codemode-test-no-deno/deno".into(),
     }
 }
 
@@ -242,6 +241,13 @@ async fn a_lost_response_is_reconciled_instead_of_repeated() {
     )
     .await
     .expect("session runs");
+    let trace = first.trace.as_ref().expect("dispatch trace");
+    assert_eq!(trace.schema_version, 3);
+    assert_eq!(trace.backend, codemode::ExecutionBackend::Native);
+    assert!(trace.code.is_empty());
+    assert!(trace.output.is_none());
+    assert_eq!(trace.bytes.from_guest, 0);
+    assert_eq!(trace.bytes.to_guest, 0);
     assert_eq!(first.status, "interrupted", "{first:?}");
     assert_eq!(
         conclusions(&first),

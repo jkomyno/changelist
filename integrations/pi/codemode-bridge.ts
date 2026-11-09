@@ -227,7 +227,6 @@ async function runPiPlan(
 
   const result = await runPlanBridge({
     bin: findExecutable(flag("codemode-bin", "codemode"), ctx.cwd),
-    deno: findExecutable(flag("codemode-deno", "deno"), ctx.cwd),
     cwd: ctx.cwd,
     journal: resolve(ctx.cwd, params.journal),
     kind: params.action,

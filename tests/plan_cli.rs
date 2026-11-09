@@ -1,7 +1,6 @@
 //! Crash and recovery through the real binaries: the executor is killed with
 //! SIGKILL while the fixture provider holds requests, and the fixture's own
-//! ledger checks what actually happened. Deno must be on the PATH (or named by
-//! CODEMODE_TEST_DENO).
+//! ledger checks what actually happened. The legacy Deno setting names no executable.
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -49,10 +48,6 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
-}
-
-fn deno() -> String {
-    std::env::var("CODEMODE_TEST_DENO").unwrap_or_else(|_| "deno".into())
 }
 
 fn command(program: &str, args: &[&str]) -> Command {
@@ -166,7 +161,6 @@ fn fault(scratch: &Scratch, tool: &str, issue: u64, mode: &str, count: u32) {
 fn session(scratch: &Scratch, kind: &str, account: &str) -> Command {
     let journal = scratch.journal();
     let fixture = scratch.fixture();
-    let deno = deno();
     let mut command = command(
         CODEMODE,
         &[
@@ -179,7 +173,7 @@ fn session(scratch: &Scratch, kind: &str, account: &str) -> Command {
             "--account",
             account,
             "--deno",
-            &deno,
+            "/codemode-test-no-deno/deno",
         ],
     );
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -211,31 +205,8 @@ fn kill_when_held(scratch: &Scratch, mut child: Child, count: usize) {
         assert!(Instant::now() < deadline, "the held request never arrived");
         std::thread::sleep(Duration::from_millis(20));
     }
-    let pid = child.id();
     child.kill().expect("SIGKILL");
     child.wait().expect("reap");
-    assert_guest_exits(pid);
-}
-
-/// A killed executor's guest sees its input close and exits instead of lingering.
-/// The guest's launcher file is named after the executor's process id.
-fn assert_guest_exits(executor: u32) {
-    let pattern = format!("codemode-{executor}-[0-9]+\\.ts");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let running = Command::new("pgrep")
-            .args(["-f", &pattern])
-            .output()
-            .expect("pgrep runs");
-        if !running.status.success() {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the guest of killed executor {executor} is still running"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
 }
 
 fn statuses(scratch: &Scratch) -> Vec<(String, Conclusion, NextStep)> {

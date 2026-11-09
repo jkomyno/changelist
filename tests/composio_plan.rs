@@ -157,7 +157,7 @@ fn host(scratch: &Scratch, command: &str, extra: &[&str]) -> Command {
         .args(["--config", path(&scratch.file("config.json"))])
         .args(["--offline", path(&scratch.file("labels.json"))]);
     if command != "declare" {
-        process.args(["--bin", CODEMODE]).arg("--deno").arg(deno());
+        process.args(["--bin", CODEMODE, "--deno", "/codemode-test-no-deno/deno"]);
     }
     if command == "run" || command == "resume" {
         process.args(["--journal", path(&scratch.file("journal.db"))]);

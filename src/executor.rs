@@ -3,8 +3,8 @@
 //! A session checks the latest approval against the current provider declaration
 //! and policy, asks the provider whether each scope is still authorized,
 //! reconciles operations whose outcome is unknown, and then dispatches every
-//! operation whose next step is `dispatch`. Dispatch reuses [`run`]: a generated
-//! program names only operation identities, Rust admits and schedules those calls
+//! operation whose next step is `dispatch`. Dispatch reuses [`run_calls`]: native
+//! requests name only operation identities, Rust admits and schedules those calls
 //! under the approved concurrency, and a journaling provider looks up each
 //! operation's frozen arguments, records the intent durably, calls the trusted
 //! provider, and records the observation durably before replying.
@@ -30,8 +30,8 @@ use crate::recovery::{
     approval_binding, assess, machine_code,
 };
 use crate::runtime::{
-    CallContext, DispatchPolicy, ProviderError, RunCancellation, RunConfig, RunError, RunReport,
-    ToolCall, ToolProvider, millis, run,
+    CallContext, DispatchPolicy, NativeCall, ProviderError, RunCancellation, RunConfig, RunError,
+    RunReport, ToolCall, ToolProvider, millis, run_calls,
 };
 
 /// Process settings for a session that are not part of the approval.
@@ -39,7 +39,7 @@ use crate::runtime::{
 pub struct SessionOptions {
     /// `run` for the first session, `resume` afterwards.
     pub kind: SessionKind,
-    /// Deno executable for the dispatch run.
+    /// Legacy executable setting, accepted but unused by native plan execution.
     pub deno: PathBuf,
 }
 
@@ -71,7 +71,7 @@ pub struct SessionTiming {
     pub checks_ms: u64,
     /// Reconciliation probes.
     pub reconcile_ms: u64,
-    /// The dispatch run, including guest startup; see the trace for its phases.
+    /// The native dispatch run; see the trace for its phases.
     pub dispatch_ms: u64,
     /// The whole session.
     pub total_ms: u64,
@@ -385,7 +385,6 @@ pub async fn run_session<P: RecoverableProvider>(
             &policy,
             retention,
             session,
-            &options,
             &cancellation,
         )
         .await;
@@ -667,7 +666,6 @@ pub fn dispatcher_program<'op>(
     )
 }
 
-#[expect(clippy::too_many_arguments, reason = "one internal call site")]
 async fn dispatch_run<P: RecoverableProvider>(
     journal: &Shared,
     provider: &Arc<P>,
@@ -675,14 +673,15 @@ async fn dispatch_run<P: RecoverableProvider>(
     policy: &RecoveryPolicy,
     retention: Retention,
     session: u64,
-    options: &SessionOptions,
     cancellation: &RunCancellation,
 ) -> Result<RunReport, RunError> {
-    let code = dispatcher_program(
-        operations
-            .iter()
-            .map(|(operation, _)| (operation.id.as_str(), operation.tool.as_str())),
-    );
+    let calls: Vec<NativeCall> = operations
+        .iter()
+        .map(|(operation, _)| NativeCall {
+            tool: operation.tool.clone(),
+            arguments: json!({"operation": operation.id}),
+        })
+        .collect();
     let tools: BTreeSet<String> = operations
         .iter()
         .map(|(operation, _)| operation.tool.clone())
@@ -691,7 +690,6 @@ async fn dispatch_run<P: RecoverableProvider>(
         timeout_ms: policy.session_timeout_ms,
         max_calls: operations.len(),
         max_concurrency: policy.concurrency,
-        deno: options.deno.clone(),
         allowed_tools: tools.into_iter().collect(),
         dispatch: DispatchPolicy::Rolling,
         ..RunConfig::default()
@@ -714,7 +712,7 @@ async fn dispatch_run<P: RecoverableProvider>(
         attempt_timeout: Duration::from_millis(policy.attempt_timeout_ms),
         cancellation: cancellation.clone(),
     };
-    run(&code, config, journaling, cancellation.clone()).await
+    run_calls(&calls, config, journaling, cancellation.clone()).await
 }
 
 /// The runtime's provider for a dispatch run: it journals each attempt around the
