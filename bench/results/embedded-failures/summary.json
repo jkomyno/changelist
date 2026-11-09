@@ -1,0 +1,2189 @@
+{
+  "label": "/Users/jkomyno/work/me/codemode/bench/results/embedded-failures",
+  "environment": {
+    "date": "2026-11-09T13:48:33.199Z",
+    "driver": {
+      "runtime": "bun",
+      "version": "1.4.4",
+      "execPath": "/Users/jkomyno/.local/share/mise/installs/bun/1.4.4/bin/bun"
+    },
+    "runtimes": {
+      "bun": "1.4.4",
+      "node": "v26.12.1",
+      "deno": "deno 2.9.8 (long term support, release, aarch64-apple-darwin)"
+    },
+    "cpu": {
+      "model": "Apple M1 Pro",
+      "logical": 10
+    },
+    "os": {
+      "platform": "darwin",
+      "release": "23.4.0",
+      "arch": "arm64",
+      "product": "14.4.1",
+      "totalMemGiB": 32
+    },
+    "loadavg": [
+      2.9,
+      3.6,
+      3.67
+    ],
+    "git": {
+      "commit": "6d26458c91513e0ef4838b1a750d305f97330865",
+      "dirty": true,
+      "dirtyOutsideBench": true,
+      "changedOutsideBench": [
+        "github/workflows/ci.yml",
+        "CONTRIBUTING.md",
+        "README.md",
+        "docs/design.md",
+        "docs/integrations.md",
+        "docs/recovery-evaluation.md",
+        "docs/recovery.md",
+        "examples/recovery/demo.sh",
+        "integrations/composio/README.md",
+        "integrations/pi/README.md",
+        "integrations/shared/bridge-client.ts",
+        "mise.toml",
+        "docs/embedded-evaluation.md",
+        "eval/recovery-native-final/summary.json",
+        "eval/recovery-native-final/summary.md",
+        "tests/bridge_client.rs"
+      ]
+    },
+    "codemodeBinary": {
+      "path": "/Users/jkomyno/work/me/codemode/target/release/codemode",
+      "sha256": "e733a42976cace5764e1a67765b3d792ae100110a9a2fe9916772542125f7f27",
+      "bytes": 78825376,
+      "buildRustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+      "buildFeatures": "embedded-v8"
+    },
+    "toolchainRustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: aarch64-apple-darwin\nrelease: 1.99.1\nLLVM version: 23.1.1",
+    "deno": "/Users/jkomyno/.local/share/mise/installs/deno/2.9.8/bin/deno",
+    "pins": {
+      "runtimes": {
+        "bun": "1.4.4",
+        "node": "26.12.1",
+        "deno": "2.9.8"
+      },
+      "pi": {
+        "package": "@earendil-works/pi-codemode",
+        "version": "1.4.0",
+        "git_tag": "v1.4.0",
+        "git_commit": "4a080252f06caf63a525d7873c5d94d3c23887e0",
+        "tarballs": [
+          {
+            "name": "@earendil-works/pi-codemode",
+            "version": "1.4.0",
+            "url": "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.4.0.tgz",
+            "integrity": "sha512-23CNAXpS9DuLzPMyYuvrXVVio46x4YhffCgCqaWmF7F5H8PooqjrQvX4ucF6M0BhUd+x2tV6r1J0dv8cCME4Cg==",
+            "install_dir": "node_modules/@earendil-works/pi-codemode"
+          },
+          {
+            "name": "quickjs-wasi",
+            "version": "3.6.2",
+            "url": "https://registry.npmjs.org/quickjs-wasi/-/quickjs-wasi-3.6.2.tgz",
+            "integrity": "sha512-FCqGtGOrMgzUiIrMNMA2YnsOxCNwo31dzqXvclXUC6xeT35NJLKXQJsvbeCTjvoFAwZgEAPg8U6+KAPDGXn8Mg==",
+            "install_dir": "node_modules/quickjs-wasi"
+          }
+        ]
+      },
+      "opencode": {
+        "package": "@opencode-ai/codemode",
+        "version": "1.19.5",
+        "repository": "https://github.com/anomalyco/opencode.git",
+        "git_tag": "v1.19.5",
+        "git_commit": "810c0eba1a7348036f8bdf61e6632d0c36c6876c",
+        "sparse_path": "packages/codemode",
+        "dependencies": {
+          "acorn": "8.15.0",
+          "effect": "4.0.0-beta.83",
+          "typescript": "5.8.2"
+        },
+        "lockfile": "bench/engines/opencode-deps/bun.lock"
+      },
+      "codemode": {
+        "binary": "target/release/codemode",
+        "build": "mise exec -- cargo build --release --locked --bin codemode",
+        "client": "integrations/shared/bridge-client.ts",
+        "bridge_protocol": 2
+      }
+    }
+  },
+  "config": {
+    "engines": [
+      "codemode",
+      "codemode-prewarm",
+      "codemode-embedded",
+      "codemode-embedded-prewarm"
+    ],
+    "scenarios": [
+      "deadline",
+      "guest-exception",
+      "lost-response"
+    ],
+    "skippedHoldouts": [],
+    "skippedCells": [],
+    "profiles": [
+      "zero",
+      "mixed"
+    ],
+    "reps": 3,
+    "failureReps": 3,
+    "warmup": 0,
+    "cold": 0,
+    "ordering": "engines round-robin within each repetition; the starting engine rotates every repetition",
+    "percentiles": "nearest-rank"
+  },
+  "engines": {
+    "codemode": {
+      "name": "codemode",
+      "version": "Deno backend; bridge protocol 2 (this checkout)",
+      "limits": {
+        "timeoutMs": "enforced by Rust; one absolute deadline that includes bridge and Deno startup",
+        "maxCalls": "enforced by Rust; the first call beyond the allowance is rejected and ends the run",
+        "concurrency": "enforced by Rust's rolling scheduler (8, or 4 for codemode-c4)",
+        "maxOutputBytes": "enforced by Rust; shared budget for tool replies and final output (default 262144, set to 1048576 here); separately, each reply to the Deno guest is capped at 1 MiB"
+      },
+      "shim": "none in the guest; host shim maps bridge calls to tool functions and errors to {code, message}",
+      "appliedOverrides": {}
+    },
+    "codemode-prewarm": {
+      "name": "codemode-prewarm",
+      "version": "Deno backend; bridge protocol 2 (this checkout)",
+      "limits": {
+        "timeoutMs": "enforced by Rust; one absolute deadline that includes bridge and Deno startup",
+        "maxCalls": "enforced by Rust; the first call beyond the allowance is rejected and ends the run",
+        "concurrency": "enforced by Rust's rolling scheduler (8, or 4 for codemode-c4)",
+        "maxOutputBytes": "enforced by Rust; shared budget for tool replies and final output (default 262144, set to 1048576 here); separately, each reply to the Deno guest is capped at 1 MiB"
+      },
+      "shim": "none in the guest; host shim maps bridge calls to tool functions and errors to {code, message}; one bridge and Deno guest started ahead of each run, outside its measured time; one fresh guest per run",
+      "appliedOverrides": {}
+    },
+    "codemode-embedded": {
+      "name": "codemode-embedded",
+      "version": "embedded-v8 backend; bridge protocol 2 (this checkout)",
+      "limits": {
+        "timeoutMs": "enforced by Rust; one absolute deadline that includes bridge and embedded worker startup",
+        "maxCalls": "enforced by Rust; the first call beyond the allowance is rejected and ends the run",
+        "concurrency": "enforced by Rust's rolling scheduler (8, or 4 for codemode-c4)",
+        "maxOutputBytes": "enforced by Rust; shared budget for tool replies and final output (default 262144, set to 1048576 here); separately, each reply to the embedded guest is capped at 1 MiB"
+      },
+      "shim": "none in the guest; host shim maps bridge calls to tool functions and errors to {code, message}",
+      "appliedOverrides": {}
+    },
+    "codemode-embedded-prewarm": {
+      "name": "codemode-embedded-prewarm",
+      "version": "embedded-v8 backend; bridge protocol 2 (this checkout)",
+      "limits": {
+        "timeoutMs": "enforced by Rust; one absolute deadline that includes bridge and embedded worker startup",
+        "maxCalls": "enforced by Rust; the first call beyond the allowance is rejected and ends the run",
+        "concurrency": "enforced by Rust's rolling scheduler (8, or 4 for codemode-c4)",
+        "maxOutputBytes": "enforced by Rust; shared budget for tool replies and final output (default 262144, set to 1048576 here); separately, each reply to the embedded guest is capped at 1 MiB"
+      },
+      "shim": "none in the guest; host shim maps bridge calls to tool functions and errors to {code, message}; one bridge and embedded V8 worker started ahead of each run, outside its measured time; one fresh guest per run",
+      "appliedOverrides": {}
+    }
+  },
+  "coldBaseline": null,
+  "cells": {
+    "deadline|mixed|codemode": {
+      "scenario": "deadline",
+      "profile": "mixed",
+      "engine": "codemode",
+      "holdout": false,
+      "limits": {
+        "timeoutMs": 250,
+        "maxCalls": 64,
+        "concurrency": 8,
+        "maxOutputBytes": 1048576
+      },
+      "modelMs": null,
+      "n": 3,
+      "correct": 3,
+      "outcomes": {
+        "timeout (deadline)": 3
+      },
+      "correctnessProblems": {},
+      "knownLimit": null,
+      "warm": {
+        "taskMs": {
+          "n": 3,
+          "p50": 261.26,
+          "p95": 264.21,
+          "min": 260.68,
+          "max": 264.21,
+          "mean": 262.05
+        },
+        "setupMs": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "runMs": {
+          "n": 3,
+          "p50": 261.24,
+          "p95": 264.01,
+          "min": 260.66,
+          "max": 264.01,
+          "mean": 261.97
+        },
+        "engineElapsedMs": {
+          "n": 3,
+          "p50": 253,
+          "p95": 253,
+          "min": 253,
+          "max": 253,
+          "mean": 253
+        }
+      },
+      "cold": null,
+      "ledger": {
+        "started": {
+          "n": 3,
+          "p50": 4,
+          "p95": 4,
+          "min": 4,
+          "max": 4,
+          "mean": 4
+        },
+        "completed": {
+          "n": 3,
+          "p50": 3,
+          "p95": 3,
+          "min": 3,
+          "max": 3,
+          "mean": 3
+        },
+        "thrown": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "aborted": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "effectApplied": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "effectAppliedWithoutComplete": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "maxInFlight": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "runsWithLateStarts": 0,
+        "runsWithToolStillRunningAfterReturn": 0,
+        "stillRunningAfterReturnTotals": {
+          "completedLate": 0,
+          "threwLate": 0,
+          "abortedLate": 0,
+          "openAtSettle": 0
+        }
+      },
+      "reconciliation": {
+        "method": "codemode trace vs ledger, matched by (tool, canonical args) multisets",
+        "runsWithViolations": 0,
+        "violations": {},
+        "notes": {},
+        "counts": {
+          "trace_succeeded=3": 3,
+          "trace_unknown=1": 3,
+          "unknown:started+abort=1": 3
+        }
+      },
+      "bytes": {
+        "payload": {
+          "n": 3,
+          "p50": 24482,
+          "p95": 24482,
+          "min": 24482,
+          "max": 24482,
+          "mean": 24482
+        },
+        "ledgerResults": {
+          "n": 3,
+          "p50": 24286,
+          "p95": 24286,
+          "min": 24286,
+          "max": 24286,
+          "mean": 24286
+        },
+        "returned": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "report": {
+          "n": 3,
+          "p50": 29964,
+          "p95": 29964,
+          "min": 29952,
+          "max": 29964,
+          "mean": 29960
+        },
+        "engineBoundary": null
+      }
+    },
+    "deadline|mixed|codemode-prewarm": {
+      "scenario": "deadline",
+      "profile": "mixed",
+      "engine": "codemode-prewarm",
+      "holdout": false,
+      "limits": {
+        "timeoutMs": 250,
+        "maxCalls": 64,
+        "concurrency": 8,
+        "maxOutputBytes": 1048576
+      },
+      "modelMs": null,
+      "n": 3,
+      "correct": 3,
+      "outcomes": {
+        "timeout (deadline)": 3
+      },
+      "correctnessProblems": {},
+      "knownLimit": null,
+      "warm": {
+        "taskMs": {
+          "n": 3,
+          "p50": 253.85,
+          "p95": 264.52,
+          "min": 252.68,
+          "max": 264.52,
+          "mean": 257.02
+        },
+        "setupMs": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "runMs": {
+          "n": 3,
+          "p50": 253.83,
+          "p95": 264.42,
+          "min": 252.66,
+          "max": 264.42,
+          "mean": 256.97
+        },
+        "engineElapsedMs": {
+          "n": 3,
+          "p50": 253,
+          "p95": 253,
+          "min": 251,
+          "max": 253,
+          "mean": 252.33
+        }
+      },
+      "cold": null,
+      "ledger": {
+        "started": {
+          "n": 3,
+          "p50": 4,
+          "p95": 4,
+          "min": 4,
+          "max": 4,
+          "mean": 4
+        },
+        "completed": {
+          "n": 3,
+          "p50": 4,
+          "p95": 4,
+          "min": 3,
+          "max": 4,
+          "mean": 3.67
+        },
+        "thrown": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "aborted": {
+          "n": 3,
+          "p50": 0,
+          "p95": 1,
+          "min": 0,
+          "max": 1,
+          "mean": 0.33
+        },
+        "effectApplied": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "effectAppliedWithoutComplete": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "maxInFlight": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "runsWithLateStarts": 0,
+        "runsWithToolStillRunningAfterReturn": 0,
+        "stillRunningAfterReturnTotals": {
+          "completedLate": 0,
+          "threwLate": 0,
+          "abortedLate": 0,
+          "openAtSettle": 0
+        }
+      },
+      "reconciliation": {
+        "method": "codemode trace vs ledger, matched by (tool, canonical args) multisets",
+        "runsWithViolations": 0,
+        "violations": {},
+        "notes": {},
+        "counts": {
+          "trace_succeeded=3": 1,
+          "trace_unknown=1": 1,
+          "unknown:started+abort=1": 1,
+          "trace_succeeded=4": 2
+        }
+      },
+      "bytes": {
+        "payload": {
+          "n": 3,
+          "p50": 32688,
+          "p95": 32688,
+          "min": 24482,
+          "max": 32688,
+          "mean": 29952.67
+        },
+        "ledgerResults": {
+          "n": 3,
+          "p50": 32492,
+          "p95": 32492,
+          "min": 24286,
+          "max": 32492,
+          "mean": 29756.67
+        },
+        "returned": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "report": {
+          "n": 3,
+          "p50": 38152,
+          "p95": 38157,
+          "min": 29956,
+          "max": 38157,
+          "mean": 35421.67
+        },
+        "engineBoundary": null
+      }
+    },
+    "deadline|mixed|codemode-embedded": {
+      "scenario": "deadline",
+      "profile": "mixed",
+      "engine": "codemode-embedded",
+      "holdout": false,
+      "limits": {
+        "timeoutMs": 250,
+        "maxCalls": 64,
+        "concurrency": 8,
+        "maxOutputBytes": 1048576
+      },
+      "modelMs": null,
+      "n": 3,
+      "correct": 3,
+      "outcomes": {
+        "timeout (deadline)": 3
+      },
+      "correctnessProblems": {},
+      "knownLimit": null,
+      "warm": {
+        "taskMs": {
+          "n": 3,
+          "p50": 257.19,
+          "p95": 257.92,
+          "min": 257,
+          "max": 257.92,
+          "mean": 257.37
+        },
+        "setupMs": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "runMs": {
+          "n": 3,
+          "p50": 257.17,
+          "p95": 257.9,
+          "min": 256.99,
+          "max": 257.9,
+          "mean": 257.35
+        },
+        "engineElapsedMs": {
+          "n": 3,
+          "p50": 252,
+          "p95": 252,
+          "min": 251,
+          "max": 252,
+          "mean": 251.67
+        }
+      },
+      "cold": null,
+      "ledger": {
+        "started": {
+          "n": 3,
+          "p50": 4,
+          "p95": 4,
+          "min": 4,
+          "max": 4,
+          "mean": 4
+        },
+        "completed": {
+          "n": 3,
+          "p50": 3,
+          "p95": 3,
+          "min": 3,
+          "max": 3,
+          "mean": 3
+        },
+        "thrown": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "aborted": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "effectApplied": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "effectAppliedWithoutComplete": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "maxInFlight": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "runsWithLateStarts": 0,
+        "runsWithToolStillRunningAfterReturn": 0,
+        "stillRunningAfterReturnTotals": {
+          "completedLate": 0,
+          "threwLate": 0,
+          "abortedLate": 0,
+          "openAtSettle": 0
+        }
+      },
+      "reconciliation": {
+        "method": "codemode trace vs ledger, matched by (tool, canonical args) multisets",
+        "runsWithViolations": 0,
+        "violations": {},
+        "notes": {},
+        "counts": {
+          "trace_succeeded=3": 3,
+          "trace_unknown=1": 3,
+          "unknown:started+abort=1": 3
+        }
+      },
+      "bytes": {
+        "payload": {
+          "n": 3,
+          "p50": 24482,
+          "p95": 24482,
+          "min": 24482,
+          "max": 24482,
+          "mean": 24482
+        },
+        "ledgerResults": {
+          "n": 3,
+          "p50": 24286,
+          "p95": 24286,
+          "min": 24286,
+          "max": 24286,
+          "mean": 24286
+        },
+        "returned": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "report": {
+          "n": 3,
+          "p50": 29969,
+          "p95": 29971,
+          "min": 29967,
+          "max": 29971,
+          "mean": 29969
+        },
+        "engineBoundary": null
+      }
+    },
+    "deadline|mixed|codemode-embedded-prewarm": {
+      "scenario": "deadline",
+      "profile": "mixed",
+      "engine": "codemode-embedded-prewarm",
+      "holdout": false,
+      "limits": {
+        "timeoutMs": 250,
+        "maxCalls": 64,
+        "concurrency": 8,
+        "maxOutputBytes": 1048576
+      },
+      "modelMs": null,
+      "n": 3,
+      "correct": 3,
+      "outcomes": {
+        "timeout (deadline)": 3
+      },
+      "correctnessProblems": {},
+      "knownLimit": null,
+      "warm": {
+        "taskMs": {
+          "n": 3,
+          "p50": 253.49,
+          "p95": 257.23,
+          "min": 253.2,
+          "max": 257.23,
+          "mean": 254.64
+        },
+        "setupMs": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "runMs": {
+          "n": 3,
+          "p50": 253.47,
+          "p95": 257.22,
+          "min": 253.17,
+          "max": 257.22,
+          "mean": 254.62
+        },
+        "engineElapsedMs": {
+          "n": 3,
+          "p50": 252,
+          "p95": 252,
+          "min": 252,
+          "max": 252,
+          "mean": 252
+        }
+      },
+      "cold": null,
+      "ledger": {
+        "started": {
+          "n": 3,
+          "p50": 5,
+          "p95": 5,
+          "min": 4,
+          "max": 5,
+          "mean": 4.67
+        },
+        "completed": {
+          "n": 3,
+          "p50": 4,
+          "p95": 4,
+          "min": 3,
+          "max": 4,
+          "mean": 3.67
+        },
+        "thrown": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "aborted": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "effectApplied": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "effectAppliedWithoutComplete": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "maxInFlight": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "runsWithLateStarts": 0,
+        "runsWithToolStillRunningAfterReturn": 0,
+        "stillRunningAfterReturnTotals": {
+          "completedLate": 0,
+          "threwLate": 0,
+          "abortedLate": 0,
+          "openAtSettle": 0
+        }
+      },
+      "reconciliation": {
+        "method": "codemode trace vs ledger, matched by (tool, canonical args) multisets",
+        "runsWithViolations": 0,
+        "violations": {},
+        "notes": {},
+        "counts": {
+          "trace_succeeded=3": 1,
+          "trace_unknown=1": 3,
+          "unknown:started+abort=1": 3,
+          "trace_succeeded=4": 2
+        }
+      },
+      "bytes": {
+        "payload": {
+          "n": 3,
+          "p50": 32746,
+          "p95": 32746,
+          "min": 24482,
+          "max": 32746,
+          "mean": 29991.33
+        },
+        "ledgerResults": {
+          "n": 3,
+          "p50": 32492,
+          "p95": 32492,
+          "min": 24286,
+          "max": 32492,
+          "mean": 29756.67
+        },
+        "returned": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "report": {
+          "n": 3,
+          "p50": 38850,
+          "p95": 38851,
+          "min": 29966,
+          "max": 38851,
+          "mean": 35889
+        },
+        "engineBoundary": null
+      }
+    },
+    "guest-exception|zero|codemode": {
+      "scenario": "guest-exception",
+      "profile": "zero",
+      "engine": "codemode",
+      "holdout": false,
+      "limits": {
+        "timeoutMs": 10000,
+        "maxCalls": 64,
+        "concurrency": 8,
+        "maxOutputBytes": 1048576
+      },
+      "modelMs": null,
+      "n": 3,
+      "correct": 3,
+      "outcomes": {
+        "guest_error (guest_error)": 3
+      },
+      "correctnessProblems": {},
+      "knownLimit": null,
+      "warm": {
+        "taskMs": {
+          "n": 3,
+          "p50": 35.2,
+          "p95": 35.86,
+          "min": 33.31,
+          "max": 35.86,
+          "mean": 34.79
+        },
+        "setupMs": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "runMs": {
+          "n": 3,
+          "p50": 35.17,
+          "p95": 35.84,
+          "min": 33.29,
+          "max": 35.84,
+          "mean": 34.77
+        },
+        "engineElapsedMs": {
+          "n": 3,
+          "p50": 28,
+          "p95": 29,
+          "min": 26,
+          "max": 29,
+          "mean": 27.67
+        }
+      },
+      "cold": null,
+      "ledger": {
+        "started": {
+          "n": 3,
+          "p50": 28,
+          "p95": 28,
+          "min": 28,
+          "max": 28,
+          "mean": 28
+        },
+        "completed": {
+          "n": 3,
+          "p50": 28,
+          "p95": 28,
+          "min": 28,
+          "max": 28,
+          "mean": 28
+        },
+        "thrown": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "aborted": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "effectApplied": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "effectAppliedWithoutComplete": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "maxInFlight": {
+          "n": 3,
+          "p50": 3,
+          "p95": 7,
+          "min": 2,
+          "max": 7,
+          "mean": 4
+        },
+        "runsWithLateStarts": 0,
+        "runsWithToolStillRunningAfterReturn": 0,
+        "stillRunningAfterReturnTotals": {
+          "completedLate": 0,
+          "threwLate": 0,
+          "abortedLate": 0,
+          "openAtSettle": 0
+        }
+      },
+      "reconciliation": {
+        "method": "codemode trace vs ledger, matched by (tool, canonical args) multisets",
+        "runsWithViolations": 0,
+        "violations": {},
+        "notes": {},
+        "counts": {
+          "trace_succeeded=28": 3
+        }
+      },
+      "bytes": {
+        "payload": {
+          "n": 3,
+          "p50": 128408,
+          "p95": 128408,
+          "min": 128408,
+          "max": 128408,
+          "mean": 128408
+        },
+        "ledgerResults": {
+          "n": 3,
+          "p50": 127887,
+          "p95": 127887,
+          "min": 127887,
+          "max": 127887,
+          "mean": 127887
+        },
+        "returned": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "report": {
+          "n": 3,
+          "p50": 148870,
+          "p95": 148874,
+          "min": 148868,
+          "max": 148874,
+          "mean": 148870.67
+        },
+        "engineBoundary": null
+      }
+    },
+    "guest-exception|zero|codemode-prewarm": {
+      "scenario": "guest-exception",
+      "profile": "zero",
+      "engine": "codemode-prewarm",
+      "holdout": false,
+      "limits": {
+        "timeoutMs": 10000,
+        "maxCalls": 64,
+        "concurrency": 8,
+        "maxOutputBytes": 1048576
+      },
+      "modelMs": null,
+      "n": 3,
+      "correct": 3,
+      "outcomes": {
+        "guest_error (guest_error)": 3
+      },
+      "correctnessProblems": {},
+      "knownLimit": null,
+      "warm": {
+        "taskMs": {
+          "n": 3,
+          "p50": 14.01,
+          "p95": 32.82,
+          "min": 11.11,
+          "max": 32.82,
+          "mean": 19.32
+        },
+        "setupMs": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "runMs": {
+          "n": 3,
+          "p50": 13.98,
+          "p95": 32.71,
+          "min": 11.09,
+          "max": 32.71,
+          "mean": 19.26
+        },
+        "engineElapsedMs": {
+          "n": 3,
+          "p50": 12,
+          "p95": 26,
+          "min": 10,
+          "max": 26,
+          "mean": 16
+        }
+      },
+      "cold": null,
+      "ledger": {
+        "started": {
+          "n": 3,
+          "p50": 28,
+          "p95": 28,
+          "min": 28,
+          "max": 28,
+          "mean": 28
+        },
+        "completed": {
+          "n": 3,
+          "p50": 28,
+          "p95": 28,
+          "min": 28,
+          "max": 28,
+          "mean": 28
+        },
+        "thrown": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "aborted": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "effectApplied": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "effectAppliedWithoutComplete": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "maxInFlight": {
+          "n": 3,
+          "p50": 2,
+          "p95": 2,
+          "min": 1,
+          "max": 2,
+          "mean": 1.67
+        },
+        "runsWithLateStarts": 0,
+        "runsWithToolStillRunningAfterReturn": 0,
+        "stillRunningAfterReturnTotals": {
+          "completedLate": 0,
+          "threwLate": 0,
+          "abortedLate": 0,
+          "openAtSettle": 0
+        }
+      },
+      "reconciliation": {
+        "method": "codemode trace vs ledger, matched by (tool, canonical args) multisets",
+        "runsWithViolations": 0,
+        "violations": {},
+        "notes": {},
+        "counts": {
+          "trace_succeeded=28": 3
+        }
+      },
+      "bytes": {
+        "payload": {
+          "n": 3,
+          "p50": 128408,
+          "p95": 128408,
+          "min": 128408,
+          "max": 128408,
+          "mean": 128408
+        },
+        "ledgerResults": {
+          "n": 3,
+          "p50": 127887,
+          "p95": 127887,
+          "min": 127887,
+          "max": 127887,
+          "mean": 127887
+        },
+        "returned": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "report": {
+          "n": 3,
+          "p50": 148699,
+          "p95": 148875,
+          "min": 148590,
+          "max": 148875,
+          "mean": 148721.33
+        },
+        "engineBoundary": null
+      }
+    },
+    "guest-exception|zero|codemode-embedded": {
+      "scenario": "guest-exception",
+      "profile": "zero",
+      "engine": "codemode-embedded",
+      "holdout": false,
+      "limits": {
+        "timeoutMs": 10000,
+        "maxCalls": 64,
+        "concurrency": 8,
+        "maxOutputBytes": 1048576
+      },
+      "modelMs": null,
+      "n": 3,
+      "correct": 3,
+      "outcomes": {
+        "guest_error (guest_error)": 3
+      },
+      "correctnessProblems": {},
+      "knownLimit": null,
+      "warm": {
+        "taskMs": {
+          "n": 3,
+          "p50": 18.14,
+          "p95": 18.75,
+          "min": 18.01,
+          "max": 18.75,
+          "mean": 18.3
+        },
+        "setupMs": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "runMs": {
+          "n": 3,
+          "p50": 18.12,
+          "p95": 18.74,
+          "min": 17.99,
+          "max": 18.74,
+          "mean": 18.28
+        },
+        "engineElapsedMs": {
+          "n": 3,
+          "p50": 13,
+          "p95": 13,
+          "min": 13,
+          "max": 13,
+          "mean": 13
+        }
+      },
+      "cold": null,
+      "ledger": {
+        "started": {
+          "n": 3,
+          "p50": 28,
+          "p95": 28,
+          "min": 28,
+          "max": 28,
+          "mean": 28
+        },
+        "completed": {
+          "n": 3,
+          "p50": 28,
+          "p95": 28,
+          "min": 28,
+          "max": 28,
+          "mean": 28
+        },
+        "thrown": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "aborted": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "effectApplied": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "effectAppliedWithoutComplete": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "maxInFlight": {
+          "n": 3,
+          "p50": 3,
+          "p95": 5,
+          "min": 3,
+          "max": 5,
+          "mean": 3.67
+        },
+        "runsWithLateStarts": 0,
+        "runsWithToolStillRunningAfterReturn": 0,
+        "stillRunningAfterReturnTotals": {
+          "completedLate": 0,
+          "threwLate": 0,
+          "abortedLate": 0,
+          "openAtSettle": 0
+        }
+      },
+      "reconciliation": {
+        "method": "codemode trace vs ledger, matched by (tool, canonical args) multisets",
+        "runsWithViolations": 0,
+        "violations": {},
+        "notes": {},
+        "counts": {
+          "trace_succeeded=28": 3
+        }
+      },
+      "bytes": {
+        "payload": {
+          "n": 3,
+          "p50": 128408,
+          "p95": 128408,
+          "min": 128408,
+          "max": 128408,
+          "mean": 128408
+        },
+        "ledgerResults": {
+          "n": 3,
+          "p50": 127887,
+          "p95": 127887,
+          "min": 127887,
+          "max": 127887,
+          "mean": 127887
+        },
+        "returned": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "report": {
+          "n": 3,
+          "p50": 148867,
+          "p95": 148878,
+          "min": 148865,
+          "max": 148878,
+          "mean": 148870
+        },
+        "engineBoundary": null
+      }
+    },
+    "guest-exception|zero|codemode-embedded-prewarm": {
+      "scenario": "guest-exception",
+      "profile": "zero",
+      "engine": "codemode-embedded-prewarm",
+      "holdout": false,
+      "limits": {
+        "timeoutMs": 10000,
+        "maxCalls": 64,
+        "concurrency": 8,
+        "maxOutputBytes": 1048576
+      },
+      "modelMs": null,
+      "n": 3,
+      "correct": 3,
+      "outcomes": {
+        "guest_error (guest_error)": 3
+      },
+      "correctnessProblems": {},
+      "knownLimit": null,
+      "warm": {
+        "taskMs": {
+          "n": 3,
+          "p50": 7.27,
+          "p95": 19.05,
+          "min": 6.94,
+          "max": 19.05,
+          "mean": 11.08
+        },
+        "setupMs": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "runMs": {
+          "n": 3,
+          "p50": 7.23,
+          "p95": 19,
+          "min": 6.91,
+          "max": 19,
+          "mean": 11.05
+        },
+        "engineElapsedMs": {
+          "n": 3,
+          "p50": 6,
+          "p95": 14,
+          "min": 6,
+          "max": 14,
+          "mean": 8.67
+        }
+      },
+      "cold": null,
+      "ledger": {
+        "started": {
+          "n": 3,
+          "p50": 28,
+          "p95": 28,
+          "min": 28,
+          "max": 28,
+          "mean": 28
+        },
+        "completed": {
+          "n": 3,
+          "p50": 28,
+          "p95": 28,
+          "min": 28,
+          "max": 28,
+          "mean": 28
+        },
+        "thrown": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "aborted": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "effectApplied": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "effectAppliedWithoutComplete": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "maxInFlight": {
+          "n": 3,
+          "p50": 2,
+          "p95": 4,
+          "min": 2,
+          "max": 4,
+          "mean": 2.67
+        },
+        "runsWithLateStarts": 0,
+        "runsWithToolStillRunningAfterReturn": 0,
+        "stillRunningAfterReturnTotals": {
+          "completedLate": 0,
+          "threwLate": 0,
+          "abortedLate": 0,
+          "openAtSettle": 0
+        }
+      },
+      "reconciliation": {
+        "method": "codemode trace vs ledger, matched by (tool, canonical args) multisets",
+        "runsWithViolations": 0,
+        "violations": {},
+        "notes": {},
+        "counts": {
+          "trace_succeeded=28": 3
+        }
+      },
+      "bytes": {
+        "payload": {
+          "n": 3,
+          "p50": 128408,
+          "p95": 128408,
+          "min": 128408,
+          "max": 128408,
+          "mean": 128408
+        },
+        "ledgerResults": {
+          "n": 3,
+          "p50": 127887,
+          "p95": 127887,
+          "min": 127887,
+          "max": 127887,
+          "mean": 127887
+        },
+        "returned": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "report": {
+          "n": 3,
+          "p50": 148601,
+          "p95": 148884,
+          "min": 148594,
+          "max": 148884,
+          "mean": 148693
+        },
+        "engineBoundary": null
+      }
+    },
+    "lost-response|mixed|codemode": {
+      "scenario": "lost-response",
+      "profile": "mixed",
+      "engine": "codemode",
+      "holdout": false,
+      "limits": {
+        "timeoutMs": 300,
+        "maxCalls": 64,
+        "concurrency": 8,
+        "maxOutputBytes": 1048576
+      },
+      "modelMs": null,
+      "n": 3,
+      "correct": 3,
+      "outcomes": {
+        "timeout (deadline)": 3
+      },
+      "correctnessProblems": {},
+      "knownLimit": null,
+      "warm": {
+        "taskMs": {
+          "n": 3,
+          "p50": 310.12,
+          "p95": 310.58,
+          "min": 307.56,
+          "max": 310.58,
+          "mean": 309.42
+        },
+        "setupMs": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "runMs": {
+          "n": 3,
+          "p50": 310.1,
+          "p95": 310.57,
+          "min": 307.54,
+          "max": 310.57,
+          "mean": 309.4
+        },
+        "engineElapsedMs": {
+          "n": 3,
+          "p50": 302,
+          "p95": 303,
+          "min": 302,
+          "max": 303,
+          "mean": 302.33
+        }
+      },
+      "cold": null,
+      "ledger": {
+        "started": {
+          "n": 3,
+          "p50": 2,
+          "p95": 2,
+          "min": 2,
+          "max": 2,
+          "mean": 2
+        },
+        "completed": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "thrown": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "aborted": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "effectApplied": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "effectAppliedWithoutComplete": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "maxInFlight": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "runsWithLateStarts": 0,
+        "runsWithToolStillRunningAfterReturn": 0,
+        "stillRunningAfterReturnTotals": {
+          "completedLate": 0,
+          "threwLate": 0,
+          "abortedLate": 0,
+          "openAtSettle": 0
+        }
+      },
+      "reconciliation": {
+        "method": "codemode trace vs ledger, matched by (tool, canonical args) multisets",
+        "runsWithViolations": 0,
+        "violations": {},
+        "notes": {},
+        "counts": {
+          "trace_succeeded=1": 3,
+          "trace_unknown=1": 3,
+          "unknown:started+effect_applied+abort=1": 3
+        }
+      },
+      "bytes": {
+        "payload": {
+          "n": 3,
+          "p50": 8103,
+          "p95": 8103,
+          "min": 8103,
+          "max": 8103,
+          "mean": 8103
+        },
+        "ledgerResults": {
+          "n": 3,
+          "p50": 8041,
+          "p95": 8041,
+          "min": 8041,
+          "max": 8041,
+          "mean": 8041
+        },
+        "returned": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "report": {
+          "n": 3,
+          "p50": 10462,
+          "p95": 10466,
+          "min": 10460,
+          "max": 10466,
+          "mean": 10462.67
+        },
+        "engineBoundary": null
+      }
+    },
+    "lost-response|mixed|codemode-prewarm": {
+      "scenario": "lost-response",
+      "profile": "mixed",
+      "engine": "codemode-prewarm",
+      "holdout": false,
+      "limits": {
+        "timeoutMs": 300,
+        "maxCalls": 64,
+        "concurrency": 8,
+        "maxOutputBytes": 1048576
+      },
+      "modelMs": null,
+      "n": 3,
+      "correct": 3,
+      "outcomes": {
+        "timeout (deadline)": 3
+      },
+      "correctnessProblems": {},
+      "knownLimit": null,
+      "warm": {
+        "taskMs": {
+          "n": 3,
+          "p50": 304.14,
+          "p95": 310.52,
+          "min": 304.09,
+          "max": 310.52,
+          "mean": 306.25
+        },
+        "setupMs": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "runMs": {
+          "n": 3,
+          "p50": 304.1,
+          "p95": 310.48,
+          "min": 304.06,
+          "max": 310.48,
+          "mean": 306.22
+        },
+        "engineElapsedMs": {
+          "n": 3,
+          "p50": 303,
+          "p95": 303,
+          "min": 303,
+          "max": 303,
+          "mean": 303
+        }
+      },
+      "cold": null,
+      "ledger": {
+        "started": {
+          "n": 3,
+          "p50": 2,
+          "p95": 2,
+          "min": 2,
+          "max": 2,
+          "mean": 2
+        },
+        "completed": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "thrown": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "aborted": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "effectApplied": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "effectAppliedWithoutComplete": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "maxInFlight": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "runsWithLateStarts": 0,
+        "runsWithToolStillRunningAfterReturn": 0,
+        "stillRunningAfterReturnTotals": {
+          "completedLate": 0,
+          "threwLate": 0,
+          "abortedLate": 0,
+          "openAtSettle": 0
+        }
+      },
+      "reconciliation": {
+        "method": "codemode trace vs ledger, matched by (tool, canonical args) multisets",
+        "runsWithViolations": 0,
+        "violations": {},
+        "notes": {},
+        "counts": {
+          "trace_succeeded=1": 3,
+          "trace_unknown=1": 3,
+          "unknown:started+effect_applied+abort=1": 3
+        }
+      },
+      "bytes": {
+        "payload": {
+          "n": 3,
+          "p50": 8103,
+          "p95": 8103,
+          "min": 8103,
+          "max": 8103,
+          "mean": 8103
+        },
+        "ledgerResults": {
+          "n": 3,
+          "p50": 8041,
+          "p95": 8041,
+          "min": 8041,
+          "max": 8041,
+          "mean": 8041
+        },
+        "returned": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "report": {
+          "n": 3,
+          "p50": 10454,
+          "p95": 10463,
+          "min": 10454,
+          "max": 10463,
+          "mean": 10457
+        },
+        "engineBoundary": null
+      }
+    },
+    "lost-response|mixed|codemode-embedded": {
+      "scenario": "lost-response",
+      "profile": "mixed",
+      "engine": "codemode-embedded",
+      "holdout": false,
+      "limits": {
+        "timeoutMs": 300,
+        "maxCalls": 64,
+        "concurrency": 8,
+        "maxOutputBytes": 1048576
+      },
+      "modelMs": null,
+      "n": 3,
+      "correct": 3,
+      "outcomes": {
+        "timeout (deadline)": 3
+      },
+      "correctnessProblems": {},
+      "knownLimit": null,
+      "warm": {
+        "taskMs": {
+          "n": 3,
+          "p50": 307.64,
+          "p95": 307.88,
+          "min": 307.26,
+          "max": 307.88,
+          "mean": 307.59
+        },
+        "setupMs": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "runMs": {
+          "n": 3,
+          "p50": 307.62,
+          "p95": 307.86,
+          "min": 307.24,
+          "max": 307.86,
+          "mean": 307.57
+        },
+        "engineElapsedMs": {
+          "n": 3,
+          "p50": 302,
+          "p95": 303,
+          "min": 302,
+          "max": 303,
+          "mean": 302.33
+        }
+      },
+      "cold": null,
+      "ledger": {
+        "started": {
+          "n": 3,
+          "p50": 2,
+          "p95": 2,
+          "min": 2,
+          "max": 2,
+          "mean": 2
+        },
+        "completed": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "thrown": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "aborted": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "effectApplied": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "effectAppliedWithoutComplete": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "maxInFlight": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "runsWithLateStarts": 0,
+        "runsWithToolStillRunningAfterReturn": 0,
+        "stillRunningAfterReturnTotals": {
+          "completedLate": 0,
+          "threwLate": 0,
+          "abortedLate": 0,
+          "openAtSettle": 0
+        }
+      },
+      "reconciliation": {
+        "method": "codemode trace vs ledger, matched by (tool, canonical args) multisets",
+        "runsWithViolations": 0,
+        "violations": {},
+        "notes": {},
+        "counts": {
+          "trace_succeeded=1": 3,
+          "trace_unknown=1": 3,
+          "unknown:started+effect_applied+abort=1": 3
+        }
+      },
+      "bytes": {
+        "payload": {
+          "n": 3,
+          "p50": 8103,
+          "p95": 8103,
+          "min": 8103,
+          "max": 8103,
+          "mean": 8103
+        },
+        "ledgerResults": {
+          "n": 3,
+          "p50": 8041,
+          "p95": 8041,
+          "min": 8041,
+          "max": 8041,
+          "mean": 8041
+        },
+        "returned": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "report": {
+          "n": 3,
+          "p50": 10462,
+          "p95": 10463,
+          "min": 10461,
+          "max": 10463,
+          "mean": 10462
+        },
+        "engineBoundary": null
+      }
+    },
+    "lost-response|mixed|codemode-embedded-prewarm": {
+      "scenario": "lost-response",
+      "profile": "mixed",
+      "engine": "codemode-embedded-prewarm",
+      "holdout": false,
+      "limits": {
+        "timeoutMs": 300,
+        "maxCalls": 64,
+        "concurrency": 8,
+        "maxOutputBytes": 1048576
+      },
+      "modelMs": null,
+      "n": 3,
+      "correct": 3,
+      "outcomes": {
+        "timeout (deadline)": 3
+      },
+      "correctnessProblems": {},
+      "knownLimit": null,
+      "warm": {
+        "taskMs": {
+          "n": 3,
+          "p50": 303.79,
+          "p95": 308.32,
+          "min": 302.47,
+          "max": 308.32,
+          "mean": 304.86
+        },
+        "setupMs": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "runMs": {
+          "n": 3,
+          "p50": 303.75,
+          "p95": 308.22,
+          "min": 302.44,
+          "max": 308.22,
+          "mean": 304.8
+        },
+        "engineElapsedMs": {
+          "n": 3,
+          "p50": 301,
+          "p95": 302,
+          "min": 301,
+          "max": 302,
+          "mean": 301.33
+        }
+      },
+      "cold": null,
+      "ledger": {
+        "started": {
+          "n": 3,
+          "p50": 2,
+          "p95": 2,
+          "min": 2,
+          "max": 2,
+          "mean": 2
+        },
+        "completed": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "thrown": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "aborted": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "effectApplied": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "effectAppliedWithoutComplete": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "maxInFlight": {
+          "n": 3,
+          "p50": 1,
+          "p95": 1,
+          "min": 1,
+          "max": 1,
+          "mean": 1
+        },
+        "runsWithLateStarts": 0,
+        "runsWithToolStillRunningAfterReturn": 0,
+        "stillRunningAfterReturnTotals": {
+          "completedLate": 0,
+          "threwLate": 0,
+          "abortedLate": 0,
+          "openAtSettle": 0
+        }
+      },
+      "reconciliation": {
+        "method": "codemode trace vs ledger, matched by (tool, canonical args) multisets",
+        "runsWithViolations": 0,
+        "violations": {},
+        "notes": {},
+        "counts": {
+          "trace_succeeded=1": 3,
+          "trace_unknown=1": 3,
+          "unknown:started+effect_applied+abort=1": 3
+        }
+      },
+      "bytes": {
+        "payload": {
+          "n": 3,
+          "p50": 8103,
+          "p95": 8103,
+          "min": 8103,
+          "max": 8103,
+          "mean": 8103
+        },
+        "ledgerResults": {
+          "n": 3,
+          "p50": 8041,
+          "p95": 8041,
+          "min": 8041,
+          "max": 8041,
+          "mean": 8041
+        },
+        "returned": {
+          "n": 3,
+          "p50": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "mean": 0
+        },
+        "report": {
+          "n": 3,
+          "p50": 10463,
+          "p95": 10469,
+          "min": 10463,
+          "max": 10469,
+          "mean": 10465
+        },
+        "engineBoundary": null
+      }
+    }
+  }
+}

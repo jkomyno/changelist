@@ -18,9 +18,9 @@ and blind-retry baselines to native plan execution.
 
 ```sh
 mise exec -- cargo build --release --locked --bin codemode
-mkdir -p eval/recovery-native
+mkdir -p eval/recovery-local
 mise exec -- cargo run --release --locked --bin codemode-recovery-eval -- \
-    --reps 15 --out eval/recovery-native > eval/recovery-native/summary.md
+    --reps 15 --out eval/recovery-local > eval/recovery-local/summary.md
 ```
 
 `codemode-recovery-eval` ([source](../src/bin/codemode-recovery-eval.rs)) needs the
@@ -144,8 +144,8 @@ post-kill state and ledger checks remain unchanged.
 
 ## Native results
 
-The [corrected run](../eval/recovery-native/summary.md), with [all raw cells and
-fingerprints](../eval/recovery-native/summary.json), passes every correctness
+The [final run](../eval/recovery-native-final/summary.md), with [all raw cells and
+fingerprints](../eval/recovery-native-final/summary.json), passes every correctness
 check across 270 measured cells. All 240 cells that dispatch work record backend
 `native` and zero guest transport bytes. At both latency profiles, all 15 resume
 runs reach the intended final state with no duplicate effects, leaving only the
@@ -153,17 +153,19 @@ uncertain comment for review.
 
 | Metric | 0 ms provider latency | 25 ms provider latency |
 | --- | ---: | ---: |
-| Resume p50 / p90 | 70.9 / 75.3 ms | 94.1 / 100.9 ms |
-| 64 operations, runtime only p50 | 31.3 ms | 447.9 ms |
-| 64 operations, storage journal p50 | 642.4 ms | 671.1 ms |
-| 64 operations, process journal p50 | 45.4 ms | 455.0 ms |
+| Resume p50 / p90 | 89.2 / 93.6 ms | 114.8 / 122.2 ms |
+| 64 operations, runtime only p50 | 29.2 ms | 466.8 ms |
+| 64 operations, storage journal p50 | 820.8 ms | 804.3 ms |
+| 64 operations, process journal p50 | 49.4 ms | 475.1 ms |
 
 Measured on Apple M1 Pro, macOS, Rust 1.99.1 release, default features, using the
 same 15 repetitions and two warmups described above. Guest startup is absent.
 Storage durability still dominates the zero-latency journaled workload; the
-paired journal overhead is 4.63 ms per commit at p50. Historical Deno figures
-below used slower filesystem flushes on the same machine, so their total
-before/after difference cannot all be credited to removing the guest. These
+paired journal overhead is 6.07 ms per commit at p50. The [earlier native pass](../eval/recovery-native/summary.md),
+before the JSON compatibility fixes, measured 4.71 ms per commit and 70.9 ms
+resume p50. Both passed; the final pass is reported here rather than selecting
+the faster result. Filesystem flush cost varied between runs on the same machine,
+so total before/after differences cannot all be credited to removing the guest. These
 native baselines measure current persistence overhead against the same native
 submission path.
 

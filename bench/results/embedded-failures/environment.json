@@ -1,0 +1,110 @@
+{
+  "date": "2026-11-09T13:48:33.199Z",
+  "driver": {
+    "runtime": "bun",
+    "version": "1.4.4",
+    "execPath": "/Users/jkomyno/.local/share/mise/installs/bun/1.4.4/bin/bun"
+  },
+  "runtimes": {
+    "bun": "1.4.4",
+    "node": "v26.12.1",
+    "deno": "deno 2.9.8 (long term support, release, aarch64-apple-darwin)"
+  },
+  "cpu": {
+    "model": "Apple M1 Pro",
+    "logical": 10
+  },
+  "os": {
+    "platform": "darwin",
+    "release": "23.4.0",
+    "arch": "arm64",
+    "product": "14.4.1",
+    "totalMemGiB": 32
+  },
+  "loadavg": [
+    2.9,
+    3.6,
+    3.67
+  ],
+  "git": {
+    "commit": "6d26458c91513e0ef4838b1a750d305f97330865",
+    "dirty": true,
+    "dirtyOutsideBench": true,
+    "changedOutsideBench": [
+      "github/workflows/ci.yml",
+      "CONTRIBUTING.md",
+      "README.md",
+      "docs/design.md",
+      "docs/integrations.md",
+      "docs/recovery-evaluation.md",
+      "docs/recovery.md",
+      "examples/recovery/demo.sh",
+      "integrations/composio/README.md",
+      "integrations/pi/README.md",
+      "integrations/shared/bridge-client.ts",
+      "mise.toml",
+      "docs/embedded-evaluation.md",
+      "eval/recovery-native-final/summary.json",
+      "eval/recovery-native-final/summary.md",
+      "tests/bridge_client.rs"
+    ]
+  },
+  "codemodeBinary": {
+    "path": "/Users/jkomyno/work/me/codemode/target/release/codemode",
+    "sha256": "e733a42976cace5764e1a67765b3d792ae100110a9a2fe9916772542125f7f27",
+    "bytes": 78825376,
+    "buildRustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "buildFeatures": "embedded-v8"
+  },
+  "toolchainRustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: aarch64-apple-darwin\nrelease: 1.99.1\nLLVM version: 23.1.1",
+  "deno": "/Users/jkomyno/.local/share/mise/installs/deno/2.9.8/bin/deno",
+  "pins": {
+    "runtimes": {
+      "bun": "1.4.4",
+      "node": "26.12.1",
+      "deno": "2.9.8"
+    },
+    "pi": {
+      "package": "@earendil-works/pi-codemode",
+      "version": "1.4.0",
+      "git_tag": "v1.4.0",
+      "git_commit": "4a080252f06caf63a525d7873c5d94d3c23887e0",
+      "tarballs": [
+        {
+          "name": "@earendil-works/pi-codemode",
+          "version": "1.4.0",
+          "url": "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.4.0.tgz",
+          "integrity": "sha512-23CNAXpS9DuLzPMyYuvrXVVio46x4YhffCgCqaWmF7F5H8PooqjrQvX4ucF6M0BhUd+x2tV6r1J0dv8cCME4Cg==",
+          "install_dir": "node_modules/@earendil-works/pi-codemode"
+        },
+        {
+          "name": "quickjs-wasi",
+          "version": "3.6.2",
+          "url": "https://registry.npmjs.org/quickjs-wasi/-/quickjs-wasi-3.6.2.tgz",
+          "integrity": "sha512-FCqGtGOrMgzUiIrMNMA2YnsOxCNwo31dzqXvclXUC6xeT35NJLKXQJsvbeCTjvoFAwZgEAPg8U6+KAPDGXn8Mg==",
+          "install_dir": "node_modules/quickjs-wasi"
+        }
+      ]
+    },
+    "opencode": {
+      "package": "@opencode-ai/codemode",
+      "version": "1.19.5",
+      "repository": "https://github.com/anomalyco/opencode.git",
+      "git_tag": "v1.19.5",
+      "git_commit": "810c0eba1a7348036f8bdf61e6632d0c36c6876c",
+      "sparse_path": "packages/codemode",
+      "dependencies": {
+        "acorn": "8.15.0",
+        "effect": "4.0.0-beta.83",
+        "typescript": "5.8.2"
+      },
+      "lockfile": "bench/engines/opencode-deps/bun.lock"
+    },
+    "codemode": {
+      "binary": "target/release/codemode",
+      "build": "mise exec -- cargo build --release --locked --bin codemode",
+      "client": "integrations/shared/bridge-client.ts",
+      "bridge_protocol": 2
+    }
+  }
+}
