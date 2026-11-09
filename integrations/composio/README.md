@@ -87,6 +87,72 @@ environment. `composio run` copies the script next to itself while it runs, so
   execution waits for the CLI's own approval flow, inside the run deadline. This was
   not exercised: the checked account has them off.
 
+## Plan sessions: GitHub issue labels
+
+[`plan-host.ts`](plan-host.ts) makes the Composio CLI the trusted provider of a
+recoverable [plan](../../docs/recovery.md): Rust journals each attempt, and the
+host adds one existing label to one GitHub issue per operation through
+`execute(slug, data, { account })`. Write a host-owned config with the stable
+connected-account id (`composio connections list`) and the allowed repositories:
+
+```json
+{"account": "<connected account id>", "destinations": ["owner/repo"]}
+```
+
+```sh
+composio run --file integrations/composio/plan-host.ts -- declare --config config.json > declaration.json
+codemode plan check plan.json --provider declaration.json
+codemode plan approve plan.json --journal j.db --provider declaration.json --digest <sha256:...> --approver <name>
+composio run --file integrations/composio/plan-host.ts -- preflight --config config.json --plan plan.json  # read-only
+composio run --file integrations/composio/plan-host.ts -- run --config config.json --journal j.db \
+  --bin target/debug/codemode --deno "$(mise which deno)"
+composio run --file integrations/composio/plan-host.ts -- resume ...   # after an interruption
+```
+
+Each operation is `{"tool": "GITHUB_ADD_LABELS_TO_AN_ISSUE", "scope": {"provider":
+"composio.github", "account": "<id>", "destination": "owner/repo"}, "arguments":
+{"owner", "repo", "issue_number", "labels": ["one-label"]}}` with no preconditions.
+
+| Observation | Recorded effect | After an interruption |
+| --- | --- | --- |
+| Scope, account, destination, arguments, or a precondition not supported | `refused`, nothing called | review |
+| Label does not exist in the repository | `refused`, no mutation | review |
+| Label existence could not be confirmed | `not_applied`, no mutation | may be sent again |
+| Mutation succeeded | applied | done |
+| Mutation failed, or the CLI ended without a result | `unknown` | probe the issue's labels |
+| Probe: label on the issue | `satisfied`, attribution unknown | done |
+| Probe: label absent | `unknown` (an earlier request may still apply) | review after the probe budget; never resent |
+| Probe failed, malformed, or over 1,000 labels | probe error, still `unknown` | as above |
+
+The declaration is `repeat: unsafe`, `reconcile: state`, and retention
+`summary/1`: the journal keeps this host's fixed messages and evidence, never
+Composio's results or error text. There are no receipts, idempotency keys,
+atomic preconditions, or remote cancellation: the label check before a mutation
+is a separate read, and a cancelled session cannot stop a mutation the CLI
+already started. Label membership says nothing about repeated webhooks or
+automations; that is why the contract is `repeat: unsafe`. The tool version
+observed when approving is not an execution pin: the helper sends none.
+
+`--drop-reply <operation>` is fault injection for recovery demonstrations: after
+the helper reports a successful mutation, the host withholds the reply. It is
+off unless given, and it simulates a lost local observation, not a network
+failure.
+
+Verification status:
+
+- **Offline:** `mise run composio-plan-check` runs the handlers against a
+  stand-in helper with its own ledger, then the real bridge: a dropped reply
+  after the label was applied, a pending request, and a SIGKILLed executor
+  resume to `satisfied` and `review` without a second mutation; a late effect is
+  then reconciled; cancellation leaves the mutation `unknown`; scope and
+  precondition refusals send nothing; every call used the configured account;
+  no stand-in text reaches the journal or inspection.
+- **Live, read-only:** `mise run composio-plan-preflight owner/repo 1 label`
+  checks authorization, the label, and the issue's labels with the logged-in
+  CLI (verified on a public repository; a wrong account selector fails closed).
+- **Live writes:** not yet run. They need an explicitly authorized account,
+  repository, issue, label, and cleanup plan.
+
 ## Using the SDK instead
 
 [`composio-provider.ts`](composio-provider.ts) also exports `sdkExecutor`, which
@@ -104,6 +170,9 @@ machine has only a CLI user key, which `@composio/core` 0.28.0 does not accept.
 - [`composio-provider.ts`](composio-provider.ts): result mapping, the CLI helper and
   SDK executors, and `runComposio`, built on the shared [bridge client](../shared/bridge-client.ts).
 - [`host.ts`](host.ts): the host script for `composio run`, or `--offline` under Deno or Node.
+- [`composio-plan.ts`](composio-plan.ts) and [`plan-host.ts`](plan-host.ts): the plan
+  provider for GitHub issue labels, and its host script; [`run-plan-preflight.sh`](run-plan-preflight.sh)
+  runs the live read-only preflight.
 - [`composio-tools.d.ts`](composio-tools.d.ts): guest declarations for the example slugs.
-- [`demo/`](demo): the example program, the offline fake helper, the SDK check, and the
-  credential check.
+- [`demo/`](demo): the example program, the offline fake helpers (`fake-labels.ts` for
+  plans), the SDK and plan-handler checks, and the credential check.

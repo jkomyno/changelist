@@ -205,6 +205,43 @@ group, which includes the bridge.
 An `@composio/core` executor (`sdkExecutor`) forwards each call's abort signal to
 the SDK request. The Rust core contains nothing Composio-specific.
 
+### Composio plan provider
+
+[`composio-plan.ts`](../integrations/composio/composio-plan.ts) and its
+[`plan-host.ts`](../integrations/composio/plan-host.ts) serve recoverable plan
+sessions over the plan bridge for one operation family: add one existing label
+to one GitHub issue (`GITHUB_ADD_LABELS_TO_AN_ISSUE`, tool version `20261104_00`
+observed before approval; the helper cannot pin a version at execution). The
+declaration is `repeat: unsafe`, `reconcile: state`, retention `summary/1`.
+
+- **Account and destination.** A host-owned config names one stable
+  connected-account id and an allowlist of `owner/repo`. Every helper call,
+  reads included, passes `{ account }`, which the CLI resolves or fails; it
+  never falls back to a default account. A scope with another provider,
+  account, or destination, arguments naming another repository, extra
+  arguments, more or fewer than one label, or any precondition is refused
+  before any call.
+- **Authorization** runs each session: the account must still read the
+  repository with `triage` or `push` permission.
+- **Execution** first confirms the label exists (GitHub would otherwise create
+  it); this read is not atomic with the mutation. A missing label is `refused`;
+  a failed check is `not_applied` (the mutation was never sent). Any failure
+  after the mutation was handed to the CLI is `unknown`. Nothing is retried.
+- **Reconciliation** reads all of the issue's labels, 100 per page, up to ten
+  pages. Present: `satisfied`, attribution unknown. Absent: `unknown`, because an
+  earlier request may still apply, so after the probe budget the operation goes
+  to review rather than being sent again. A failed, malformed, or incomplete
+  read is a probe error.
+- **Retention.** Replies carry the host's fixed messages and evidence and a
+  projected value (`{"label_added": true}`); raw Composio results, GitHub error
+  text, and label or account details never cross the bridge.
+
+What has been verified: offline, through the real plan bridge with the
+stand-in helper (`tests/composio_plan.rs`); and live, read-only, the helper's
+account selection, the three read tools, and a wrong selector failing closed
+(`mise run composio-plan-preflight`). A live mutation and recovery has not been
+run; it needs an explicitly authorized repository, issue, and label.
+
 ## Guest protocol
 
 The Deno launcher is an implementation detail, not a host API. It receives one

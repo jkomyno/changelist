@@ -299,7 +299,9 @@ Rust process. Other providers implement `RecoverableProvider`. A host such as
 Pi runs plan sessions over the bridge protocol (see
 [host integration](integrations.md)); a host is then the trusted provider: it
 declares the contracts, executes each operation through its own permission
-gates, and answers reconciliation probes. Only the host flows listed there have
+gates, and answers reconciliation probes. The Composio plan provider (GitHub
+issue labels, state reconciliation) is checked offline through the bridge and
+live only read-only. Only the host flows listed there have
 been verified for plan execution; a CLI-only check does not establish recovery
 support for any other adapter.
 

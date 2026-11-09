@@ -44,6 +44,14 @@ run = "integrations/composio/run-demo.sh"
 description = "Run read-only Composio tools through the logged-in Composio CLI"
 run = "integrations/composio/run-live-check.sh"
 
+[tasks.composio-plan-check]
+description = "Run the offline Composio plan host checks: lost reply, killed executor, resume"
+run = "cargo test --locked --test composio_plan"
+
+[tasks.composio-plan-preflight]
+description = "Read-only Composio plan preflight for one issue and label: <owner/repo> <issue> <label>"
+run = "integrations/composio/run-plan-preflight.sh"
+
 [tasks.bench-setup]
 description = "Fetch and verify the pinned code-mode engines and build the release binary"
 run = "mise exec bun@1.4.4 -- bench/setup.sh"
