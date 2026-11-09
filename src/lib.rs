@@ -16,8 +16,9 @@
 //! Every tool must be authorized by the host: [`RunConfig::default`] authorizes none.
 //!
 //! The non-default `testkit` feature adds `fixture`, an offline issue tracker
-//! with its own side-effect ledger, and `MockProvider`, local deterministic
-//! tools, for tests, demos, and evaluations. Neither is part of the default API.
+//! with its own side-effect ledger, `MockProvider`, local deterministic tools, and
+//! `journal_commits`, a count of journal write transactions, for tests, demos, and
+//! evaluations. None is part of the default API.
 
 mod bridge;
 mod embedded;
@@ -43,6 +44,8 @@ pub use inspect::{
     CallRow, CallTiming, Calls, Evidence, InspectOptions, Inspection, Phase, Reconcile,
     ReconcileItem, Sections, Timing, inspect,
 };
+#[cfg(feature = "testkit")]
+pub use journal::journal_commits;
 pub use journal::{
     AttemptRecord, Durability, History, JOURNAL_FORMAT_VERSION, Journal, JournalError,
     JournalReader, ObservationRecord, ProbeRecord, ReviewRecord, SessionEnd, SessionKind,

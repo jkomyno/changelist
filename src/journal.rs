@@ -148,7 +148,7 @@ pub enum Durability {
 }
 
 /// Why a journal could not be created, opened, or written.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum JournalError {
     /// Another executor holds the journal's lock file.
     Busy(PathBuf),
@@ -397,8 +397,179 @@ impl fmt::Debug for JournalReader {
 pub(crate) enum WriteKind<'a> {
     /// A dispatch intent for this attempt key.
     Intent(&'a str),
+    /// An observed result for this attempt key.
+    Observation(&'a str),
     /// Any other fact.
     Other,
+}
+
+/// A fact a session records while it runs, ready to commit; see [`Journal::commit`].
+#[derive(Debug)]
+pub(crate) enum Record {
+    /// See [`Journal::record_intent`].
+    Intent {
+        key: String,
+        operation: String,
+        number: u32,
+        session: u64,
+        call_id: Option<u64>,
+    },
+    /// See [`Journal::record_observation`]; `record` is the retained observation as JSON.
+    Observation { key: String, record: String },
+    /// See [`Journal::record_probe_start`]; `keys` is a JSON array.
+    ProbeStart {
+        operation: String,
+        session: u64,
+        keys: String,
+    },
+    /// See [`Journal::record_probe`], with only what retention keeps.
+    ProbeAnswer {
+        probe: u64,
+        elapsed_ms: u64,
+        verdict: Option<&'static str>,
+        evidence: Option<String>,
+        code: Option<String>,
+        message: Option<String>,
+    },
+}
+
+impl Record {
+    pub(crate) fn intent(
+        key: &str,
+        operation: &str,
+        number: u32,
+        session: u64,
+        call_id: Option<u64>,
+    ) -> Self {
+        Self::Intent {
+            key: key.to_string(),
+            operation: operation.to_string(),
+            number,
+            session,
+            call_id,
+        }
+    }
+
+    /// The observation as `retention` keeps it.
+    pub(crate) fn observation(
+        key: &str,
+        observed: Observed,
+        retention: Retention,
+    ) -> Result<Self, JournalError> {
+        let record = serde_json::to_string(&retained_observation(observed, retention))
+            .map_err(|error| JournalError::Storage(error.to_string()))?;
+        Ok(Self::Observation {
+            key: key.to_string(),
+            record,
+        })
+    }
+
+    pub(crate) fn probe_start(
+        operation: &str,
+        session: u64,
+        keys: &[String],
+    ) -> Result<Self, JournalError> {
+        let keys = serde_json::to_string(keys)
+            .map_err(|error| JournalError::Storage(error.to_string()))?;
+        Ok(Self::ProbeStart {
+            operation: operation.to_string(),
+            session,
+            keys,
+        })
+    }
+
+    /// The answer as `retention` keeps it: the verdict and error code always,
+    /// the evidence and error message only under `summary/1`.
+    pub(crate) fn probe_answer(
+        probe: u64,
+        elapsed_ms: u64,
+        outcome: &Result<Reconciliation, ProviderError>,
+        retention: Retention,
+    ) -> Self {
+        let (verdict, evidence, code, message) = match outcome {
+            Ok(reconciliation) => (
+                Some(reconciliation.verdict.as_str()),
+                Some(retained_text(&reconciliation.evidence, retention)),
+                None,
+                None,
+            ),
+            Err(error) => {
+                let error = retained_error(error, retention);
+                (None, None, Some(error.code), Some(error.message))
+            }
+        };
+        Self::ProbeAnswer {
+            probe,
+            elapsed_ms,
+            verdict,
+            evidence,
+            code,
+            message,
+        }
+    }
+
+    fn kind(&self) -> WriteKind<'_> {
+        match self {
+            Self::Intent { key, .. } => WriteKind::Intent(key),
+            Self::Observation { key, .. } => WriteKind::Observation(key),
+            Self::ProbeStart { .. } | Self::ProbeAnswer { .. } => WriteKind::Other,
+        }
+    }
+
+    fn insert(&self, transaction: &Transaction<'_>, ordinal: i64) -> rusqlite::Result<usize> {
+        match self {
+            Self::Intent {
+                key,
+                operation,
+                number,
+                session,
+                call_id,
+            } => transaction.execute(
+                "INSERT INTO attempts VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    key,
+                    ordinal,
+                    operation,
+                    number,
+                    *session as i64,
+                    call_id.map(|id| id as i64),
+                    now_ms() as i64
+                ],
+            ),
+            Self::Observation { key, record } => transaction.execute(
+                "INSERT INTO observations VALUES (?1, ?2, ?3, ?4)",
+                params![key, ordinal, now_ms() as i64, record],
+            ),
+            Self::ProbeStart {
+                operation,
+                session,
+                keys,
+            } => transaction.execute(
+                "INSERT INTO probes VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![ordinal, operation, *session as i64, keys, now_ms() as i64],
+            ),
+            Self::ProbeAnswer {
+                probe,
+                elapsed_ms,
+                verdict,
+                evidence,
+                code,
+                message,
+            } => transaction.execute(
+                "INSERT INTO reconciliations VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    *probe as i64,
+                    ordinal,
+                    now_ms() as i64,
+                    *elapsed_ms as i64,
+                    verdict,
+                    evidence,
+                    code,
+                    message
+                ],
+            ),
+        }
+    }
 }
 
 /// Test-only control over commits, so tests can hold or fail a write before it
@@ -452,6 +623,49 @@ fn bounded(text: &str) -> String {
 /// Journals created by this process, so two in one process never share an identity.
 static CREATED: AtomicU64 = AtomicU64::new(0);
 
+/// Write transactions committed by journals in this process.
+#[cfg(feature = "testkit")]
+static COMMITS: AtomicU64 = AtomicU64::new(0);
+
+/// Write transactions every journal in this process has committed so far,
+/// counting only transactions that wrote facts. One commit can hold several
+/// facts. Evaluations read it before and after a session to count that
+/// session's commits. Requires the `testkit` feature.
+///
+/// # Examples
+///
+/// ```
+/// use codemode::{Durability, Journal, Plan, SessionKind, journal_commits};
+///
+/// let plan = Plan::parse(r#"{"version": 1, "operations": [
+///   {"id": "label-101", "tool": "issues.add_label",
+///    "scope": {"provider": "fixture.issues", "account": "triage-bot"},
+///    "arguments": {"issue": 101, "label": "triage"}}]}"#)?;
+/// let path = std::env::temp_dir().join(format!("codemode-commits-{}.db", std::process::id()));
+/// # let _ = std::fs::remove_file(&path);
+/// let mut journal = Journal::create(&path, &plan, Durability::Process)?;
+/// let before = journal_commits();
+/// journal.begin_session(SessionKind::Run)?;
+/// assert!(journal_commits() > before);
+/// # drop(journal);
+/// # std::fs::remove_file(&path)?;
+/// # for suffix in ["db-wal", "db-shm", "db.lock"] {
+/// #     let _ = std::fs::remove_file(path.with_extension(suffix));
+/// # }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[cfg(feature = "testkit")]
+#[must_use]
+pub fn journal_commits() -> u64 {
+    COMMITS.load(Ordering::Relaxed)
+}
+
+/// Count one committed write transaction; see [`journal_commits`].
+fn counted() {
+    #[cfg(feature = "testkit")]
+    COMMITS.fetch_add(1, Ordering::Relaxed);
+}
+
 /// A new journal's identity. Attempt keys embed it, and providers may keep keys
 /// across journals, so it must differ between journals: it mixes the process, a
 /// per-process counter, the time in nanoseconds, and a randomly keyed hash.
@@ -475,6 +689,15 @@ fn journal_id(plan: &FrozenPlan) -> String {
 
 fn storage(error: rusqlite::Error) -> JournalError {
     JournalError::Storage(error.to_string())
+}
+
+/// Take the next fact ordinal inside `transaction`.
+fn next_ordinal(transaction: &Transaction<'_>) -> rusqlite::Result<i64> {
+    transaction.query_row(
+        "UPDATE clock SET ordinal = ordinal + 1 WHERE id = 1 RETURNING ordinal",
+        [],
+        |row| row.get(0),
+    )
 }
 
 fn sql_u64(value: i64) -> u64 {
@@ -582,6 +805,7 @@ impl Journal {
             )
             .map_err(storage)?;
         transaction.commit().map_err(storage)?;
+        counted();
         Ok(Self {
             connection,
             _lock: lock,
@@ -645,33 +869,48 @@ impl Journal {
         self.hook = Some(hook);
     }
 
+    /// Write one transaction holding the facts `kinds` names, which `body` inserts.
     fn write<T>(
         &mut self,
-        kind: WriteKind<'_>,
-        body: impl FnOnce(&Transaction<'_>, i64) -> rusqlite::Result<T>,
+        kinds: &[WriteKind<'_>],
+        body: impl FnOnce(&Transaction<'_>) -> rusqlite::Result<T>,
     ) -> Result<T, JournalError> {
         let transaction = self.connection.transaction().map_err(storage)?;
-        let ordinal: i64 = transaction
-            .query_row(
-                "UPDATE clock SET ordinal = ordinal + 1 WHERE id = 1 RETURNING ordinal",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(storage)?;
-        let value = body(&transaction, ordinal).map_err(storage)?;
+        let value = body(&transaction).map_err(storage)?;
         #[cfg(test)]
         if let Some(hook) = &self.hook {
-            // Dropping the transaction rolls it back.
-            hook(test_hook::Point::BeforeCommit, kind).map_err(JournalError::Storage)?;
+            for &kind in kinds {
+                // Dropping the transaction rolls it back.
+                hook(test_hook::Point::BeforeCommit, kind).map_err(JournalError::Storage)?;
+            }
         }
         transaction.commit().map_err(storage)?;
+        counted();
         #[cfg(test)]
         if let Some(hook) = &self.hook {
-            let _ = hook(test_hook::Point::Committed, kind);
+            for &kind in kinds {
+                let _ = hook(test_hook::Point::Committed, kind);
+            }
         }
         #[cfg(not(test))]
-        let _ = kind;
+        let _ = kinds;
         Ok(value)
+    }
+
+    /// Commit `records` in one transaction, in order, and return each one's fact
+    /// ordinal. Either every record commits or none does.
+    pub(crate) fn commit(&mut self, records: &[Record]) -> Result<Vec<u64>, JournalError> {
+        let kinds: Vec<WriteKind<'_>> = records.iter().map(Record::kind).collect();
+        self.write(&kinds, |transaction| {
+            records
+                .iter()
+                .map(|record| {
+                    let ordinal = next_ordinal(transaction)?;
+                    record.insert(transaction, ordinal)?;
+                    Ok(sql_u64(ordinal))
+                })
+                .collect()
+        })
     }
 
     /// Record an approval for this journal's plan.
@@ -695,7 +934,8 @@ impl Journal {
         };
         let record = serde_json::to_string(&bounded_approval)
             .map_err(|error| JournalError::Storage(error.to_string()))?;
-        self.write(WriteKind::Other, |transaction, ordinal| {
+        self.write(&[WriteKind::Other], |transaction| {
+            let ordinal = next_ordinal(transaction)?;
             transaction.execute(
                 "INSERT INTO approvals VALUES (?1, ?2, ?3)",
                 params![ordinal, approval.binding.as_str(), record],
@@ -709,7 +949,8 @@ impl Journal {
     /// # Errors
     /// Returns a storage error.
     pub fn begin_session(&mut self, kind: SessionKind) -> Result<u64, JournalError> {
-        self.write(WriteKind::Other, |transaction, ordinal| {
+        self.write(&[WriteKind::Other], |transaction| {
+            let ordinal = next_ordinal(transaction)?;
             transaction.execute(
                 "INSERT INTO sessions (ordinal, kind, pid, started_unix_ms) VALUES (?1, ?2, ?3, ?4)",
                 params![ordinal, kind.as_str(), std::process::id(), now_ms() as i64],
@@ -734,7 +975,8 @@ impl Journal {
             .transpose()
             .map_err(|error| JournalError::Storage(error.to_string()))?;
         let detail = detail.map(bounded);
-        self.write(WriteKind::Other, |transaction, ordinal| {
+        self.write(&[WriteKind::Other], |transaction| {
+            let ordinal = next_ordinal(transaction)?;
             transaction.execute(
                 "INSERT INTO session_ends VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
@@ -762,21 +1004,8 @@ impl Journal {
         session: u64,
         call_id: Option<u64>,
     ) -> Result<(), JournalError> {
-        self.write(WriteKind::Intent(key), |transaction, ordinal| {
-            transaction.execute(
-                "INSERT INTO attempts VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    key,
-                    ordinal,
-                    operation,
-                    number,
-                    session as i64,
-                    call_id.map(|id| id as i64),
-                    now_ms() as i64
-                ],
-            )?;
-            Ok(())
-        })
+        self.commit(&[Record::intent(key, operation, number, session, call_id)])
+            .map(drop)
     }
 
     /// Durably record an attempt's observed result, keeping only what the approved
@@ -790,15 +1019,8 @@ impl Journal {
         observed: Observed,
         retention: Retention,
     ) -> Result<(), JournalError> {
-        let record = serde_json::to_string(&retained_observation(observed, retention))
-            .map_err(|error| JournalError::Storage(error.to_string()))?;
-        self.write(WriteKind::Other, |transaction, ordinal| {
-            transaction.execute(
-                "INSERT INTO observations VALUES (?1, ?2, ?3, ?4)",
-                params![key, ordinal, now_ms() as i64, record],
-            )?;
-            Ok(())
-        })
+        self.commit(&[Record::observation(key, observed, retention)?])
+            .map(drop)
     }
 
     /// Record every attempt of `session` that has no observation as unobserved,
@@ -824,14 +1046,9 @@ impl Journal {
                 .map_err(storage)?;
             rows.collect::<rusqlite::Result<_>>().map_err(storage)?
         };
+        let wrote = !keys.is_empty();
         for key in keys {
-            let ordinal: i64 = transaction
-                .query_row(
-                    "UPDATE clock SET ordinal = ordinal + 1 WHERE id = 1 RETURNING ordinal",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(storage)?;
+            let ordinal = next_ordinal(&transaction).map_err(storage)?;
             transaction
                 .execute(
                     "INSERT INTO observations VALUES (?1, ?2, ?3, ?4)",
@@ -839,7 +1056,11 @@ impl Journal {
                 )
                 .map_err(storage)?;
         }
-        transaction.commit().map_err(storage)
+        transaction.commit().map_err(storage)?;
+        if wrote {
+            counted();
+        }
+        Ok(())
     }
 
     /// Durably record that a reconciliation probe is about to ask the provider,
@@ -854,15 +1075,8 @@ impl Journal {
         session: u64,
         keys: &[String],
     ) -> Result<u64, JournalError> {
-        let keys = serde_json::to_string(keys)
-            .map_err(|error| JournalError::Storage(error.to_string()))?;
-        self.write(WriteKind::Other, |transaction, ordinal| {
-            transaction.execute(
-                "INSERT INTO probes VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![ordinal, operation, session as i64, keys, now_ms() as i64],
-            )?;
-            Ok(sql_u64(ordinal))
-        })
+        let ordinals = self.commit(&[Record::probe_start(operation, session, keys)?])?;
+        Ok(ordinals[0])
     }
 
     /// Record the provider's answer to the probe `probe` returned by
@@ -879,34 +1093,8 @@ impl Journal {
         outcome: &Result<Reconciliation, ProviderError>,
         retention: Retention,
     ) -> Result<(), JournalError> {
-        let (verdict, evidence, code, message) = match outcome {
-            Ok(reconciliation) => (
-                Some(reconciliation.verdict.as_str()),
-                Some(retained_text(&reconciliation.evidence, retention)),
-                None,
-                None,
-            ),
-            Err(error) => {
-                let error = retained_error(error, retention);
-                (None, None, Some(error.code), Some(error.message))
-            }
-        };
-        self.write(WriteKind::Other, |transaction, ordinal| {
-            transaction.execute(
-                "INSERT INTO reconciliations VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    probe as i64,
-                    ordinal,
-                    now_ms() as i64,
-                    elapsed_ms as i64,
-                    verdict,
-                    evidence,
-                    code,
-                    message
-                ],
-            )?;
-            Ok(())
-        })
+        self.commit(&[Record::probe_answer(probe, elapsed_ms, outcome, retention)])
+            .map(drop)
     }
 
     /// Record a person's review of an operation.
@@ -928,7 +1116,8 @@ impl Journal {
         let resolution = resolution.as_str();
         let reviewer = bounded(reviewer);
         let note = note.map(bounded);
-        self.write(WriteKind::Other, |transaction, ordinal| {
+        self.write(&[WriteKind::Other], |transaction| {
+            let ordinal = next_ordinal(transaction)?;
             transaction.execute(
                 "INSERT INTO reviews VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![

@@ -19,10 +19,11 @@ use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{Value, json};
+use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 use tokio::time::{self, Instant};
 
-use crate::journal::{History, Journal, JournalError, SessionKind};
+use crate::journal::{History, Journal, JournalError, Record, SessionKind};
 use crate::plan::{FrozenPlan, Operation};
 use crate::recovery::{
     Approval, Assessment, Attempt, Fact, NextStep, Observed, ProbeContext, ReconcileMethod,
@@ -224,7 +225,11 @@ pub fn assess_history(
         .collect()
 }
 
-/// The session's journal, and a count of journal writes queued on blocking threads.
+/// A record waiting for the next group commit, and who awaits its ordinal.
+type Waiting = (Record, oneshot::Sender<Result<u64, JournalError>>);
+
+/// The session's journal, a count of journal writes queued on blocking threads,
+/// and the records waiting to be committed.
 ///
 /// A write keeps running after the runtime drops the call that queued it, so the
 /// count lets the session wait for every such write before it records which
@@ -233,6 +238,7 @@ pub fn assess_history(
 struct Shared {
     journal: Arc<Mutex<Journal>>,
     writes: Arc<(Mutex<usize>, Condvar)>,
+    waiting: Arc<Mutex<Vec<Waiting>>>,
 }
 
 /// Counts one queued write until it is dropped, after the write ran or was discarded.
@@ -251,7 +257,14 @@ impl Shared {
         Self {
             journal: Arc::new(Mutex::new(journal)),
             writes: Arc::default(),
+            waiting: Arc::default(),
         }
+    }
+
+    /// Count one write as queued until the returned guard is dropped.
+    fn queue_write(&self) -> QueuedWrite {
+        *self.writes.0.lock().unwrap_or_else(PoisonError::into_inner) += 1;
+        QueuedWrite(Arc::clone(&self.writes))
     }
 
     fn id(&self) -> String {
@@ -268,12 +281,16 @@ async fn journaled<T: Send + 'static>(
     shared: &Shared,
     body: impl FnOnce(&mut Journal) -> Result<T, JournalError> + Send + 'static,
 ) -> Result<T, JournalError> {
-    *shared
-        .writes
-        .0
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner) += 1;
-    let queued = QueuedWrite(Arc::clone(&shared.writes));
+    let queued = shared.queue_write();
+    journaled_as(shared, queued, body).await
+}
+
+/// [`journaled`], counted by `queued`, which the caller took first.
+async fn journaled_as<T: Send + 'static>(
+    shared: &Shared,
+    queued: QueuedWrite,
+    body: impl FnOnce(&mut Journal) -> Result<T, JournalError> + Send + 'static,
+) -> Result<T, JournalError> {
     let journal = Arc::clone(&shared.journal);
     tokio::task::spawn_blocking(move || {
         let _queued = queued;
@@ -282,6 +299,50 @@ async fn journaled<T: Send + 'static>(
     })
     .await
     .map_err(|error| JournalError::Storage(error.to_string()))?
+}
+
+/// Commit `record` and return its fact ordinal once the transaction holding it
+/// has committed.
+///
+/// Group commit: whoever next holds the journal commits every record waiting at
+/// that moment, in arrival order, in one transaction, then hands each waiter its
+/// own result, so records that arrive while a commit is in flight share the next
+/// one. A failed commit fails every record in it and records none of them. The
+/// write is counted before the record waits, and its commit is scheduled before
+/// the first await, so [`after_queued_writes`] never misses it and it commits
+/// even if this future is dropped, as a single write would.
+async fn committed(shared: &Shared, record: Record) -> Result<u64, JournalError> {
+    let queued = shared.queue_write();
+    let (sender, receiver) = oneshot::channel();
+    shared
+        .waiting
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push((record, sender));
+    let waiting = Arc::clone(&shared.waiting);
+    journaled_as(shared, queued, move |journal| {
+        // Taken while holding the journal, so a record is either still waiting
+        // here or an earlier holder has already answered it.
+        let group = std::mem::take(&mut *waiting.lock().unwrap_or_else(PoisonError::into_inner));
+        if group.is_empty() {
+            return Ok(());
+        }
+        let (records, waiters): (Vec<Record>, Vec<_>) = group.into_iter().unzip();
+        let result = journal.commit(&records);
+        for (index, waiter) in waiters.into_iter().enumerate() {
+            let _ = waiter.send(match &result {
+                Ok(ordinals) => Ok(ordinals[index]),
+                Err(error) => Err(error.clone()),
+            });
+        }
+        Ok(())
+    })
+    .await?;
+    receiver.await.unwrap_or_else(|_| {
+        Err(JournalError::Storage(
+            "the journal stopped before the record was committed".into(),
+        ))
+    })
 }
 
 /// Like [`journaled`], but first waits until every queued write has finished.
@@ -647,12 +708,8 @@ async fn probe<P: RecoverableProvider>(
                 .collect();
 
             // Charged before the provider is asked, so a crash loop cannot probe forever.
-            let start = (operation.id.clone(), keys.clone());
-            let probe = journaled(journal, move |journal| {
-                let (operation, keys) = start;
-                journal.record_probe_start(&operation, session, &keys)
-            })
-            .await?;
+            let start = Record::probe_start(&operation.id, session, &keys)?;
+            let probe = committed(journal, start).await?;
             probed.insert(operation.id.clone());
             if cancellation.is_cancelled() {
                 break;
@@ -696,9 +753,10 @@ async fn probe<P: RecoverableProvider>(
         else {
             continue;
         };
-        journaled(journal, move |journal| {
-            journal.record_probe(probe, elapsed, &outcome, retention)
-        })
+        committed(
+            journal,
+            Record::probe_answer(probe, elapsed, &outcome, retention),
+        )
         .await?;
     }
     Ok(probed)
@@ -828,21 +886,17 @@ impl<P: RecoverableProvider> ToolProvider for JournalingProvider<P> {
         let id = operation.id.clone();
         let session = self.session;
         let call_id = call.id;
-        let intent = (key.clone(), id.clone());
-        let recorded = journaled(&self.journal, move |journal| {
-            let (key, id) = intent;
-            journal.record_intent(&key, &id, number, session, Some(call_id))
-        })
-        .await;
+        let intent = Record::intent(&key, &id, number, session, Some(call_id));
+        let recorded = committed(&self.journal, intent).await;
         if let Err(error) = recorded {
             return Err(self.journal_failed(&error, "the dispatch intent was not recorded"));
         }
         if context.cancellation.is_cancelled() || Instant::now() >= context.deadline {
-            let withdrawn = key.clone();
-            let _ = journaled(&self.journal, move |journal| {
-                journal.record_observation(&withdrawn, Observed::Withdrawn, Retention::Metadata)
-            })
-            .await;
+            if let Ok(withdrawn) =
+                Record::observation(&key, Observed::Withdrawn, Retention::Metadata)
+            {
+                let _ = committed(&self.journal, withdrawn).await;
+            }
             return Err(refusal("cancelled", "the run stopped before dispatch"));
         }
         let attempt = Attempt {
@@ -872,13 +926,12 @@ impl<P: RecoverableProvider> ToolProvider for JournalingProvider<P> {
                 (observed, reply)
             }
         };
-        let retention = self.retention;
-        let recorded = journaled(&self.journal, move |journal| {
-            journal.record_observation(&key, observed, retention)
-        })
-        .await;
+        let recorded = match Record::observation(&key, observed, self.retention) {
+            Ok(observation) => committed(&self.journal, observation).await,
+            Err(error) => Err(error),
+        };
         match recorded {
-            Ok(()) => reply,
+            Ok(_) => reply,
             Err(error) => Err(self.journal_failed(&error, "the observed result was not recorded")),
         }
     }
@@ -890,6 +943,8 @@ mod tests {
     //! journal hook that holds or fails the intent's transaction before it commits.
     //! The execute future is polled by hand, so "the provider has not been entered"
     //! is checked after every step that could reach it, never after a sleep.
+    //! Group commit is proved by holding the journal while records queue, so the
+    //! next commit finds all of them waiting.
 
     use std::path::PathBuf;
     use std::pin::pin;
@@ -907,11 +962,13 @@ mod tests {
     const BOUND: Duration = Duration::from_secs(10);
 
     /// What happened, in order, across the journal and the provider.
-    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
     enum Event {
         IntentHeld(String),
         IntentCommitted(String),
         ProviderEntered(String),
+        ObservationHeld(String),
+        ObservationCommitted(String),
     }
 
     type Events = Arc<Mutex<Vec<Event>>>;
@@ -966,16 +1023,38 @@ mod tests {
         }
     }
 
+    /// Which writes the hook holds open until the test releases them.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Hold {
+        /// Hold intents; observations are neither held nor logged.
+        Intents,
+        /// Hold and log observations; intents are logged, not held.
+        Observations,
+        /// Hold nothing; log intents, and fail the commit holding this attempt
+        /// key's intent, if any.
+        Nothing(Option<&'static str>),
+    }
+
     fn harness(name: &str) -> Harness {
+        harness_with(name, &["op"], Hold::Intents)
+    }
+
+    /// A journaling provider for a plan of `operations`, whose attempt keys are
+    /// `key-<operation>-1`, with a commit hook that logs and holds as `hold` says.
+    fn harness_with(name: &str, operations: &[&str], hold: Hold) -> Harness {
         let dir =
             std::env::temp_dir().join(format!("codemode-executor-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch");
-        let plan = Plan::parse(
-            r#"{"version":1,"operations":[{"id":"op","tool":"t",
-                "scope":{"provider":"p","account":"x"},"arguments":{}}]}"#,
-        )
-        .expect("plan");
+        let listed: Vec<Value> = operations
+            .iter()
+            .map(|id| {
+                json!({"id": id, "tool": "t", "scope": {"provider": "p", "account": "x"},
+                       "arguments": {}})
+            })
+            .collect();
+        let plan =
+            Plan::parse(&json!({"version": 1, "operations": listed}).to_string()).expect("plan");
         let mut journal =
             Journal::create(dir.join("journal.db"), &plan, Durability::Process).expect("journal");
         let session = journal.begin_session(SessionKind::Run).expect("session");
@@ -983,35 +1062,56 @@ mod tests {
         let events = Events::default();
         let (held_sender, held) = mpsc::channel();
         let (release, release_receiver) = mpsc::channel();
-        // The intent's transaction waits here until the test releases it with `Ok` or a failure.
+        // A held transaction waits here until the test releases it with `Ok` or a failure.
         let release_receiver = Mutex::new(release_receiver);
+        let wait = move |key: &str| {
+            let _ = held_sender.send(key.to_string());
+            release_receiver
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .recv_timeout(BOUND)
+                .unwrap_or_else(|_| Err("the test never released the write".into()))
+        };
         let log = Arc::clone(&events);
         let hook: CommitHook = Arc::new(move |point, kind| {
-            let WriteKind::Intent(key) = kind else {
-                return Ok(());
+            let push = |event| {
+                log.lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(event);
             };
-            let mut log = log.lock().unwrap_or_else(PoisonError::into_inner);
-            match point {
-                Point::BeforeCommit => {
-                    log.push(Event::IntentHeld(key.to_string()));
-                    drop(log);
-                    let _ = held_sender.send(key.to_string());
-                    release_receiver
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .recv_timeout(BOUND)
-                        .unwrap_or_else(|_| Err("the test never released the write".into()))
+            match (point, kind, hold) {
+                (Point::BeforeCommit, WriteKind::Intent(key), _) => {
+                    push(Event::IntentHeld(key.to_string()));
+                    match hold {
+                        Hold::Intents => wait(key),
+                        Hold::Nothing(Some(failing)) if failing == key => Err("disk full".into()),
+                        _ => Ok(()),
+                    }
                 }
-                Point::Committed => {
-                    log.push(Event::IntentCommitted(key.to_string()));
+                (Point::Committed, WriteKind::Intent(key), _) => {
+                    push(Event::IntentCommitted(key.to_string()));
                     Ok(())
                 }
+                (Point::BeforeCommit, WriteKind::Observation(key), Hold::Observations) => {
+                    push(Event::ObservationHeld(key.to_string()));
+                    wait(key)
+                }
+                (Point::Committed, WriteKind::Observation(key), Hold::Observations) => {
+                    push(Event::ObservationCommitted(key.to_string()));
+                    Ok(())
+                }
+                _ => Ok(()),
             }
         });
         journal.set_commit_hook(hook);
 
-        let operation = plan.operation("op").expect("op").clone();
-        let entries = HashMap::from([("op".to_string(), (operation, 1, "key-op-1".to_string()))]);
+        let entries = operations
+            .iter()
+            .map(|id| {
+                let operation = plan.operation(id).expect("planned").clone();
+                (id.to_string(), (operation, 1, format!("key-{id}-1")))
+            })
+            .collect();
         let provider = JournalingProvider {
             journal: Shared::new(journal),
             provider: Arc::new(Recording(Arc::clone(&events))),
@@ -1031,10 +1131,14 @@ mod tests {
     }
 
     fn call() -> ToolCall {
+        call_for(1, "op")
+    }
+
+    fn call_for(id: u64, operation: &str) -> ToolCall {
         ToolCall {
-            id: 1,
+            id,
             tool: "t".into(),
-            arguments: json!({"operation": "op"}),
+            arguments: json!({"operation": operation}),
         }
     }
 
@@ -1275,5 +1379,263 @@ mod tests {
             }),
             "the late intent is marked as never observed"
         );
+    }
+
+    /// Wait, without awaiting, until `count` journal writes are queued.
+    fn wait_until_queued(shared: &Shared, count: usize) {
+        let deadline = std::time::Instant::now() + BOUND;
+        loop {
+            let queued = *shared
+                .writes
+                .0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if queued >= count {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "only {queued} of {count} writes were queued"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    /// Execute one call per operation at once while the journal is held, and
+    /// release the journal once every intent is queued behind it.
+    async fn execute_together(
+        provider: JournalingProvider<Recording>,
+        operations: &[&str],
+    ) -> (
+        Arc<JournalingProvider<Recording>>,
+        Vec<Result<Value, ProviderError>>,
+    ) {
+        let provider = Arc::new(provider);
+        let far = Instant::now() + BOUND;
+        let held = provider.journal.journal.lock().expect("journal");
+        let calls: Vec<_> = (1..)
+            .zip(operations)
+            .map(|(id, operation)| {
+                let provider = Arc::clone(&provider);
+                let call = call_for(id, operation);
+                tokio::spawn(async move {
+                    provider
+                        .execute(call, context(far, RunCancellation::default()))
+                        .await
+                })
+            })
+            .collect();
+        wait_until_queued(&provider.journal, operations.len());
+        drop(held);
+        let mut replies = Vec::new();
+        for call in calls {
+            let reply = time::timeout(BOUND, call).await.expect("bounded");
+            replies.push(reply.expect("joined"));
+        }
+        (provider, replies)
+    }
+
+    fn history_of(provider: &JournalingProvider<Recording>) -> History {
+        provider
+            .journal
+            .journal
+            .lock()
+            .expect("journal")
+            .history()
+            .expect("history")
+    }
+
+    const FOUR: [&str; 4] = ["a", "b", "c", "d"];
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_intents_commit_together_before_any_reaches_the_provider() {
+        let harness = harness_with("group", &FOUR, Hold::Nothing(None));
+        let (provider, replies) = execute_together(harness.provider, &FOUR).await;
+        for reply in &replies {
+            assert!(reply.is_ok(), "{reply:?}");
+        }
+        let log = events(&harness.events);
+        let first_commit = log
+            .iter()
+            .position(|event| matches!(event, Event::IntentCommitted(_)))
+            .expect("an intent committed");
+        let held: BTreeSet<&Event> = log[..first_commit].iter().collect();
+        let all_held: BTreeSet<Event> = FOUR
+            .iter()
+            .map(|id| Event::IntentHeld(format!("key-{id}-1")))
+            .collect();
+        assert_eq!(
+            held,
+            all_held.iter().collect(),
+            "all four intents are in the first commit: {log:?}"
+        );
+        for id in FOUR {
+            let key = format!("key-{id}-1");
+            let at = |wanted: &Event| log.iter().position(|event| event == wanted);
+            let committed = at(&Event::IntentCommitted(key.clone())).expect("committed");
+            let entered = at(&Event::ProviderEntered(key.clone())).expect("entered");
+            assert!(
+                committed < entered,
+                "{key} reached the provider first: {log:?}"
+            );
+        }
+        let history = history_of(&provider);
+        assert_eq!(history.attempts.len(), 4);
+        assert!(history.attempts.iter().all(|attempt| matches!(
+            attempt.observation.as_ref().map(|o| &o.observed),
+            Some(Observed::Succeeded { .. })
+        )));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_group_commit_dispatches_none_of_its_operations() {
+        let harness = harness_with("group-failed", &FOUR, Hold::Nothing(Some("key-c-1")));
+        let (provider, replies) = execute_together(harness.provider, &FOUR).await;
+        for reply in &replies {
+            let error = reply.as_ref().expect_err("nothing was recorded");
+            assert_eq!(error.code, "journal_unavailable", "{error:?}");
+        }
+        assert!(provider.cancellation.is_cancelled(), "the run is stopped");
+        let log = events(&harness.events);
+        assert!(
+            !log.iter().any(|event| matches!(
+                event,
+                Event::ProviderEntered(_) | Event::IntentCommitted(_)
+            )),
+            "{log:?}"
+        );
+        let history = history_of(&provider);
+        assert!(
+            history.attempts.is_empty(),
+            "the rolled-back group recorded attempts: {:?}",
+            history.attempts
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_observation_is_acknowledged_only_after_its_commit() {
+        for outcome in [Ok(()), Err("disk full".to_string())] {
+            let harness = harness_with("observation", &["op"], Hold::Observations);
+            let far = Instant::now() + BOUND;
+            let mut execute = pin!(
+                harness
+                    .provider
+                    .execute(call(), context(far, RunCancellation::default()))
+            );
+            wait_until_held(&harness, execute.as_mut());
+            assert_eq!(
+                events(&harness.events),
+                [
+                    Event::IntentHeld("key-op-1".into()),
+                    Event::IntentCommitted("key-op-1".into()),
+                    Event::ProviderEntered("key-op-1".into()),
+                    Event::ObservationHeld("key-op-1".into()),
+                ],
+                "the provider answered; its observation is not committed yet"
+            );
+
+            let failed = outcome.is_err();
+            harness.release.send(outcome).expect("release");
+            let reply = time::timeout(BOUND, execute).await.expect("bounded");
+            if failed {
+                assert_eq!(reply.expect_err("not recorded").code, "journal_unavailable");
+                assert!(
+                    history_of(&harness.provider).attempts[0]
+                        .observation
+                        .is_none()
+                );
+            } else {
+                assert_eq!(reply, Ok(json!({"operation": "op", "attempt": 1})));
+                assert_eq!(
+                    events(&harness.events).last(),
+                    Some(&Event::ObservationCommitted("key-op-1".into()))
+                );
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_probe_committed_with_an_observation_stays_charged_after_a_kill() {
+        let dir = std::env::temp_dir().join(format!(
+            "codemode-executor-{}-probe-group",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("killed")).expect("scratch");
+        let _scratch = Scratch(dir.clone());
+        let plan = Plan::parse(
+            r#"{"version":1,"operations":[
+                {"id":"a","tool":"t","scope":{"provider":"p","account":"x"},"arguments":{}},
+                {"id":"b","tool":"t","scope":{"provider":"p","account":"x"},"arguments":{}}]}"#,
+        )
+        .expect("plan");
+        let mut journal =
+            Journal::create(dir.join("journal.db"), &plan, Durability::Process).expect("journal");
+        let run = journal.begin_session(SessionKind::Run).expect("run");
+        journal
+            .record_intent("key-a-1", "a", 1, run, None)
+            .expect("a's outcome is unknown");
+        let resume = journal.begin_session(SessionKind::Resume).expect("resume");
+        journal
+            .record_intent("key-b-1", "b", 1, resume, None)
+            .expect("b dispatched");
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let hooked = Arc::clone(&log);
+        journal.set_commit_hook(Arc::new(move |point, _| {
+            hooked
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(point);
+            Ok(())
+        }));
+        let shared = Shared::new(journal);
+
+        let held = shared.journal.lock().expect("journal");
+        let probe = Record::probe_start("a", resume, &["key-a-1".to_string()]).expect("probe");
+        let observation = Record::observation(
+            "key-b-1",
+            Observed::Succeeded { bytes: 2 },
+            Retention::Metadata,
+        )
+        .expect("observation");
+        let writes = [probe, observation].map(|record| {
+            let shared = shared.clone();
+            tokio::spawn(async move { committed(&shared, record).await })
+        });
+        wait_until_queued(&shared, 2);
+        drop(held);
+        for write in writes {
+            time::timeout(BOUND, write)
+                .await
+                .expect("bounded")
+                .expect("joined")
+                .expect("committed");
+        }
+        assert_eq!(
+            *log.lock().expect("log"),
+            [
+                Point::BeforeCommit,
+                Point::BeforeCommit,
+                Point::Committed,
+                Point::Committed
+            ],
+            "the probe and the observation share one commit"
+        );
+
+        // Killed before the probe's answer: copy the files a killed process leaves.
+        for name in ["journal.db", "journal.db-wal"] {
+            std::fs::copy(dir.join(name), dir.join("killed").join(name)).expect("copy");
+        }
+        drop(shared);
+        let history = Journal::open(dir.join("killed/journal.db"), Durability::Process)
+            .expect("reopen")
+            .history()
+            .expect("history");
+        assert_eq!(history.probes.len(), 1);
+        let unanswered = history.probes[0].outcome.as_ref().expect_err("unanswered");
+        assert_eq!(unanswered.code, crate::journal::UNANSWERED);
+        assert!(history.attempts[1].observation.is_some());
+        let statuses = assess_history(&plan, &history, &HashSet::new());
+        assert_eq!(statuses[0].assessment.probes, 1, "the probe stays charged");
     }
 }

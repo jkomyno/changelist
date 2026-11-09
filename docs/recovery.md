@@ -141,6 +141,13 @@ Ordering per attempt:
    queued, then records each attempt without a result as `unobserved`: still
    unknown.
 
+Group commit keeps this order. Intents, observations, and probe records that
+wait while another commit is in flight share the next transaction. Each
+attempt or probe continues only after the commit that holds its own record. A
+failed group commit fails every record in it, so none of its attempts is
+dispatched or recorded. The unit tests hold and fail grouped commits to prove
+this ([measurements](recovery-evaluation.md#group-commit)).
+
 **Durability.** The journal uses SQLite's write-ahead log in normal locking mode.
 With `synchronous=FULL` (and `F_FULLFSYNC` on macOS), a commit returns after
 SQLite has asked the operating system to flush it to stable storage. Whether

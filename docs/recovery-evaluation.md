@@ -1,6 +1,6 @@
 # Recovery evaluation
 
-> Historical record, measured at `21c84f8` (Deno results) and at `6d26458` with uncommitted tracked changes (native results). Its commands no longer run as written: `codemode-recovery-eval` now needs `--features testkit`, its `--deno` option no longer exists, and the plan CLI has no `--durability` option.
+> Historical record, measured at `21c84f8` (Deno results) and at `6d26458` with uncommitted tracked changes (native results). Its commands no longer run as written: `codemode-recovery-eval` now needs `--features testkit`, its `--deno` option no longer exists, and the plan CLI has no `--durability` option. The [group commit](#group-commit) section is newer and gives commands that run on the current tree.
 
 An offline, reproducible comparison of what happens after an executor is killed
 in the middle of an approved plan, and of what durable accounting costs when
@@ -170,6 +170,66 @@ the faster result. Filesystem flush cost varied between runs on the same machine
 so total before/after differences cannot all be credited to removing the guest. These
 native baselines measure current persistence overhead against the same native
 submission path.
+
+## Group commit
+
+Measured on 2026-11-10 from `d9442b6` with uncommitted changes, on an Apple M1 Pro
+(10 logical CPUs, macOS, rustc 1.99.1, release build), 15 repetitions after
+2 warmups, at 0 and 25 ms fixture latency:
+
+- [Before](../eval/recovery-group-commit/before/summary.md) ([raw](../eval/recovery-group-commit/before/summary.json)):
+  each fact in its own transaction. The only changes from `d9442b6` count
+  commits and add p95 to the evaluator.
+- [After](../eval/recovery-group-commit/after/summary.md) ([raw](../eval/recovery-group-commit/after/summary.json)):
+  group commit. Intents, observations, and probe records that wait while
+  another transaction commits share the next one. Each waiting party continues
+  only after the commit that holds its own record.
+
+```sh
+mise exec -- cargo build --release --locked --features testkit \
+    --bin codemode-fixture --bin codemode-recovery-eval
+./target/release/codemode-recovery-eval --reps 15 --out DIR > DIR/summary.md
+```
+
+The evaluator now reports two counts. *Facts* is what the old *commits* column
+counted: the session's begin and end, plus each intent, observation, and probe
+start. *Commits* is the number of write transactions the journal actually
+committed during the session, read from a test-only counter (testkit feature).
+Before group commit, the two counts are equal.
+
+| Workload, storage durability | Before | After |
+| --- | ---: | ---: |
+| 64 ops, 0 ms: commits per run (median) | 130 | 98 (94–102) |
+| 64 ops, 0 ms: total p50 / p95 | 778.1 / 902.4 ms | 548.6 / 941.9 ms |
+| 64 ops, 0 ms: journal cost Δ p50 / p95 | 741.7 / 858.8 ms | 517.8 / 848.7 ms |
+| 11 ops, 0 ms: commits per run (median) | 24 | 18 (17–19) |
+| 11 ops, 0 ms: journal cost Δ p50 / p95 | 139.0 / 168.2 ms | 99.2 / 145.9 ms |
+| 64 ops, 25 ms: commits per run (median) | 130 | 123 (109–127) |
+| 64 ops, 25 ms: journal cost Δ p50 / p95 | 320.7 / 406.8 ms | 290.6 / 719.9 ms |
+| Cost per storage commit, 0 ms | 5.7–5.8 ms | 5.5–5.8 ms |
+| Resume p50 / p95, 0 ms | 85.5 / 119.9 ms | 73.8 / 130.1 ms |
+
+Both passes passed every correctness check. Recovery outcomes were identical in
+both: resume reached the intended state 15/15 at each latency, with no
+duplicate effects and one operation left unresolved (the comment, for review).
+Blind retry duplicated the comment in every run, and stop sent nothing.
+
+**Decision: ship group commit.** A storage commit costs about the same with
+or without grouping, so journal cost tracks the number of commits. Grouping
+removes about a quarter of the commits when calls overlap at 0 ms latency, and
+the median journal cost falls by about 30% (741.7 → 517.8 ms for 64
+operations, 139.0 → 99.2 ms for 11). A second after-pass, not kept, showed the
+same reduction (525.8 and 115.3 ms). Groups stay small because a commit starts
+as soon as the journal is free, with whatever has arrived; a call that finishes
+its provider step a moment later waits for the next commit. Waiting to collect
+larger groups would delay every commit, so it was not added. At 25 ms latency,
+calls rarely wait on the same commit, and the gain is 7–9%.
+
+No tail-latency or resume claim is made. Run-to-run noise was large: the
+runtime-only p95, which has no journal, rose by up to 2× between the passes,
+and the second after-pass measured resume at 138.0 ms p50. Probes stay
+sequential, so resume's reconciliation phase is unchanged (35 → 32 ms p50).
+Process durability is unchanged within noise.
 
 ## Historical Deno results
 

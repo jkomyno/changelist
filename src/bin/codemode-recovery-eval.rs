@@ -43,8 +43,8 @@ use codemode::{
     Approval, Attempt, CallContext, CallOutcome, Conclusion, Digest, Durability, ExecutionBackend,
     FrozenPlan, Journal, NativeCall, NextStep, Operation, Plan, ProbeContext, ProviderError,
     RecoverableProvider, RecoveryPolicy, RunCancellation, RunConfig, RunReport, SessionKind,
-    SessionOptions, ToolCall, ToolProvider, approval_binding, assess_history, run_calls,
-    run_session,
+    SessionOptions, ToolCall, ToolProvider, approval_binding, assess_history, journal_commits,
+    run_calls, run_session,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -723,9 +723,13 @@ struct OverheadRun {
     dispatch_ms: u64,
     guest_startup_ms: Option<u64>,
     execution_ms: Option<u64>,
-    /// Journal commits during the session: begin, intents, observations, probes, end.
+    /// Facts the session recorded: begin, intents, observations, probes, end.
     #[serde(skip_serializing_if = "Option::is_none")]
-    commits: Option<usize>,
+    facts: Option<usize>,
+    /// Write transactions the journal committed during the session; one can hold
+    /// several facts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    commits: Option<u64>,
     correct: bool,
     failures: Vec<String>,
 }
@@ -755,6 +759,7 @@ async fn overhead_run(
         dispatch_ms: 0,
         guest_startup_ms: None,
         execution_ms: None,
+        facts: None,
         commits: None,
         correct: false,
         failures: Vec::new(),
@@ -776,6 +781,7 @@ async fn overhead_run(
             }
         }
         Some(durability) => {
+            let commits = journal_commits();
             let journal = Journal::open(dir.join("j.db"), durability)?;
             record.journal_open_us = Some(micros(started.elapsed()));
             let provider = FixtureProvider::open(dir.join("fx.db"), ACCOUNT)?;
@@ -786,6 +792,7 @@ async fn overhead_run(
             let outcome =
                 run_session(journal, provider, options, RunCancellation::default()).await?;
             record.total_us = micros(started.elapsed());
+            record.commits = Some(journal_commits() - commits);
             record.checks_ms = Some(outcome.timing.checks_ms);
             record.reconcile_ms = Some(outcome.timing.reconcile_ms);
             record.dispatch_ms = outcome.timing.dispatch_ms;
@@ -810,7 +817,7 @@ async fn overhead_run(
                 .iter()
                 .filter(|attempt| attempt.observation.is_some())
                 .count();
-            record.commits =
+            record.facts =
                 Some(sessions + history.attempts.len() + observations + history.probes.len());
         }
     }
@@ -832,6 +839,7 @@ struct Stats {
     min: i64,
     p50: i64,
     p90: i64,
+    p95: i64,
     max: i64,
     mean: f64,
 }
@@ -851,6 +859,7 @@ fn stats(values: impl IntoIterator<Item = i64>) -> Option<Stats> {
         min,
         p50: nearest_rank(&sorted, 50),
         p90: nearest_rank(&sorted, 90),
+        p95: nearest_rank(&sorted, 95),
         max,
         mean: sorted.iter().sum::<i64>() as f64 / sorted.len() as f64,
     })
@@ -928,13 +937,16 @@ struct OverheadAggregate {
     dispatch_ms: Option<Stats>,
     guest_startup_ms: Option<Stats>,
     execution_ms: Option<Stats>,
-    commits: Option<(usize, usize)>,
+    facts: Option<(usize, usize)>,
+    commits: Option<(u64, u64)>,
     /// Per repetition, this mode's total minus the runtime-only total, µs.
     paired_total_delta_us: Option<Stats>,
     /// Per repetition, this mode's dispatch execution minus the runtime-only one, ms.
     paired_execution_delta_ms: Option<Stats>,
     /// Median paired total delta divided by operations, ms.
     per_operation_ms: Option<f64>,
+    /// Median paired total delta divided by facts, ms.
+    per_fact_ms: Option<f64>,
     /// Median paired total delta divided by commits, ms.
     per_commit_ms: Option<f64>,
 }
@@ -967,8 +979,9 @@ fn overhead_aggregate(
     let total_delta = paired(|r, b| Some(r.total_us - b.total_us));
     let execution_delta = paired(|r, b| Some(to_i64(r.execution_ms?) - to_i64(b.execution_ms?)));
     let operations = runs.first().map_or(0, |r| r.operations);
+    let facts = span(runs.iter().filter_map(|r| r.facts));
     let commits = span(runs.iter().filter_map(|r| r.commits));
-    let per = |divisor: usize| {
+    let per = |divisor: u64| {
         total_delta
             .as_ref()
             .filter(|_| divisor > 0)
@@ -987,8 +1000,10 @@ fn overhead_aggregate(
         dispatch_ms: stats(runs.iter().map(|r| to_i64(r.dispatch_ms))),
         guest_startup_ms: opt_stats(runs.iter().map(|r| r.guest_startup_ms)),
         execution_ms: opt_stats(runs.iter().map(|r| r.execution_ms)),
-        per_operation_ms: per(operations),
+        per_operation_ms: per(operations as u64),
+        per_fact_ms: facts.and_then(|(low, _)| per(low as u64)),
         per_commit_ms: commits.and_then(|(low, _)| per(low)),
+        facts,
         commits,
         paired_total_delta_us: total_delta,
         paired_execution_delta_ms: execution_delta,
@@ -1007,8 +1022,8 @@ fn p50_ms(stats: Option<&Stats>) -> String {
     stats.map_or("—".into(), |s| s.p50.to_string())
 }
 
-fn p50_p90_ms(stats: Option<&Stats>) -> String {
-    stats.map_or("—".into(), |s| format!("{} / {}", s.p50, s.p90))
+fn p50_p95_ms(stats: Option<&Stats>) -> String {
+    stats.map_or("—".into(), |s| format!("{} / {}", s.p50, s.p95))
 }
 
 fn range_text<T: PartialEq + std::fmt::Display>((low, high): (T, T)) -> String {
@@ -1098,18 +1113,22 @@ fn render_markdown(
         );
     }
     let _ = writeln!(out, "\n### Recovery time (ms, strategy start to done)\n");
-    let _ = writeln!(out, "| latency | strategy | min | p50 | p90 | max | mean |");
-    let _ = writeln!(out, "|---:|---|---:|---:|---:|---:|---:|");
+    let _ = writeln!(
+        out,
+        "| latency | strategy | min | p50 | p90 | p95 | max | mean |"
+    );
+    let _ = writeln!(out, "|---:|---|---:|---:|---:|---:|---:|---:|");
     for a in recovery {
         if let Some(s) = &a.recovery_us {
             let _ = writeln!(
                 out,
-                "| {} ms | {} | {} | {} | {} | {} | {:.1} |",
+                "| {} ms | {} | {} | {} | {} | {} | {} | {:.1} |",
                 a.latency_ms,
                 a.strategy.name(),
                 ms_from_us(s.min),
                 ms_from_us(s.p50),
                 ms_from_us(s.p90),
+                ms_from_us(s.p95),
                 ms_from_us(s.max),
                 s.mean / 1000.0
             );
@@ -1141,30 +1160,31 @@ fn render_markdown(
         let _ = writeln!(out, "\n## B. Persistence overhead without faults\n");
         let _ = writeln!(
             out,
-            "| workload | ops | latency | mode | correct | total p50 / p90 | dispatch p50 / p90 | journal open p50 | checks p50 | guest startup p50 | execution p50 / p90 | commits |"
+            "| workload | ops | latency | mode | correct | total p50 / p95 | dispatch p50 / p95 | journal open p50 | checks p50 | guest startup p50 | execution p50 / p95 | facts | commits |"
         );
         let _ = writeln!(
             out,
-            "|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|"
+            "|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
         );
         for a in overhead {
             let total = a.total_us.as_ref().map_or("—".into(), |s| {
-                format!("{} / {}", ms_from_us(s.p50), ms_from_us(s.p90))
+                format!("{} / {}", ms_from_us(s.p50), ms_from_us(s.p95))
             });
             let _ = writeln!(
                 out,
-                "| {} | {} | {} ms | {} | {}/{} | {total} | {} | {} | {} | {} | {} | {} |",
+                "| {} | {} | {} ms | {} | {}/{} | {total} | {} | {} | {} | {} | {} | {} | {} |",
                 a.workload,
                 a.operations,
                 a.latency_ms,
                 a.mode.name(),
                 a.correct_runs,
                 a.runs,
-                p50_p90_ms(a.dispatch_ms.as_ref()),
+                p50_p95_ms(a.dispatch_ms.as_ref()),
                 p50_us(a.journal_open_us.as_ref()),
                 p50_ms(a.checks_ms.as_ref()),
                 p50_ms(a.guest_startup_ms.as_ref()),
-                p50_p90_ms(a.execution_ms.as_ref()),
+                p50_p95_ms(a.execution_ms.as_ref()),
+                a.facts.map_or("—".into(), range_text),
                 a.commits.map_or("—".into(), range_text),
             );
         }
@@ -1174,24 +1194,25 @@ fn render_markdown(
         );
         let _ = writeln!(
             out,
-            "| workload | ops | latency | durability | Δ total p50 / p90 (ms) | per op (ms) | per commit (ms) | Δ execution p50 / p90 (ms) |"
+            "| workload | ops | latency | durability | Δ total p50 / p95 (ms) | per op (ms) | per fact (ms) | per commit (ms) | Δ execution p50 / p95 (ms) |"
         );
-        let _ = writeln!(out, "|---|---:|---:|---|---:|---:|---:|---:|");
+        let _ = writeln!(out, "|---|---:|---:|---|---:|---:|---:|---:|---:|");
         for a in overhead.iter().filter(|a| a.mode != Mode::Runtime) {
             let total = a.paired_total_delta_us.as_ref().map_or("—".into(), |s| {
-                format!("{} / {}", ms_from_us(s.p50), ms_from_us(s.p90))
+                format!("{} / {}", ms_from_us(s.p50), ms_from_us(s.p95))
             });
             let per = |value: Option<f64>| value.map_or("—".into(), |v| format!("{v:.2}"));
             let _ = writeln!(
                 out,
-                "| {} | {} | {} ms | {} | {total} | {} | {} | {} |",
+                "| {} | {} | {} ms | {} | {total} | {} | {} | {} | {} |",
                 a.workload,
                 a.operations,
                 a.latency_ms,
                 a.mode.name(),
                 per(a.per_operation_ms),
+                per(a.per_fact_ms),
                 per(a.per_commit_ms),
-                p50_p90_ms(a.paired_execution_delta_ms.as_ref()),
+                p50_p95_ms(a.paired_execution_delta_ms.as_ref()),
             );
         }
     }
@@ -1663,6 +1684,7 @@ mod tests {
         let values: Vec<i64> = (1..=15).collect();
         assert_eq!(nearest_rank(&values, 50), 8);
         assert_eq!(nearest_rank(&values, 90), 14);
+        assert_eq!(nearest_rank(&values, 95), 15);
         assert_eq!(nearest_rank(&[7], 90), 7);
     }
 
