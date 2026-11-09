@@ -89,8 +89,8 @@ one digest over:
 Before every session, the executor recomputes the binding from the journal's
 plan, the provider's *current* declaration, and the approved policy. A different
 account, a changed contract (for example, a tool that became "safe to repeat"),
-or a different plan refuses the session before anything is sent; the refusal
-is journaled. A journal holds exactly one plan; a changed plan needs a new
+or a different retention policy, or a different plan refuses the session before
+anything is sent; the refusal is journaled. A journal holds exactly one plan; a changed plan needs a new
 journal and a new approval. Approvals are append-only and the latest applies.
 
 Approval supplements host permissions; it never replaces them. Each session
@@ -115,7 +115,13 @@ without rewriting it.
 Ordering per attempt:
 
 1. The intent is committed before the provider can see the attempt. A failed
-   intent write stops the run and nothing is sent.
+   intent write stops the run and nothing is sent. The executor's unit tests
+   prove this order on the journaling path itself: a test-only hook holds the
+   intent's transaction open, and the provider is not entered until it commits;
+   a failed commit, or cancellation or a deadline while the commit is held,
+   never reaches the provider. A mutation that dispatches concurrently with the
+   intent write fails those tests. The SIGKILL tests complement them: every
+   request the fixture received has a journaled intent.
 2. The provider is called once, with the attempt key and the operation's
    preconditions, under the attempt deadline.
 3. The observation (succeeded, failed with the provider's statement about the
@@ -146,11 +152,44 @@ another format version, fails `quick_check`, or whose stored plan does not match
 its digest is refused with a diagnostic and left unchanged: these checks run under
 the lock before anything is written.
 
-**What is stored.** Plan arguments (needed to retry), error codes, error
-messages and probe evidence truncated to 1 KiB, and provider results up to
-16 KiB (larger ones keep only their size). Provider credentials stay in the
-trusted provider and are never passed to the journal, the guest, or the
-dispatcher program, which names operations only.
+**What is stored.** Plan arguments (needed to retry) and, from the provider,
+only what its approved **retention policy** keeps. The provider declares the
+policy (`"retention"` in its declaration); the approval binds it, so a plan,
+guest code, or a result field cannot select or widen it, and a changed policy
+refuses the session until it is approved again.
+
+| Kept | `metadata/1` (default) | `summary/1` |
+| --- | --- | --- |
+| Attempt keys, order, outcome, stated effect, result size, probe verdicts | yes | yes |
+| Error codes (1 to 64 of `A-Z a-z 0-9 _ . : -`; anything else becomes `unrecognized_code`) | yes | yes |
+| Error messages and probe evidence | no | truncated to 1 KiB |
+| Result values | no | no |
+
+The journal applies the policy inside each write, before SQLite sees the data,
+so excluded text never reaches the database file or its write-ahead log. This
+covers observations, probe answers and failures, and the dispatch run's trace,
+whose provider errors carry only the machine code. Session details are written
+by codemode itself; an authorization refusal names the scope and the code only.
+`summary/1` is for providers that write their own short explanations, such as
+the offline fixture ("receipt for attempt 2 found"): the provider promises they
+are projections, not upstream text, and codemode does not check them. Neither
+policy makes plan arguments or other private data secret-free.
+
+Recovery decisions use only the facts every policy keeps, so the same history
+reaches the same conclusions under either policy (tested through the bridge).
+
+*Older journals.* Approvals recorded before retention policies (binding format
+1) bind none, so a session refuses them: review the plan and run
+`codemode plan approve` again on the same journal. Facts recorded earlier are
+not rewritten and may hold provider results up to 16 KiB, messages, and
+evidence; deleting rows would not erase them from the file either (see SQLite's
+[write-ahead log](https://www.sqlite.org/wal.html) and
+[`secure_delete`](https://www.sqlite.org/pragma.html#pragma_secure_delete)), so
+treat such a journal file as possibly holding them. Inspection reports how many
+approvals predate retention and then shows probe evidence only with `--messages`.
+
+Provider credentials stay in the trusted provider and are never passed to the
+journal, the guest, or the dispatcher program, which names operations only.
 
 ## 4. Provider-owned recovery contracts
 
@@ -248,9 +287,10 @@ journal, or startup errors.
 - **What can safely happen next, and why?** Each remaining operation's next step
   and the reason.
 
-It prints tools, argument keys, error codes, verdicts, and provider evidence, but
-not argument values, results, error messages, or approval and review notes
-unless `--messages` is given. `--json` returns the same answers as one object.
+It prints tools, argument keys, error codes, verdicts, the retention policy, and
+probe evidence the policy kept, but not argument values, error messages, or
+approval and review notes unless `--messages` is given. `--messages` cannot show
+what the journal never kept. `--json` returns the same answers as one object.
 
 ## Host integration
 

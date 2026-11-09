@@ -382,11 +382,20 @@ export interface PlanScope {
   destination?: string;
 }
 
-/** The trusted host's identity and recovery contracts; an approval binds to it. */
+/**
+ * What Rust's journal keeps of this host's replies. `metadata/1` (the default)
+ * keeps outcomes, effects, sizes, verdicts, and error codes, and no host text;
+ * `summary/1` also keeps error messages and probe evidence, which the host then
+ * promises are its own short, safe projections. Result values are never kept.
+ */
+export type Retention = "metadata/1" | "summary/1";
+
+/** The trusted host's identity, recovery contracts, and retention; an approval binds to it. */
 export interface ProviderDeclaration {
   provider: string;
   account: string;
   contracts: Record<string, { repeat: "safe" | "unsafe"; reconcile: "receipt" | "state" | "none" }>;
+  retention?: Retention;
 }
 
 /** One attempt of an approved operation, sent after Rust journaled its intent. */
@@ -464,10 +473,17 @@ const describeError = (error: unknown) => (error instanceof Error ? error.messag
 
 /** Fit a result frame into one host frame without misreporting what was observed. */
 function resultFrame(id: number, reply: PlanReply): string {
-  const frame = JSON.stringify({ type: "result", id, ...reply });
+  let frame: string;
+  try {
+    frame = JSON.stringify({ type: "result", id, ...reply });
+  } catch {
+    // A success whose value cannot be encoded (cyclic, BigInt) still applied: keep the effect.
+    if (reply.ok) return JSON.stringify({ type: "result", id, ok: true, value: { omitted: "unencodable" } });
+    throw new Error("the host's error could not be encoded");
+  }
   if (Buffer.byteLength(frame) < HOST_FRAME_BYTES) return frame;
   if (reply.ok) {
-    // The effect applied; only the value is too large to keep. Rust keeps results only up to 16 KiB anyway.
+    // The effect applied; only the value is too large to send. Rust keeps only a result's size anyway.
     const bytes = Buffer.byteLength(JSON.stringify(reply.value));
     return JSON.stringify({ type: "result", id, ok: true, value: { omitted: "too_large", bytes } });
   }

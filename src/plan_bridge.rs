@@ -11,8 +11,10 @@
 //! [`BRIDGE_FRAME_BYTES`]. Host to bridge:
 //!
 //! - `{"type":"start","version":3,"declaration":{"provider":..,"account":..,"contracts":{..}}}`
-//!   must be first. The declaration is the trusted host's identity and recovery
-//!   contracts; the session is refused unless the approval binds exactly it.
+//!   must be first. The declaration is the trusted host's identity, recovery
+//!   contracts, and optional `"retention"` policy (`"metadata/1"` when omitted;
+//!   see [`Retention`](crate::Retention)); the session is refused unless the
+//!   approval binds exactly it.
 //! - `{"type":"authorized","id":1,"ok":true}`, or `"ok":false` with
 //!   `"error":{"code","message"}`, answers an `authorize` frame.
 //! - `{"type":"result","id":2,"ok":true,"value":...}`, or `"ok":false` with

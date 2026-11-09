@@ -49,7 +49,7 @@ use crate::journal::now_ms;
 use crate::plan::{Digest, Operation, Scope};
 use crate::recovery::{
     Attempt, AttemptError, FailureEffect, ProbeContext, ProviderDeclaration, ReconcileMethod,
-    Reconciliation, RecoverableProvider, RecoveryContract, RepeatSafety, Verdict,
+    Reconciliation, RecoverableProvider, RecoveryContract, RepeatSafety, Retention, Verdict,
 };
 use crate::runtime::{CallContext, ProviderError};
 
@@ -695,6 +695,8 @@ impl RecoverableProvider for FixtureProvider {
         ProviderDeclaration {
             provider: FIXTURE_PROVIDER.to_string(),
             account: self.account.clone(),
+            // The fixture writes its own short evidence and messages; no upstream text.
+            retention: Retention::Summary,
             contracts: [
                 (
                     ADD_LABEL,

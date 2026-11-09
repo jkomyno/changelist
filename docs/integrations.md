@@ -89,7 +89,7 @@ happen next. The library entry point is `codemode::serve_plan_bridge`.
 
 | Direction | Frame | Meaning |
 | --- | --- | --- |
-| host → bridge | `{"type":"start","version":3,"declaration":{...}}` | Must be first. The host's provider declaration; the session is refused unless the approval binds exactly it. |
+| host → bridge | `{"type":"start","version":3,"declaration":{...}}` | Must be first. The host's provider declaration, with an optional `"retention"` of `"metadata/1"` (default) or `"summary/1"`; the session is refused unless the approval binds exactly it. |
 | bridge → host | `{"type":"authorize","id":1,"scope":{...}}` | Is this scope authorized now? Answer `{"type":"authorized","id":1,"ok":true}`, or `"ok":false` with `error`. |
 | bridge → host | `{"type":"call","id":2,"tool":"...","arguments":{...},"operation":"...","attempt":"...","preconditions":[...],"scope":{...}}` | One attempt, sent only after its intent is durable. The host must refuse a `scope` it does not act as. Answer with a version 2 `result` frame, plus an optional `"effect":"refused"\|"not_applied"\|"unknown"` on failure; without it the effect is `unknown`. |
 | bridge → host | `{"type":"reconcile","id":3,"operation":"...","tool":"...","arguments":{...},"keys":[...],"scope":{...}}` | Establish an uncertain outcome. Answer `{"type":"reconciled","id":3,"verdict":"...","evidence":"..."}`, or with `error`. |

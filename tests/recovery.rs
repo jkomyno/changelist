@@ -102,6 +102,7 @@ impl RecoverableProvider for Remote {
             provider: "test".into(),
             account: self.account.clone(),
             contracts: self.contracts.clone(),
+            retention: codemode::Retention::default(),
         }
     }
 

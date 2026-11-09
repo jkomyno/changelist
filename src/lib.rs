@@ -53,7 +53,8 @@ pub use recovery::{
     Approval, Assessment, Attempt, AttemptError, Basis, Conclusion, DeclarationError, Fact,
     FailureEffect, NextStep, Observed, PolicyError, ProbeContext, ProviderDeclaration,
     ReconcileMethod, Reconciliation, RecoverableProvider, RecoveryContract, RecoveryPolicy,
-    RepeatSafety, Resolution, Verdict, approval_binding, assess,
+    RepeatSafety, Resolution, Retention, UNRECOGNIZED_CODE, Verdict, approval_binding, assess,
+    machine_code,
 };
 pub use runtime::{
     BridgeTotals, ByteTotals, CallContext, CallOutcome, CallRecord, ClockInfo, DispatchPolicy,

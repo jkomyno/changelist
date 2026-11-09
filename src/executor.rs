@@ -26,7 +26,8 @@ use crate::journal::{History, Journal, JournalError, SessionKind};
 use crate::plan::{FrozenPlan, Operation};
 use crate::recovery::{
     Approval, Assessment, Attempt, Fact, NextStep, Observed, ProbeContext, ReconcileMethod,
-    RecoverableProvider, RecoveryContract, RecoveryPolicy, RepeatSafety, approval_binding, assess,
+    RecoverableProvider, RecoveryContract, RecoveryPolicy, RepeatSafety, Retention,
+    approval_binding, assess, machine_code,
 };
 use crate::runtime::{
     CallContext, DispatchPolicy, ProviderError, RunCancellation, RunConfig, RunError, RunReport,
@@ -342,13 +343,14 @@ pub async fn run_session<P: RecoverableProvider>(
         .iter()
         .filter(|status| status.assessment.next == NextStep::Reconcile)
         .collect();
+    let retention = approval.declaration.retention;
     let probed = probe(
         &journal,
         &plan,
         &history,
         &to_probe,
         &provider,
-        &policy,
+        (&policy, retention),
         session,
         &cancellation,
     )
@@ -379,7 +381,7 @@ pub async fn run_session<P: RecoverableProvider>(
             &journal,
             &provider,
             dispatch,
-            &policy,
+            (&policy, retention),
             session,
             &options,
             &cancellation,
@@ -498,6 +500,20 @@ fn check_approval(
             approved.provider, approved.account, current.provider, current.account
         ));
     }
+    if approval.predates_retention() {
+        return Err(
+            "this approval predates retention policies and binds none; review the plan and \
+             approve it again (facts recorded under it are kept as they are)"
+                .into(),
+        );
+    }
+    if current.retention != approved.retention {
+        return Err(format!(
+            "the provider's retention policy changed since approval (approved {}, now {}); \
+             review and approve again",
+            approved.retention, current.retention
+        ));
+    }
     if current.contracts != approved.contracts {
         return Err(
             "the provider's recovery contracts changed since approval; review and approve again"
@@ -535,7 +551,7 @@ async fn authorize(
             Ok(Err(error)) => {
                 return Err(format!(
                     "the provider refused authorization for {scope} ({})",
-                    error.code
+                    machine_code(&error.code)
                 ));
             }
             Err(_) => {
@@ -558,7 +574,7 @@ async fn probe<P: RecoverableProvider>(
     history: &History,
     statuses: &[&OperationStatus],
     provider: &Arc<P>,
-    policy: &RecoveryPolicy,
+    (policy, retention): (&RecoveryPolicy, Retention),
     session: u64,
     cancellation: &RunCancellation,
 ) -> Result<HashSet<String>, JournalError> {
@@ -614,7 +630,7 @@ async fn probe<P: RecoverableProvider>(
             result.map_err(|error| JournalError::Storage(error.to_string()))?;
         probed.insert(operation);
         journaled(journal, move |journal| {
-            journal.record_probe(probe, elapsed, &outcome)
+            journal.record_probe(probe, elapsed, &outcome, retention)
         })
         .await?;
     }
@@ -652,7 +668,7 @@ async fn dispatch_run<P: RecoverableProvider>(
     journal: &Shared,
     provider: &Arc<P>,
     operations: Vec<(Operation, u32)>,
-    policy: &RecoveryPolicy,
+    (policy, retention): (&RecoveryPolicy, Retention),
     session: u64,
     options: &SessionOptions,
     cancellation: &RunCancellation,
@@ -689,6 +705,7 @@ async fn dispatch_run<P: RecoverableProvider>(
         entries,
         dispatched: Mutex::new(HashSet::new()),
         session,
+        retention,
         attempt_timeout: Duration::from_millis(policy.attempt_timeout_ms),
         cancellation: cancellation.clone(),
     };
@@ -704,6 +721,8 @@ struct JournalingProvider<P> {
     entries: HashMap<String, (Operation, u32, String)>,
     dispatched: Mutex<HashSet<String>>,
     session: u64,
+    /// What the journal keeps of the provider's replies, from the approval.
+    retention: Retention,
     attempt_timeout: Duration,
     cancellation: RunCancellation,
 }
@@ -777,7 +796,7 @@ impl<P: RecoverableProvider> ToolProvider for JournalingProvider<P> {
         if context.cancellation.is_cancelled() || Instant::now() >= context.deadline {
             let withdrawn = key.clone();
             let _ = journaled(&self.journal, move |journal| {
-                journal.record_observation(&withdrawn, Observed::Withdrawn)
+                journal.record_observation(&withdrawn, Observed::Withdrawn, Retention::Metadata)
             })
             .await;
             return Err(refusal("cancelled", "the run stopped before dispatch"));
@@ -802,14 +821,18 @@ impl<P: RecoverableProvider> ToolProvider for JournalingProvider<P> {
             };
         let reply = match &observed {
             Observed::Succeeded { .. } => Ok(json!({"operation": id, "attempt": number})),
-            Observed::Failed { error, .. } => Err(refusal(&error.code, "the provider failed")),
+            // Only a machine code reaches the trace, never the provider's message.
+            Observed::Failed { error, .. } => {
+                Err(refusal(machine_code(&error.code), "the provider failed"))
+            }
             _ => Err(refusal(
                 "attempt_timeout",
                 "no result before the attempt deadline",
             )),
         };
+        let retention = self.retention;
         let recorded = journaled(&self.journal, move |journal| {
-            journal.record_observation(&key, observed)
+            journal.record_observation(&key, observed, retention)
         })
         .await;
         match recorded {
@@ -952,6 +975,7 @@ mod tests {
             entries,
             dispatched: Mutex::new(HashSet::new()),
             session,
+            retention: Retention::Metadata,
             attempt_timeout: BOUND,
             cancellation: RunCancellation::default(),
         };

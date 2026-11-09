@@ -34,14 +34,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, params};
 
 use crate::plan::{Digest, FrozenPlan, Plan};
-use crate::recovery::{Approval, Observed, Reconciliation, Resolution, Verdict};
+use crate::recovery::{
+    Approval, Observed, Reconciliation, Resolution, Retention, Verdict, machine_code,
+};
 use crate::runtime::{ProviderError, RunReport};
 
 /// The journal format this build reads and writes.
 pub const JOURNAL_FORMAT_VERSION: u32 = 1;
 const FORMAT: &str = "codemode-journal";
-/// Largest provider result kept per observation; larger results keep only their size.
-const MAX_VALUE_BYTES: usize = 16 * 1024;
 /// Error code of a probe whose answer was never recorded, for example because
 /// the executor was killed while the provider was answering it.
 pub const UNANSWERED: &str = "unanswered";
@@ -426,18 +426,31 @@ fn sql_u64(value: i64) -> u64 {
     u64::try_from(value).unwrap_or(0)
 }
 
-/// Keep a result only when it is small; its size is always kept.
-pub(crate) fn bounded_observation(observed: Observed) -> Observed {
+/// What `retention` keeps of a provider prose field: under `summary/1` the text
+/// truncated to 1 KiB, otherwise nothing.
+fn retained_text(text: &str, retention: Retention) -> String {
+    match retention {
+        Retention::Summary => bounded(text),
+        Retention::Metadata => String::new(),
+    }
+}
+
+/// A provider error as `retention` keeps it: a machine code, and the message only
+/// under `summary/1`.
+fn retained_error(error: &ProviderError, retention: Retention) -> ProviderError {
+    ProviderError {
+        code: machine_code(&error.code).to_string(),
+        message: retained_text(&error.message, retention),
+    }
+}
+
+/// An observation as `retention` keeps it. The outcome, the stated effect, and a
+/// result's size always remain; a result value never does.
+fn retained_observation(observed: Observed, retention: Retention) -> Observed {
     match observed {
-        Observed::Succeeded { value, bytes } => Observed::Succeeded {
-            value: value.filter(|_| bytes <= MAX_VALUE_BYTES as u64),
-            bytes,
-        },
+        Observed::Succeeded { bytes, .. } => Observed::Succeeded { value: None, bytes },
         Observed::Failed { error, effect } => Observed::Failed {
-            error: ProviderError {
-                code: bounded(&error.code),
-                message: bounded(&error.message),
-            },
+            error: retained_error(&error, retention),
             effect,
         },
         Observed::Unobserved { reason } => Observed::Unobserved {
@@ -696,7 +709,8 @@ impl Journal {
         })
     }
 
-    /// Durably record an attempt's observed result.
+    /// Durably record an attempt's observed result, keeping only what the approved
+    /// provider's `retention` policy allows (see [`Retention`]).
     ///
     /// # Errors
     /// Returns a storage error, in which case the result must not be reported as recorded.
@@ -704,8 +718,9 @@ impl Journal {
         &mut self,
         key: &str,
         observed: Observed,
+        retention: Retention,
     ) -> Result<(), JournalError> {
-        let record = serde_json::to_string(&bounded_observation(observed))
+        let record = serde_json::to_string(&retained_observation(observed, retention))
             .map_err(|error| JournalError::Storage(error.to_string()))?;
         self.write(WriteKind::Other, |transaction, ordinal| {
             transaction.execute(
@@ -722,9 +737,9 @@ impl Journal {
     /// # Errors
     /// Returns a storage error.
     pub fn record_unobserved(&mut self, session: u64, reason: &str) -> Result<(), JournalError> {
-        let record = serde_json::to_string(&bounded_observation(Observed::Unobserved {
-            reason: reason.to_string(),
-        }))
+        let record = serde_json::to_string(&Observed::Unobserved {
+            reason: bounded(reason),
+        })
         .map_err(|error| JournalError::Storage(error.to_string()))?;
         let transaction = self.connection.transaction().map_err(storage)?;
         let keys: Vec<String> = {
@@ -781,7 +796,9 @@ impl Journal {
     }
 
     /// Record the provider's answer to the probe `probe` returned by
-    /// [`Journal::record_probe_start`], or the probe's own failure.
+    /// [`Journal::record_probe_start`], or the probe's own failure, keeping only
+    /// what `retention` allows: the verdict and error code always, the evidence and
+    /// error message only under `summary/1`.
     ///
     /// # Errors
     /// Returns a storage error.
@@ -790,20 +807,19 @@ impl Journal {
         probe: u64,
         elapsed_ms: u64,
         outcome: &Result<Reconciliation, ProviderError>,
+        retention: Retention,
     ) -> Result<(), JournalError> {
         let (verdict, evidence, code, message) = match outcome {
             Ok(reconciliation) => (
                 Some(reconciliation.verdict.as_str()),
-                Some(bounded(&reconciliation.evidence)),
+                Some(retained_text(&reconciliation.evidence, retention)),
                 None,
                 None,
             ),
-            Err(error) => (
-                None,
-                None,
-                Some(bounded(&error.code)),
-                Some(bounded(&error.message)),
-            ),
+            Err(error) => {
+                let error = retained_error(error, retention);
+                (None, None, Some(error.code), Some(error.message))
+            }
         };
         self.write(WriteKind::Other, |transaction, ordinal| {
             transaction.execute(

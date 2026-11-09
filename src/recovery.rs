@@ -51,7 +51,71 @@ pub enum ReconcileMethod {
     None,
 }
 
-/// The provider's identity and recovery contracts, fixed for an approval.
+/// What the journal keeps of a provider's replies, declared by the provider and
+/// bound by the approval. Plans and guest code cannot select or widen it.
+///
+/// Every policy keeps the facts recovery needs: attempt identity and order, the
+/// observed outcome and stated effect, result sizes, probe verdicts, and error
+/// codes that look like machine codes (see [`machine_code`]). Result values are
+/// never kept. The journal applies the policy before anything is written, so an
+/// excluded value never reaches the database or its write-ahead log.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Retention {
+    /// `metadata/1`, the default: no provider prose. Error messages and probe
+    /// evidence are dropped; only codes and verdicts remain.
+    #[default]
+    #[serde(rename = "metadata/1")]
+    Metadata,
+    /// `summary/1`: also keeps error messages and probe evidence, each truncated
+    /// to 1 KiB. The provider declares that it writes these itself as short, safe
+    /// explanations (a projection), never raw upstream text.
+    #[serde(rename = "summary/1")]
+    Summary,
+}
+
+impl Retention {
+    /// The policy identifier, such as `metadata/1`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Metadata => "metadata/1",
+            Self::Summary => "summary/1",
+        }
+    }
+}
+
+impl fmt::Display for Retention {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// Longest error code kept as given.
+const MAX_CODE_BYTES: usize = 64;
+/// The code kept in place of one that is not a machine code.
+pub const UNRECOGNIZED_CODE: &str = "unrecognized_code";
+
+/// `code` if it looks like a machine code: 1 to 64 ASCII letters, digits, or
+/// `_ . : -`. Anything else, such as prose, becomes [`UNRECOGNIZED_CODE`], so a
+/// code cannot carry free-form provider text into the journal or a trace.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(codemode::machine_code("rate_limited"), "rate_limited");
+/// assert_eq!(codemode::machine_code("token abc revoked"), codemode::UNRECOGNIZED_CODE);
+/// ```
+#[must_use]
+pub fn machine_code(code: &str) -> &str {
+    let machine = !code.is_empty()
+        && code.len() <= MAX_CODE_BYTES
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte));
+    if machine { code } else { UNRECOGNIZED_CODE }
+}
+
+/// The provider's identity, recovery contracts, and retention policy, fixed for an approval.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderDeclaration {
@@ -61,6 +125,9 @@ pub struct ProviderDeclaration {
     pub account: String,
     /// Recovery contract per supported tool.
     pub contracts: BTreeMap<String, RecoveryContract>,
+    /// What the journal keeps of this provider's replies; `metadata/1` when omitted.
+    #[serde(default)]
+    pub retention: Retention,
 }
 
 impl ProviderDeclaration {
@@ -104,6 +171,7 @@ impl ProviderDeclaration {
         Self {
             provider: self.provider.clone(),
             account: self.account.clone(),
+            retention: self.retention,
             contracts: self
                 .contracts
                 .iter()
@@ -254,7 +322,8 @@ pub struct Approval {
 }
 
 /// The digest an approval binds to: the plan digest, the provider declaration for
-/// the plan's tools, and the policy. Changing any of them changes the binding.
+/// the plan's tools (including its retention policy), and the policy. Changing
+/// any of them changes the binding.
 #[must_use]
 pub fn approval_binding(
     plan: &Digest,
@@ -262,12 +331,32 @@ pub fn approval_binding(
     policy: &RecoveryPolicy,
 ) -> Digest {
     let value = serde_json::json!({
-        "format": "codemode-approval/1",
+        "format": "codemode-approval/2",
         "plan": plan,
         "declaration": declaration,
         "policy": policy,
     });
     Digest::of(value.to_string().as_bytes())
+}
+
+impl Approval {
+    /// Whether this approval was recorded before approvals bound a retention
+    /// policy (binding format 1). Such an approval cannot run a session, and the
+    /// facts recorded under it may hold provider values and messages.
+    #[must_use]
+    pub fn predates_retention(&self) -> bool {
+        let mut declaration = serde_json::to_value(&self.declaration).unwrap_or_default();
+        if let Some(fields) = declaration.as_object_mut() {
+            fields.remove("retention");
+        }
+        let value = serde_json::json!({
+            "format": "codemode-approval/1",
+            "plan": self.plan,
+            "declaration": declaration,
+            "policy": self.policy,
+        });
+        Digest::of(value.to_string().as_bytes()) == self.binding
+    }
 }
 
 /// One dispatch of an operation.
@@ -322,7 +411,8 @@ pub enum Verdict {
 pub struct Reconciliation {
     /// The conclusion.
     pub verdict: Verdict,
-    /// A short explanation without argument or result values, for example "receipt found".
+    /// A short explanation without argument or result values, for example "receipt
+    /// found". Kept only under [`Retention::Summary`].
     pub evidence: String,
 }
 
@@ -468,7 +558,8 @@ pub enum Resolution {
 pub enum Observed {
     /// The provider returned a result: our operation applied.
     Succeeded {
-        /// The result, when within the journal's value budget.
+        /// The result. Never written by this version; journals from earlier
+        /// versions may hold results up to 16 KiB.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         value: Option<Value>,
         /// Serialized size of the result.
