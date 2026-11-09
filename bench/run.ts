@@ -15,7 +15,7 @@ import { execFile, execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { EngineInfo, EngineModule } from "./engines/types.ts";
 import type { Profile } from "./fixtures/tools.ts";
@@ -88,8 +88,13 @@ for (const s of selected) {
   for (const profile of usable) cells.push({ scenario: s, profile });
 }
 
-// Resolve Deno once and hand it to every adapter and child process.
-process.env.CODEMODE_DENO ??= execFileSync("mise", ["which", "deno"], { cwd: ROOT, encoding: "utf8" }).trim();
+// Share absolute executable paths with every adapter and child. Embedded-only runs
+// never resolve Deno, including while gathering the environment fingerprint.
+process.env.CODEMODE_BIN = resolve(process.env.CODEMODE_BIN ?? join(ROOT, "target/release/codemode"));
+const usesDeno = engines.some((engine) => ["codemode", "codemode-c4", "codemode-prewarm"].includes(engine));
+if (usesDeno) {
+  process.env.CODEMODE_DENO ??= execFileSync("mise", ["which", "deno"], { cwd: ROOT, encoding: "utf8" }).trim();
+}
 mkdirSync(out, { recursive: true });
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -110,10 +115,13 @@ function environment() {
   const porcelain = tryRun("git", ["status", "--porcelain", "--untracked-files=all"]) ?? "";
   const changed = porcelain.split("\n").filter(Boolean).map((line) => line.slice(3));
   const outsideBench = changed.filter((path) => !path.startsWith("bench/"));
-  const bin = join(ROOT, "target/release/codemode");
+  const bin = process.env.CODEMODE_BIN!;
   let binSha256: string | null = null;
+  let binBytes: number | null = null;
   try {
-    binSha256 = createHash("sha256").update(readFileSync(bin)).digest("hex");
+    const artifact = readFileSync(bin);
+    binSha256 = createHash("sha256").update(artifact).digest("hex");
+    binBytes = artifact.byteLength;
   } catch {
     // not built
   }
@@ -123,7 +131,7 @@ function environment() {
     runtimes: {
       bun: tryRun("bun", ["--version"]),
       node: tryRun("node", ["--version"]),
-      deno: tryRun(process.env.CODEMODE_DENO!, ["--version"])?.split("\n")[0] ?? null,
+      deno: usesDeno ? tryRun(process.env.CODEMODE_DENO!, ["--version"])?.split("\n")[0] ?? null : null,
     },
     cpu: { model: os.cpus()[0]?.model, logical: os.cpus().length },
     os: {
@@ -140,8 +148,16 @@ function environment() {
       dirtyOutsideBench: outsideBench.length > 0,
       changedOutsideBench: outsideBench.slice(0, 50),
     },
-    codemodeBinary: { path: bin, sha256: binSha256 },
-    deno: process.env.CODEMODE_DENO,
+    codemodeBinary: {
+      path: bin,
+      sha256: binSha256,
+      bytes: binBytes,
+      // Build declarations supplied by the operator, not inferred from the current toolchain.
+      buildRustc: process.env.CODEMODE_BUILD_RUSTC ?? null,
+      buildFeatures: process.env.CODEMODE_BUILD_FEATURES ?? null,
+    },
+    toolchainRustc: tryRun("mise", ["exec", "--", "rustc", "--version", "--verbose"]),
+    deno: usesDeno ? process.env.CODEMODE_DENO : null,
     pins: JSON.parse(readFileSync(join(BENCH, "engines/pins.json"), "utf8")),
   };
 }
@@ -274,9 +290,11 @@ async function coldPass() {
 interface Tree {
   selfKiB: number;
   bridgeKiB: number;
+  workerKiB: number;
   denoKiB: number;
   otherKiB: number;
   descendantsKiB: number;
+  treeKiB: number;
 }
 
 async function sampleTree(root: number, otherNames: Set<string>): Promise<Tree | null> {
@@ -293,7 +311,9 @@ async function sampleTree(root: number, otherNames: Set<string>): Promise<Tree |
     .map((m) => ({ pid: +m[1], ppid: +m[2], rss: +m[3], comm: m[4].trim().replace(/^\((.*)\)$/, "$1") })); // "(deno)": exiting
   const self = rows.find((row) => row.pid === root);
   if (!self) return null;
-  const tree: Tree = { selfKiB: self.rss, bridgeKiB: 0, denoKiB: 0, otherKiB: 0, descendantsKiB: 0 };
+  const isCodemode = (comm: string) => ["codemode", basename(process.env.CODEMODE_BIN!)].includes(basename(comm));
+  const bridges = new Set(rows.filter((row) => row.ppid === root && isCodemode(row.comm)).map((row) => row.pid));
+  const tree: Tree = { selfKiB: self.rss, bridgeKiB: 0, workerKiB: 0, denoKiB: 0, otherKiB: 0, descendantsKiB: 0, treeKiB: 0 };
   const frontier = [root];
   while (frontier.length > 0) {
     const parent = frontier.pop()!;
@@ -301,7 +321,8 @@ async function sampleTree(root: number, otherNames: Set<string>): Promise<Tree |
       if (row.ppid !== parent) continue;
       frontier.push(row.pid);
       tree.descendantsKiB += row.rss;
-      if (/(^|\/)codemode$/.test(row.comm)) tree.bridgeKiB += row.rss;
+      if (bridges.has(row.pid)) tree.bridgeKiB += row.rss;
+      else if (bridges.has(row.ppid) && isCodemode(row.comm)) tree.workerKiB += row.rss;
       else if (/(^|\/)deno$/.test(row.comm)) tree.denoKiB += row.rss;
       else {
         tree.otherKiB += row.rss;
@@ -309,6 +330,8 @@ async function sampleTree(root: number, otherNames: Set<string>): Promise<Tree |
       }
     }
   }
+  // Maximize this simultaneous total across snapshots, never add independent peaks.
+  tree.treeKiB = tree.selfKiB + tree.descendantsKiB;
   return tree;
 }
 
@@ -319,7 +342,7 @@ async function sampleTree(root: number, otherNames: Set<string>): Promise<Tree |
  */
 async function sampledChild(args: string[]) {
   let pid = -1;
-  const peaks: Tree = { selfKiB: 0, bridgeKiB: 0, denoKiB: 0, otherKiB: 0, descendantsKiB: 0 };
+  const peaks: Tree = { selfKiB: 0, bridgeKiB: 0, workerKiB: 0, denoKiB: 0, otherKiB: 0, descendantsKiB: 0, treeKiB: 0 };
   const otherNames = new Set<string>();
   const pending = new Set<Promise<void>>();
   const launches: number[] = [];
@@ -384,9 +407,11 @@ async function memoryPass() {
           psPeakSelfKiB: peaks.selfKiB,
           psPeakSelfOverBaselineKiB: psBaseline ? peaks.selfKiB - psBaseline.p50 : null,
           psPeakBridgeKiB: peaks.bridgeKiB,
+          psPeakWorkerKiB: peaks.workerKiB,
           psPeakDenoKiB: peaks.denoKiB,
           psPeakOtherChildrenKiB: peaks.otherKiB,
           psPeakDescendantsKiB: peaks.descendantsKiB,
+          psPeakTreeKiB: peaks.treeKiB,
           psSamples: samples,
           psIntervalMs: intervalMs,
           psOtherChildNames: otherNames,
@@ -405,11 +430,13 @@ async function memoryPass() {
     "",
     `- **Driver peak RSS over baseline**: \`process.resourceUsage().maxRSS\` of the sample process minus the median of ${memorySamples} fixture-only processes (${baseline ? (baseline.p50 / 1024).toFixed(1) : "?"} MiB). Includes everything in that process: the engine, Pi's worker threads and QuickJS heaps, OpenCode's interpreter, and for codemode only the host client.`,
     `- **Driver ps peak over baseline**: the same process's RSS as sampled by \`ps\` from the parent, minus the median ps peak of the fixture-only processes (${psBaseline ? (psBaseline.p50 / 1024).toFixed(1) : "?"} MiB). Under Bun on macOS, \`maxRSS\` reads 8-23 MiB lower than \`ps\` RSS for the same process (checked by hand; Node agrees with ps), so both are shown.`,
-    "- **Bridge / Deno peak**: codemode only. RSS of the `codemode bridge` process and its `deno` child, sampled with `ps` by the parent; peaks can be missed between samples (see interval). Pi and OpenCode spawn no processes.",
+    "- **Bridge / worker / Deno peak**: codemode controller directly under the driver, embedded codemode worker directly under a controller, and Deno guest RSS, distinguished by process ancestry. Pi and OpenCode spawn no processes.",
+    "- **Whole tree peak**: maximum simultaneous driver plus all descendant RSS in one ps snapshot. Children total peak likewise sums descendants in each snapshot; neither is a sum of independent process peaks.",
+    "- ps sampling starts every 10 ms; short-lived processes and peaks between snapshots can be missed (see observed interval). Fresh-process memory samples include the 100 ms post-run observation, which can include prewarming the next guest.",
     "- RSS counts shared pages (e.g. the Deno and Bun binaries) in full; it is not a measure of unique memory.",
     "",
-    "| Scenario | Engine | Succeeded/N | Driver maxRSS over baseline | Driver ps peak over baseline | Bridge peak | Deno peak | Children total peak | ps interval p50 | ps samples p50 |",
-    "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| Scenario | Engine | Succeeded/N | Driver maxRSS over baseline | Driver ps peak over baseline | Bridge peak | Worker peak | Deno peak | Children total peak | Whole tree peak | ps interval p50 | ps samples p50 |",
+    "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
   ];
   const mib = (s: ReturnType<typeof stats>) => (s ? `${(s.p50 / 1024).toFixed(1)} (${(s.min / 1024).toFixed(1)}-${(s.max / 1024).toFixed(1)})` : "-");
   for (const cell of memoryCells) {
@@ -419,8 +446,10 @@ async function memoryPass() {
       const psOver = stats(rows.map((r) => r.psPeakSelfOverBaselineKiB));
       const sampleCount = stats(rows.map((r) => r.psSamples));
       const bridge = stats(rows.map((r) => r.psPeakBridgeKiB));
+      const worker = stats(rows.map((r) => r.psPeakWorkerKiB));
       const deno = stats(rows.map((r) => r.psPeakDenoKiB));
       const children = stats(rows.map((r) => r.psPeakDescendantsKiB));
+      const tree = stats(rows.map((r) => r.psPeakTreeKiB));
       const interval = stats(rows.map((r) => r.psIntervalMs?.p50));
       const codemode = engine.startsWith("codemode");
       (summary.cells as Record<string, unknown>)[keyOf(cell.scenario.name, cell.profile, engine)] = {
@@ -428,14 +457,16 @@ async function memoryPass() {
         driverPsPeakOverBaselineKiB: psOver,
         psSamples: sampleCount,
         bridgePeakKiB: codemode ? bridge : null,
+        workerPeakKiB: codemode ? worker : null,
         denoPeakKiB: codemode ? deno : null,
         descendantsPeakKiB: children,
+        treePeakKiB: tree,
         psIntervalMs: interval,
         okCount: rows.filter((r) => r.ok).length,
         n: rows.length,
       };
       lines.push(
-        `| ${cell.scenario.name}/${cell.profile} | ${engine} | ${rows.filter((r) => r.ok).length}/${rows.length} | ${mib(over)} | ${mib(psOver)} | ${codemode ? mib(bridge) : "n/a"} | ${codemode ? mib(deno) : "n/a"} | ${mib(children)} | ${interval ? interval.p50.toFixed(0) : "-"} ms | ${sampleCount?.p50 ?? "-"} |`,
+        `| ${cell.scenario.name}/${cell.profile} | ${engine} | ${rows.filter((r) => r.ok).length}/${rows.length} | ${mib(over)} | ${mib(psOver)} | ${codemode ? mib(bridge) : "n/a"} | ${codemode ? mib(worker) : "n/a"} | ${codemode ? mib(deno) : "n/a"} | ${mib(children)} | ${mib(tree)} | ${interval ? interval.p50.toFixed(0) : "-"} ms | ${sampleCount?.p50 ?? "-"} |`,
       );
     }
   }

@@ -78,6 +78,7 @@ function releaseAudit() {
 /** Expected outputs keyed by the `expect.output` names in scenarios.json. */
 export function expectedOutputs(): Record<string, unknown> {
   return {
+    noop: 42,
     triage: triage(false),
     "triage-large": triage(false),
     denied: triage(true),

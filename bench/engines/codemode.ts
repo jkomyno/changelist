@@ -10,13 +10,14 @@
  * third `report` argument is forwarded as `ctx.report`, so the fixtures' permission and
  * executor facts reach the trace; other engines receive no `report`.
  *
- * Limits: all four are enforced by Rust (deadline including Deno startup, call allowance,
+ * Limits: all four are enforced by Rust (deadline including guest startup, call allowance,
  * rolling concurrency cap, shared reply/output byte budget). Independently of
  * maxOutputBytes, each reply to the guest is capped at 1 MiB and each call frame from
  * it at 64 KiB.
  *
  * Paths: CODEMODE_BIN (default target/release/codemode) and CODEMODE_DENO (default
- * `mise which deno`).
+ * `mise which deno`, resolved only for Deno runs). The optional embedded-v8 backend
+ * uses the same bridge and limits without resolving or launching Deno.
  */
 import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
@@ -34,12 +35,13 @@ import {
 import type { EngineInfo, EngineInput, EngineResult, ErrorKind } from "./types.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const BIN = process.env.CODEMODE_BIN ?? join(ROOT, "target/release/codemode");
-const DENO = process.env.CODEMODE_DENO ?? execFileSync("mise", ["which", "deno"], { cwd: ROOT, encoding: "utf8" }).trim();
+const BIN = resolve(process.env.CODEMODE_BIN ?? join(ROOT, "target/release/codemode"));
+let deno: string | undefined;
+const denoPath = () => deno ??= process.env.CODEMODE_DENO ?? execFileSync("mise", ["which", "deno"], { cwd: ROOT, encoding: "utf8" }).trim();
 
 export const info: EngineInfo = {
   name: "codemode",
-  version: "bridge protocol 2 (this checkout)",
+  version: "Deno backend; bridge protocol 2 (this checkout)",
   limits: {
     timeoutMs: "enforced by Rust; one absolute deadline that includes bridge and Deno startup",
     maxCalls: "enforced by Rust; the first call beyond the allowance is rejected and ends the run",
@@ -58,12 +60,27 @@ const KINDS: Record<string, ErrorKind> = {
 };
 
 /**
- * With `prewarm`, the adapter keeps one started bridge (and its Deno guest) ready
+ * With `prewarm`, the adapter keeps one started bridge (and its selected guest) ready
  * for the next run with the same limits, started just after the previous run
  * returned. Each bridge serves one run. A run that finds no ready bridge, such as
  * the first in a process, starts one itself.
  */
-export function createEngine(options: { prewarm: boolean }): { info: EngineInfo; runEngine: (input: EngineInput) => Promise<EngineResult> } {
+export function createEngine(options: { prewarm: boolean; backend?: BridgeLimits["backend"] }): { info: EngineInfo; runEngine: (input: EngineInput) => Promise<EngineResult> } {
+  const backend = options.backend ?? "deno";
+  const embedded = backend === "embedded-v8";
+  const guest = embedded ? "embedded V8 worker" : "Deno guest";
+  const engineInfo: EngineInfo = embedded
+    ? {
+        ...info,
+        name: "codemode-embedded",
+        version: "embedded-v8 backend; bridge protocol 2 (this checkout)",
+        limits: {
+          ...info.limits,
+          timeoutMs: "enforced by Rust; one absolute deadline that includes bridge and embedded worker startup",
+          maxOutputBytes: "enforced by Rust; shared budget for tool replies and final output (default 262144, set to 1048576 here); separately, each reply to the embedded guest is capped at 1 MiB",
+        },
+      }
+    : info;
   let ready: StartedBridge | undefined;
   const take = (limits: BridgeLimits): StartedBridge | undefined => {
     const found = ready;
@@ -82,15 +99,16 @@ export function createEngine(options: { prewarm: boolean }): { info: EngineInfo;
   return {
     info: options.prewarm
       ? {
-          ...info,
-          name: "codemode-prewarm",
-          shim: `${info.shim}; one bridge and Deno guest started ahead of each run, outside its measured time`,
+          ...engineInfo,
+          name: `${engineInfo.name}-prewarm`,
+          shim: `${engineInfo.shim}; one bridge and ${guest} started ahead of each run, outside its measured time; one fresh guest per run`,
         }
-      : info,
+      : engineInfo,
     runEngine: async (input) => {
       const limits: BridgeLimits = {
         bin: BIN,
-        deno: DENO,
+        backend,
+        ...(embedded ? {} : { deno: denoPath() }),
         cwd: ROOT,
         timeoutMs: input.limits.timeoutMs,
         concurrency: input.limits.concurrency,

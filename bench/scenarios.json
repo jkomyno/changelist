@@ -4,6 +4,15 @@
   },
   "scenarios": [
     {
+      "name": "noop",
+      "program": "workflows/noop.js",
+      "dataset": "A",
+      "tools": [],
+      "profiles": ["zero"],
+      "expect": { "kind": "success", "output": "noop" },
+      "holdout": false
+    },
+    {
       "name": "triage",
       "program": "workflows/triage.js",
       "dataset": "A",

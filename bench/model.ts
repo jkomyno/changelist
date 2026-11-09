@@ -1,5 +1,5 @@
 /**
- * Ideal zero-overhead makespan for the triage-shaped success scenarios: sequential page
+ * Ideal zero-overhead makespan: zero for no-op; for triage-shaped success scenarios, sequential page
  * latencies, then the detail fan-out and the owner fan-out, each list-scheduled in
  * submission order on `concurrency` slots (Infinity for an unbounded engine). It ignores
  * process startup, interpreter work, and timer overshoot. It is a model, not a measurement.
@@ -19,6 +19,7 @@ function listSchedule(durations: number[], slots: number): number {
 }
 
 export function idealMs(s: Scenario, profile: Profile, concurrency: number): number | null {
+  if (s.name === "noop") return 0;
   if (s.dataset !== "A" || s.expect.kind !== "success") return null;
   const a = datasetA();
   const large = s.tools.includes("tracker.list_issues_large");

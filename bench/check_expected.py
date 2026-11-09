@@ -97,6 +97,7 @@ def main():
     with open(sys.argv[2], encoding="utf-8") as handle:
         expected = json.load(handle)
     computed = {
+        "noop": 42,
         "triage": triage(data, False),
         "triage-large": triage(data, False),
         "denied": triage(data, True),

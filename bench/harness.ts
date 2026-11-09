@@ -47,6 +47,8 @@ export const ENGINES: Record<string, EngineSpec> = {
   codemode: { module: "engines/codemode.ts", overrides: {}, node: true },
   "codemode-c4": { module: "engines/codemode.ts", overrides: { concurrency: 4 }, node: true },
   "codemode-prewarm": { module: "engines/codemode-prewarm.ts", overrides: {}, node: true },
+  "codemode-embedded": { module: "engines/codemode-embedded.ts", overrides: {}, node: true },
+  "codemode-embedded-prewarm": { module: "engines/codemode-embedded-prewarm.ts", overrides: {}, node: true },
   pi: { module: "engines/pi.ts", overrides: {}, node: true, effectiveConcurrency: Number.POSITIVE_INFINITY },
   opencode: { module: "engines/opencode.ts", overrides: {}, node: false, effectiveConcurrency: 8 },
 };
