@@ -11,13 +11,19 @@
 //! stdio protocol; the host keeps its permissions, approvals, and credentials.
 
 mod bridge;
+mod executor;
 mod inspect;
 mod journal;
 mod plan;
+mod plan_inspect;
 mod recovery;
 mod runtime;
 
 pub use bridge::{BRIDGE_FRAME_BYTES, BRIDGE_PROTOCOL_VERSION, BridgeError, serve_bridge};
+pub use executor::{
+    OperationStatus, SessionError, SessionOptions, SessionOutcome, SessionTiming, assess_history,
+    run_session,
+};
 pub use inspect::{
     CallRow, CallTiming, Calls, Evidence, InspectOptions, Inspection, Phase, Reconcile,
     ReconcileItem, Sections, Timing, inspect,
@@ -29,6 +35,10 @@ pub use journal::{
 pub use plan::{
     Digest, FrozenPlan, MAX_ARGUMENT_BYTES, MAX_OPERATIONS, MAX_PLAN_BYTES, Operation,
     PLAN_FORMAT_VERSION, Plan, PlanError, Scope,
+};
+pub use plan_inspect::{
+    ApprovalSummary, AttemptLine, JournalInspectOptions, JournalInspection, OperationReport,
+    PlanSummary, ProbeLine, ReviewLine, SessionSummary, inspect_journal,
 };
 pub use recovery::{
     Approval, Assessment, Attempt, AttemptError, Basis, Conclusion, Fact, FailureEffect, NextStep,
