@@ -1639,7 +1639,7 @@ async fn evaluate() -> Result<ExitCode, Box<dyn Error>> {
                 .collect(),
             percentiles: "nearest-rank",
             ordering: "round-robin strategies (A) and modes (B) per repetition; the starting one rotates each repetition",
-            crash: "codemode plan run is sent SIGKILL once the fixture ledger records the held request; journal and fixture files (database and write-ahead log) are copied once per strategy",
+            crash: "codemode plan run is sent SIGKILL once the fixture ledger records all ten intended requests, including the held one; journal and fixture files (database and write-ahead log) are copied once per strategy",
         };
         let summary = Summary {
             environment: &environment,
