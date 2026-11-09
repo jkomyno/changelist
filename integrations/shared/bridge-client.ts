@@ -47,6 +47,8 @@ export interface RunReport {
   status: string;
   output?: unknown;
   diagnostic?: string | null;
+  /** Host transport failure; independent of Rust's execution diagnostic. */
+  host_diagnostic?: string;
   calls: unknown[];
   [key: string]: unknown;
 }
@@ -122,6 +124,12 @@ export function findExecutable(name: string, cwd: string): string {
   throw new Error(`${name} was not found on PATH; set it explicitly`);
 }
 
+/** Parse an engine option at the host configuration boundary. */
+export function parseBackend(value: string): "deno" | "embedded-v8" {
+  if (value === "deno" || value === "embedded-v8") return value;
+  throw new Error("backend must be deno or embedded-v8");
+}
+
 /** Parse a positive integer option; `name` appears in the error. */
 export function positive(name: string, value: string | number): number {
   const text = String(value);
@@ -134,6 +142,7 @@ export function summarize(report: RunReport): Record<string, unknown> {
   const summary: Record<string, unknown> = { status: report.status, calls: report.calls.length };
   if ("output" in report) summary.output = report.output;
   if (report.diagnostic) summary.diagnostic = report.diagnostic;
+  if (report.host_diagnostic) summary.host_diagnostic = report.host_diagnostic;
   return summary;
 }
 
@@ -249,6 +258,7 @@ export async function runBridge(run: BridgeRun): Promise<RunReport> {
   const outstanding = new Map<number, AbortController>();
   let finished = false;
   let cancelled = false;
+  let hostDiagnostic: string | undefined;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
 
   const send = (frame: string) => {
@@ -317,7 +327,11 @@ export async function runBridge(run: BridgeRun): Promise<RunReport> {
           const message = error instanceof Error ? error.message : String(error);
           if (outstanding.delete(frame.id)) reply(frame.id, { ok: false, error: { code: "tool_error", message } });
         },
-      );
+      ).catch(() => {
+        // No reply reached Rust. A host encoding failure proves nothing about effects.
+        hostDiagnostic ??= `host reply for call ${frame.id} could not be encoded as JSON; run cancelled`;
+        onAbort();
+      });
   };
 
   send(JSON.stringify({ type: "start", version: 2, code: run.code, tools: [...authorized] }));
@@ -345,7 +359,9 @@ export async function runBridge(run: BridgeRun): Promise<RunReport> {
             abortOutstanding();
             child.stdin.end();
             terminate();
-            resolvePromise(frame.report);
+            const report: RunReport = frame.report;
+            if (hostDiagnostic) report.host_diagnostic = hostDiagnostic;
+            resolvePromise(report);
           } else if (frame.type === "error") bridgeError = String(frame.message);
           else throw new Error(`unexpected bridge frame type ${frame.type}`);
         },

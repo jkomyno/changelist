@@ -10,7 +10,7 @@
  *                                               confirm each label exists, and read each issue's labels.
  *   run|resume --config <file> --journal <file> Serve one session of an approved plan.
  *
- * Options: --bin <codemode> (target/debug/codemode), --deno <path> (accepted, unused),
+ * Options: --bin <codemode> (codemode on PATH), --deno <path> (accepted, unused),
  * --offline <state.json> (use the offline stand-in instead of the CLI helper),
  * --drop-reply <operation> (fault injection for recovery demonstrations: after
  * the helper reports a successful mutation for that operation, never reply, so
@@ -24,10 +24,11 @@
  * has no exports and ends with a statement.
  */
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { promisify } from "node:util";
-import { resolve } from "node:path";
-import { findExecutable, type PlanReply, runPlanBridge } from "../shared/bridge-client.ts";
+import { join, resolve } from "node:path";
+import { findExecutable, type PlanCall, type PlanReply, runPlanBridge } from "../shared/bridge-client.ts";
 import {
   type AccountExecute,
   type Connection,
@@ -87,14 +88,59 @@ async function listConnections(): Promise<Connection[]> {
   return github as Connection[];
 }
 
+/** Read at most Rust's MAX_PLAN_BYTES plus one byte, including for growing files. */
+function planBytes(path: string): Buffer {
+  const bytes = Buffer.alloc(1024 * 1024 + 1);
+  const file = openSync(path, "r");
+  let length = 0;
+  try {
+    while (length < bytes.length) {
+      const count = readSync(file, bytes, length, bytes.length - length, null);
+      if (count === 0) break;
+      length += count;
+    }
+  } finally {
+    closeSync(file);
+  }
+  if (length === bytes.length) throw new Error("plan exceeds 1048576 bytes");
+  return bytes.subarray(0, length);
+}
+
+type CheckedOperation = Pick<PlanCall, "tool" | "arguments" | "scope"> & { id: string; preconditions?: unknown[] };
+
+/** Validate the exact bytes subsequently inspected, with Rust's complete plan decoder. */
+async function checkedPlan(args: Map<string, string>): Promise<{ digest: string; operations: CheckedOperation[] }> {
+  const path = args.get("plan");
+  if (!path) throw new Error("--plan is required");
+  const cwd = process.cwd();
+  const bytes = planBytes(resolve(cwd, path));
+  const directory = mkdtempSync(join(tmpdir(), "codemode-preflight-"));
+  try {
+    const snapshot = join(directory, "plan.json");
+    writeFileSync(snapshot, bytes, { mode: 0o600 });
+    const { stdout } = await promisify(execFile)(
+      findExecutable(args.get("bin") ?? "codemode", cwd),
+      ["plan", "check", snapshot, "--json"],
+      { cwd, env: {}, maxBuffer: 2 * 1024 * 1024, timeout: 10_000 },
+    );
+    // SAFETY: the configured Rust binary validated these exact snapshot bytes, including every operation.
+    const plan = JSON.parse(bytes.toString("utf8")) as { operations: CheckedOperation[] };
+    // SAFETY: --json from the configured authoritative binary returns the checked digest.
+    const checked = JSON.parse(stdout) as { digest: string };
+    return { digest: checked.digest, operations: plan.operations };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 /** Read-only checks of every operation in a plan; prints projected facts only. */
 async function preflight({ execute, connections }: { execute: AccountExecute; connections: ListConnections }, args: Map<string, string>): Promise<void> {
   const config = parseConfig(json(args.get("config") ?? ""));
-  const plan = json(args.get("plan") ?? "") as { operations?: Array<Record<string, any>> };
+  const plan = await checkedPlan(args);
   const host = composioPlanHost(execute, config, connections);
   const report = [];
   let ready = true;
-  for (const operation of plan.operations ?? []) {
+  for (const operation of plan.operations) {
     const row: Record<string, unknown> = { operation: operation.id };
     try {
       const op = target(operation.tool, operation.arguments, operation.scope, operation.preconditions ?? [], config);
@@ -110,12 +156,12 @@ async function preflight({ execute, connections }: { execute: AccountExecute; co
       row.label_on_issue = "error" in state ? state.error.code : state.verdict === "satisfied";
       ready &&= authorized.ok && label && !("error" in state);
     } catch (error) {
-      row.refused = (error as { code?: string }).code ?? "invalid_operation";
+      row.refused = error instanceof Error && "code" in error ? error.code : "invalid_operation";
       ready = false;
     }
     report.push(row);
   }
-  finish(process.stdout, JSON.stringify({ preflight: ready ? "ready" : "not_ready", operations: report }), ready ? 0 : 3);
+  finish(process.stdout, JSON.stringify({ preflight: ready ? "ready" : "not_ready", digest: plan.digest, checked_operations: plan.operations.length, operations: report }), ready ? 0 : 3);
 }
 
 async function main(): Promise<void> {
@@ -142,7 +188,7 @@ async function main(): Promise<void> {
 
   const host = composioPlanHost(execute, config, providers.connections);
   const result = await runPlanBridge({
-    bin: findExecutable(args.get("bin") ?? "target/debug/codemode", cwd),
+    bin: findExecutable(args.get("bin") ?? "codemode", cwd),
     cwd,
     journal: resolve(cwd, journal),
     kind: command,

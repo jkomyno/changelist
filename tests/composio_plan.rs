@@ -436,3 +436,54 @@ fn the_handlers_pass_their_offline_checks() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn preflight_checks_the_exact_plan_before_contacting_a_provider() {
+    let scratch = Scratch::new();
+    setup(
+        &scratch,
+        &[operation("label-1", 1, "acme/widgets")],
+        json!({}),
+        1,
+    );
+    let checked = Command::new(CODEMODE)
+        .args(["plan", "check", path(&scratch.file("plan.json")), "--json"])
+        .output()
+        .expect("check");
+    assert!(checked.status.success(), "{checked:?}");
+    let checked: Value = serde_json::from_slice(&checked.stdout).expect("check JSON");
+    let output = host(
+        &scratch,
+        "preflight",
+        &["--plan", path(&scratch.file("plan.json"))],
+    )
+    .output()
+    .expect("preflight");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("preflight JSON");
+    assert_eq!(report["preflight"], "ready");
+    assert_eq!(report["digest"], checked["digest"]);
+    assert_eq!(report["checked_operations"], 1);
+    assert_eq!(scratch.mutations(), []);
+
+    // No stand-in state exists: contacting any provider would fail with a file error.
+    std::fs::remove_file(scratch.file("labels.json")).expect("remove stand-in");
+    for invalid in ["{}", r#"{"version":1,"operations":[]}"#] {
+        std::fs::write(scratch.file("plan.json"), invalid).expect("invalid plan");
+        let output = host(
+            &scratch,
+            "preflight",
+            &["--plan", path(&scratch.file("plan.json"))],
+        )
+        .output()
+        .expect("preflight");
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        assert!(output.stdout.is_empty(), "no readiness claim");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("plan check"), "{error}");
+        assert!(
+            !error.contains("labels.json"),
+            "provider not contacted: {error}"
+        );
+    }
+}

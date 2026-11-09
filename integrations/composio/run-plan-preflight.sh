@@ -33,7 +33,7 @@ writeFileSync(`${work}/plan.json`, JSON.stringify({ version: 1, operations: [{
 
 status=0
 composio run --file integrations/composio/plan-host.ts -- preflight \
-  --config "$work/config.json" --plan "$work/plan.json" </dev/null \
+  --config "$work/config.json" --plan "$work/plan.json" --bin target/debug/codemode </dev/null \
   >"$work/out.json" 2>"$work/stderr" || status=$?
 grep -v '^RUN_LOG_FILE=' "$work/stderr" >&2 || true
 cat "$work/out.json"
