@@ -78,6 +78,29 @@ Guest code runs in a permission-restricted data-URL worker. Built-in and inline
 `data:` imports and child stdio remain accessible. These runtime restrictions do
 not establish OS isolation, hard memory containment, or crash recovery.
 
+## Recoverable agent actions
+
+**Review a batch of external changes, execute it, and know how to continue after
+an interruption.** A plan lists operations (tool, arguments, provider account,
+preconditions) with stable identities; `codemode plan check` shows its digest and
+each tool's recovery contract, and `codemode plan approve --digest ...` binds an
+approval to that digest, the provider's contracts, and the budgets.
+`codemode plan run` executes it through the same scheduler, journaling each
+operation in SQLite before it can reach the provider and after its result.
+After a crash, `codemode plan resume` asks the provider what happened, by
+receipt or by current state, as the provider's own contract allows, continues
+only what is safe, and leaves the rest for a person (`codemode plan review`).
+`codemode plan inspect` says what was approved, attempted, changed, still
+uncertain, and what can safely happen next.
+
+```sh
+mise run recovery-demo   # offline: ten label changes, a SIGKILL, reconciliation, a review
+```
+
+See [recoverable agent actions](docs/recovery.md) for the contract, the
+durability guarantee (process crashes are tested; power loss is not), and the
+limits. There is no exactly-once claim.
+
 ## Library, helpers, and providers
 
 Reusable Rust APIs live in [src/lib.rs](src/lib.rs). The CLI owns argument parsing,

@@ -1,8 +1,9 @@
 # A small Rust execution core
 
 The design should fit a **30-minute technical explanation and demonstration**.
-Its three concepts are run-level control, rolling scheduling, and execution
-evidence. A chosen guest backend and provider adapter attach to that core.
+Its concepts are run-level control, rolling scheduling, execution evidence, and
+bounded recovery of an approved batch of operations. A chosen guest backend and
+provider adapter attach to that core.
 
 ```mermaid
 flowchart LR
@@ -32,8 +33,8 @@ A stop request cannot reverse an external side effect. Guest termination also
 does not automatically make a still-observable provider result unknown. Collect
 already-dispatched results while the run budget allows; prevent queued work from
 starting after the guest finishes. A provider future that loses observation is
-recorded as unknown. This prototype offers no recovery guarantee after the Rust
-host itself crashes.
+recorded as unknown. A guest program's run offers no recovery after the Rust host
+itself crashes; an approved operation plan does (see below).
 
 ### Large tool results
 
@@ -120,14 +121,28 @@ status and call event; any unobserved external effect remains unknown.
 
 Traces can contain private code or task data. An offline reproducer needs
 explicit reviewed fixture values; ordinary summaries do not reconstruct omitted
-data. Replay of live effects, opaque result handles, durable journals, billing,
+data. Replay of live effects or programs, opaque result handles, billing,
 provider catalogs, a UI, and persistent notebook state are deferred.
+
+## Bounded recovery of approved operation lists
+
+[Recoverable agent actions](recovery.md) adds durable accounting for one shape
+of work: a finite, digested plan of independent operations that a person
+approved. A SQLite journal records each operation's intent before the provider
+can see it and its observation before anyone is told; after a crash, the trusted
+provider's declared contract decides whether an uncertain operation is
+reconciled by receipt, by state, repeated, or handed to a person. Dispatch
+reuses `run` with a generated program that names operations only, so admission,
+the rolling scheduler, deadlines, cancellation, and the execution record are
+the same. It is not a workflow engine: no dependencies, no control flow, and no
+replay of the agent's program.
 
 ## Presentation shape
 
 - **5 minutes:** the problem, one composed task, and the host/guest/provider boundary.
 - **10 minutes:** Rust ownership of admission, bounded scheduling, and cancellation.
-- **10 minutes:** run the task, expose a controlled failure, and inspect its trace.
+- **10 minutes:** run the task, expose a controlled failure, and inspect its trace;
+  then approve a batch, kill the executor, and resume it (`mise run recovery-demo`).
 - **5 minutes:** measured tradeoffs, limits of the evidence, and host-adapter scope.
 
 Use public synthetic fixtures for the demonstration. A live provider can later
