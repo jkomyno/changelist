@@ -278,5 +278,15 @@ support for any other adapter.
 - The credential-key check catches obvious mistakes only; values are stored as
   given.
 
-Measurements against stop-on-uncertainty and blind-retry baselines are in
-[the recovery evaluation](recovery-evaluation.md).
+## Measured tradeoffs
+
+[The recovery evaluation](recovery-evaluation.md) recovers one identical crashed
+state (the demonstration's) three ways on one Apple M1 Pro, 15 runs each. Resume
+reached the intended state in every run with no duplicate effect and left the
+comment for review; blind retry duplicated the comment in every run while
+claiming success; stopping on uncertainty left five operations unresolved.
+Resume is the slowest: 124 ms at p50 against 43 ms for blind retry, without
+provider latency, mostly durable commits and 24 ms of guest startup. With
+`storage` durability each commit costs about 6 ms here (`F_FULLFSYNC`), so the
+journal, not the provider, limits a large batch; with `process` durability the
+journal added under 1 ms per operation.

@@ -120,10 +120,12 @@ those differences, divided by operations and by commits.
 ## Results
 
 Apple M1 Pro (10 logical CPUs), macOS, Deno 2.9.8, rustc 1.99.1, release build.
-Measured code: commit `ee34e8b`; the evaluation harness itself was not yet committed
-and the library was unchanged. Full output:
+Measured code: commit `21c84f8`, after the review fixes that journal each probe's
+start before the provider is asked. Full output:
 [`eval/recovery/summary.md`](../eval/recovery/summary.md); every run:
-[`eval/recovery/summary.json`](../eval/recovery/summary.json).
+[`eval/recovery/summary.json`](../eval/recovery/summary.json). An earlier run at
+`ee34e8b`, before probes were charged at their start, measured codemode resume at
+94 ms (0 ms latency) and 120 ms (25 ms latency) at p50.
 
 ### A. Correctness after the kill
 
@@ -150,53 +152,53 @@ Identical in all 15 runs of every cell, at both latencies:
 
 | Latency | Strategy | min | p50 | p90 | max |
 | ---: | --- | ---: | ---: | ---: | ---: |
-| 0 ms | stop on uncertainty | 2.4 | 2.7 | 3.3 | 6.5 |
-| 0 ms | blind retry | 31.1 | 33.6 | 38.4 | 41.3 |
-| 0 ms | codemode resume | 89.9 | 93.8 | 98.8 | 100.1 |
-| 25 ms | stop on uncertainty | 2.8 | 3.1 | 3.3 | 3.4 |
-| 25 ms | blind retry | 83.7 | 86.8 | 87.5 | 88.8 |
-| 25 ms | codemode resume | 112.1 | 120.0 | 123.2 | 124.0 |
+| 0 ms | stop on uncertainty | 2.9 | 3.2 | 3.6 | 3.6 |
+| 0 ms | blind retry | 33.5 | 42.7 | 45.7 | 56.7 |
+| 0 ms | codemode resume | 116.4 | 124.4 | 130.0 | 132.6 |
+| 25 ms | stop on uncertainty | 3.2 | 3.5 | 4.1 | 5.3 |
+| 25 ms | blind retry | 86.3 | 90.4 | 95.0 | 98.4 |
+| 25 ms | codemode resume | 143.2 | 150.2 | 158.8 | 170.6 |
 
 Phases, p50 in ms (startup columns first):
 
 | Latency | Strategy | Journal open/read | Checks | Reconcile | Guest startup | Dispatch execution | Dispatch phase | Total |
 | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0 ms | stop on uncertainty | 2.7 | — | — | — | — | — | 2.7 |
-| 0 ms | blind retry | 2.7 | — | — | 22 | 7 | 29 | 33.6 |
-| 0 ms | codemode resume | 2.2 | 9 | 19 | 22 | 27 | 49 | 93.8 |
-| 25 ms | stop on uncertainty | 3.1 | — | — | — | — | — | 3.1 |
-| 25 ms | blind retry | 2.9 | — | — | 25 | 58 | 82 | 86.8 |
-| 25 ms | codemode resume | 1.8 | 10 | 20 | 24 | 50 | 74 | 120.0 |
+| 0 ms | stop on uncertainty | 3.2 | — | — | — | — | — | 3.2 |
+| 0 ms | blind retry | 3.1 | — | — | 25 | 12 | 38 | 42.7 |
+| 0 ms | codemode resume | 2.4 | 11 | 38 | 24 | 29 | 55 | 124.4 |
+| 25 ms | stop on uncertainty | 3.5 | — | — | — | — | — | 3.5 |
+| 25 ms | blind retry | 3.4 | — | — | 26 | 58 | 86 | 90.4 |
+| 25 ms | codemode resume | 2.7 | 11 | 38 | 29 | 53 | 83 | 150.2 |
 
 ### B. No-fault runs (ms)
 
 | Workload | Latency | Mode | Total p50 / p90 | Dispatch p50 / p90 | Journal open p50 | Checks p50 | Guest startup p50 | Execution p50 / p90 | Commits |
 | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 11 ops | 0 ms | runtime only | 46.2 / 52.9 | 45 / 52 | — | — | 22 | 14 / 25 | — |
-| 11 ops | 0 ms | journal, storage | 183.4 / 198.5 | 157 / 168 | 0.6 | 12 | 24 | 131 / 137 | 24 |
-| 11 ops | 0 ms | journal, process | 45.3 / 60.9 | 42 / 57 | 0.4 | 1 | 26 | 13 / 29 | 24 |
-| 11 ops | 25 ms | runtime only | 113.5 / 115.5 | 112 / 114 | — | — | 24 | 88 / 89 | — |
-| 11 ops | 25 ms | journal, storage | 202.0 / 214.3 | 175 / 186 | 0.6 | 12 | 24 | 150 / 161 | 24 |
-| 11 ops | 25 ms | journal, process | 116.9 / 121.1 | 114 / 118 | 0.3 | 0 | 25 | 89 / 90 | 24 |
-| 64 ops | 0 ms | runtime only | 52.1 / 67.0 | 51 / 66 | — | — | 22 | 29 / 44 | — |
-| 64 ops | 0 ms | journal, storage | 865.6 / 884.2 | 837 / 849 | 0.7 | 12 | 24 | 814 / 826 | 130 |
-| 64 ops | 0 ms | journal, process | 63.0 / 75.1 | 59 / 71 | 0.6 | 1 | 27 | 28 / 45 | 130 |
-| 64 ops | 25 ms | runtime only | 490.5 / 505.1 | 489 / 504 | — | — | 28 | 462 / 474 | — |
-| 64 ops | 25 ms | journal, storage | 864.8 / 921.9 | 829 / 883 | 0.8 | 13 | 31 | 797 / 843 | 130 |
-| 64 ops | 25 ms | journal, process | 499.6 / 522.2 | 495 / 517 | 0.6 | 1 | 29 | 464 / 490 | 130 |
+| 11 ops | 0 ms | runtime only | 43.8 / 56.2 | 43 / 55 | — | — | 24 | 13 / 23 | — |
+| 11 ops | 0 ms | journal, storage | 189.6 / 217.1 | 163 / 185 | 0.5 | 12 | 28 | 133 / 139 | 24 |
+| 11 ops | 0 ms | journal, process | 53.9 / 60.4 | 50 / 57 | 0.5 | 1 | 33 | 13 / 26 | 24 |
+| 11 ops | 25 ms | runtime only | 118.4 / 119.7 | 117 / 118 | — | — | 27 | 88 / 90 | — |
+| 11 ops | 25 ms | journal, storage | 221.4 / 232.5 | 193 / 202 | 0.6 | 12 | 31 | 157 / 161 | 24 |
+| 11 ops | 25 ms | journal, process | 123.9 / 129.3 | 120 / 126 | 0.5 | 1 | 31 | 89 / 90 | 24 |
+| 64 ops | 0 ms | runtime only | 55.6 / 76.2 | 55 / 75 | — | — | 24 | 29 / 46 | — |
+| 64 ops | 0 ms | journal, storage | 927.8 / 955.5 | 891 / 923 | 0.7 | 12 | 28 | 860 / 888 | 130 |
+| 64 ops | 0 ms | journal, process | 72.8 / 86.6 | 68 / 82 | 0.8 | 1 | 34 | 30 / 44 | 130 |
+| 64 ops | 25 ms | runtime only | 523.1 / 548.1 | 521 / 546 | — | — | 35 | 484 / 509 | — |
+| 64 ops | 25 ms | journal, storage | 934.4 / 984.8 | 897 / 946 | 1.3 | 12 | 42 | 849 / 896 | 130 |
+| 64 ops | 25 ms | journal, process | 545.2 / 565.4 | 541 / 560 | 0.8 | 1 | 34 | 506 / 524 | 130 |
 
 Journal cost against the runtime alone, paired by repetition:
 
 | Workload | Latency | Durability | Δ total p50 / p90 (ms) | Per op (ms) | Per commit (ms) | Δ execution p50 / p90 (ms) |
 | --- | ---: | --- | ---: | ---: | ---: | ---: |
-| 11 ops | 0 ms | storage | 141.4 / 164.0 | 12.85 | 5.89 | 118 / 124 |
-| 11 ops | 0 ms | process | 6.9 / 16.4 | 0.63 | 0.29 | 0 / 13 |
-| 11 ops | 25 ms | storage | 91.3 / 102.5 | 8.30 | 3.80 | 63 / 72 |
-| 11 ops | 25 ms | process | 4.5 / 7.6 | 0.41 | 0.19 | 1 / 2 |
-| 64 ops | 0 ms | storage | 813.2 / 829.2 | 12.71 | 6.26 | 780 / 794 |
-| 64 ops | 0 ms | process | 8.4 / 28.9 | 0.13 | 0.06 | −1 / 21 |
-| 64 ops | 25 ms | storage | 372.8 / 445.5 | 5.83 | 2.87 | 331 / 390 |
-| 64 ops | 25 ms | process | 11.8 / 25.9 | 0.18 | 0.09 | 3 / 25 |
+| 11 ops | 0 ms | storage | 149.9 / 170.2 | 13.63 | 6.25 | 119 / 129 |
+| 11 ops | 0 ms | process | 8.5 / 28.6 | 0.77 | 0.35 | 0 / 18 |
+| 11 ops | 25 ms | storage | 106.6 / 116.9 | 9.69 | 4.44 | 68 / 74 |
+| 11 ops | 25 ms | process | 5.5 / 17.1 | 0.50 | 0.23 | 2 / 3 |
+| 64 ops | 0 ms | storage | 870.0 / 895.6 | 13.59 | 6.69 | 825 / 844 |
+| 64 ops | 0 ms | process | 18.4 / 36.5 | 0.29 | 0.14 | 1 / 18 |
+| 64 ops | 25 ms | storage | 401.2 / 469.1 | 6.27 | 3.09 | 361 / 407 |
+| 64 ops | 25 ms | process | 27.4 / 62.7 | 0.43 | 0.21 | 20 / 46 |
 
 All 90 recovery runs and 180 no-fault runs passed their checks.
 
@@ -207,36 +209,38 @@ All 90 recovery runs and 180 no-fault runs passed their checks.
   one operation it could not establish. That leaves work for a person: the comment
   did apply, but nothing the provider offers can show it, so codemode reports
   `needs_review` rather than `completed`.
-- **Blind retry is faster and wrong in a way it cannot see.** It finished 60 ms
-  sooner at 0 ms latency and 33 ms sooner at 25 ms, claimed success in every run, and
+- **Blind retry is faster and wrong in a way it cannot see.** It finished 82 ms
+  sooner at 0 ms latency and 60 ms sooner at 25 ms, claimed success in every run, and
   duplicated the comment in every run. Label operations survived repetition only
   because the fixture's labels are a set.
 - **Stop is cheap and incomplete.** It took about 3 ms and changed nothing, which is
   safe for the comment and leaves two operations that could safely have been sent.
 - **Codemode resume is the slowest strategy here (a regression against blind
-  retry).** At 0 ms latency, its 94 ms split into journal open (2 ms), checks (9 ms:
-  a durable session-start commit and authorization), reconciliation (19 ms: three
-  probes, each recorded with a storage-durable commit), and dispatch (49 ms, of which
-  22 ms was guest startup). The rest is assessment and the durable session end.
-  At about 6 ms per storage commit (part B), the session-start commit, three probe
-  records, two intents, two observations, and the session end account for most of
-  the gap; each fixture probe is a single small SQLite transaction.
-- **Guest startup dominates small batches.** Starting the Deno guest took 22–31 ms
-  in every dispatch run, two thirds of blind retry's recovery at 0 ms and close to
-  half of the 11-operation runtime-only run.
+  retry).** At 0 ms latency, its 124 ms split into journal open (2 ms), checks
+  (11 ms: a durable session-start commit and authorization), reconciliation
+  (38 ms: three probes, each recorded twice with storage-durable commits, at its
+  start and with its answer), and dispatch (55 ms, of which 24 ms was guest
+  startup). The rest is assessment and the durable session end. At about 6 ms per
+  storage commit (part B), the session-start commit, six probe records, two
+  intents, two observations, and the session end account for most of the gap.
+  Charging each probe before the provider is asked, so a crash loop cannot probe
+  without bound, added about 30 ms against the earlier measurement.
+- **Guest startup dominates small batches.** Starting the Deno guest took 24–42 ms
+  in every dispatch run, more than half of blind retry's recovery at 0 ms and of
+  the 11-operation runtime-only run.
 - **Storage durability costs about 6 ms per commit on this machine.** Without
-  latency, the 11-operation plan took 183 ms instead of 46 ms (24 commits), and the
-  64-operation plan 866 ms instead of 52 ms (130 commits). Commits go through one
+  latency, the 11-operation plan took 190 ms instead of 44 ms (24 commits), and the
+  64-operation plan 928 ms instead of 56 ms (130 commits). Commits go through one
   connection in order, so with `storage` the journal, not the provider, limits
-  throughput: the 64-operation run took about 865 ms at both 0 and 25 ms latency.
+  throughput: the 64-operation run took about 930 ms at both 0 and 25 ms latency.
   With latency, some commit time overlaps calls that are waiting, so the measured
-  cost per commit falls to 2.9–3.8 ms.
-- **Process durability costs little here.** The paired median was 4.5–11.8 ms per
-  run (at most 0.63 ms per operation), within the run-to-run spread: paired p90
-  reached 29 ms, and execution deltas were 3 ms or less at p50.
-- **Startup is separate from execution.** Opening and locking the journal took under
-  1 ms. The opening checks took 12 ms with `storage` and 0–1 ms with `process`,
-  mostly the durable session-start commit.
+  cost per commit falls to 3.1–4.4 ms.
+- **Process durability costs little here.** The paired median was 5.5–27.4 ms per
+  run (at most 0.77 ms per operation), within the run-to-run spread: paired p90
+  reached 63 ms.
+- **Startup is separate from execution.** Opening and locking the journal took
+  about 1 ms. The opening checks took 12 ms with `storage` and about 1 ms with
+  `process`, mostly the durable session-start commit.
 
 ## Limits
 
