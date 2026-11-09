@@ -328,6 +328,21 @@ async fn execute() -> Result<u8, Box<dyn Error>> {
 }
 
 fn main() -> ExitCode {
+    if env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--internal-embedded-guest")) {
+        #[cfg(feature = "embedded-v8")]
+        return match codemode::run_embedded_worker() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("codemode: {error}");
+                ExitCode::from(1)
+            }
+        };
+        #[cfg(not(feature = "embedded-v8"))]
+        {
+            eprintln!("codemode: embedded backend requires the embedded-v8 build feature");
+            return ExitCode::from(2);
+        }
+    }
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,
         Err(error) => {

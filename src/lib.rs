@@ -17,6 +17,8 @@
 //! demos, tests, and baselines of recoverable operations.
 
 mod bridge;
+#[cfg(feature = "embedded-v8")]
+mod embedded;
 mod executor;
 pub mod fixture;
 mod inspect;
@@ -28,6 +30,8 @@ mod recovery;
 mod runtime;
 
 pub use bridge::{BRIDGE_FRAME_BYTES, BRIDGE_PROTOCOL_VERSION, BridgeError, serve_bridge};
+#[cfg(feature = "embedded-v8")]
+pub use embedded::{EmbeddedWorkerError, run_embedded_worker};
 pub use executor::{
     OperationStatus, SessionError, SessionOptions, SessionOutcome, SessionTiming, assess_history,
     dispatcher_program, run_session,
