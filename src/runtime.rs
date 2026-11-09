@@ -48,10 +48,30 @@ pub struct RunConfig {
     pub max_output_bytes: usize,
     /// Deno executable; use an absolute path when executable selection must be fixed.
     pub deno: PathBuf,
+    /// Program engine and, for embedding, the dedicated worker executable.
+    /// Native [`run_calls`] does not use this setting.
+    pub backend: GuestBackend,
     /// Tool names authorized by this host, independently of guest requests.
     pub allowed_tools: Vec<String>,
     /// How queued calls start when provider slots are free.
     pub dispatch: DispatchPolicy,
+}
+
+/// Engine used by an isolated arbitrary-program guest.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum GuestBackend {
+    /// External Deno executable selected by [`RunConfig::deno`].
+    #[default]
+    Deno,
+    /// The `codemode` executable built with the `embedded-v8` feature.
+    ///
+    /// Library consumers must supply the worker path explicitly; their own
+    /// executable need not implement codemode's internal worker entry point.
+    EmbeddedV8 {
+        /// Dedicated worker executable, preferably an absolute path.
+        executable: PathBuf,
+    },
 }
 
 /// When an admitted call may start, given the concurrency cap.
@@ -93,6 +113,7 @@ impl Default for RunConfig {
             max_concurrency: 4,
             max_output_bytes: 256 * 1024,
             deno: PathBuf::from("deno"),
+            backend: GuestBackend::Deno,
             allowed_tools: ["mock.echo", "mock.wait", "mock.fail"]
                 .map(String::from)
                 .to_vec(),
@@ -883,18 +904,19 @@ pub(crate) async fn frame(
 /// starts when [`run_prepared`] is called, and the report records how long the
 /// guest had been waiting.
 pub struct PreparedGuest {
-    launcher: Launcher,
+    launcher: Option<Launcher>,
     child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
     spawned: Instant,
+    backend: ExecutionBackend,
 }
 
 impl fmt::Debug for PreparedGuest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("PreparedGuest")
-            .field("launcher", &self.launcher.0)
+            .field("backend", &self.backend)
             .finish_non_exhaustive()
     }
 }
@@ -915,7 +937,8 @@ impl PreparedGuest {
         let launcher = Launcher::create()?;
         let deno = resolve_executable(deno)?;
         let spawned = Instant::now();
-        let mut child = Command::new(deno)
+        let mut command = Command::new(deno);
+        command
             .args([
                 "run",
                 "--no-config",
@@ -934,7 +957,43 @@ impl PreparedGuest {
                 "--deny-import",
                 "--unstable-worker-options",
             ])
-            .arg(&launcher.0)
+            .arg(&launcher.0);
+        Self::spawn(command, Some(launcher), spawned, ExecutionBackend::Deno)
+    }
+
+    /// Start a fresh embedded worker before its program is known.
+    ///
+    /// `executable` must implement codemode's internal worker entry point and be
+    /// built with `embedded-v8`. Requires a Tokio runtime with I/O enabled.
+    ///
+    /// # Errors
+    /// Returns [`RunError::Config`] when this library lacks the build feature,
+    /// or [`RunError::Io`] when the executable cannot start.
+    pub fn start_embedded(executable: &Path) -> Result<Self, RunError> {
+        if !cfg!(feature = "embedded-v8") {
+            return Err(RunError::Config(
+                "embedded backend requires the embedded-v8 build feature".into(),
+            ));
+        }
+        let mut command = Command::new(executable);
+        command.arg("--internal-embedded-guest");
+        Self::spawn(command, None, Instant::now(), ExecutionBackend::EmbeddedV8)
+    }
+
+    pub(crate) fn from_config(config: &RunConfig) -> Result<Self, RunError> {
+        match &config.backend {
+            GuestBackend::Deno => Self::start(&config.deno),
+            GuestBackend::EmbeddedV8 { executable } => Self::start_embedded(executable),
+        }
+    }
+
+    fn spawn(
+        mut command: Command,
+        launcher: Option<Launcher>,
+        spawned: Instant,
+        backend: ExecutionBackend,
+    ) -> Result<Self, RunError> {
+        let mut child = command
             .env_clear()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -957,16 +1016,18 @@ impl PreparedGuest {
             input,
             output,
             spawned,
+            backend,
         })
     }
 }
 
-/// Execute TypeScript with a bounded Deno subprocess and host-side tool scheduler.
+/// Execute TypeScript with the selected isolated guest and host-side scheduler.
 ///
 /// Provider failures can be caught by guest code and remain visible in the trace.
 /// A deadline or cancellation drops pending provider futures; an already dispatched
 /// external effect may still have occurred. This is not an OS sandbox or RSS limit.
-/// Requires a Tokio runtime with I/O and time enabled and Deno 2.9.8-compatible flags.
+/// Requires a Tokio runtime with I/O and time enabled. The default engine uses
+/// Deno 2.9.8-compatible flags; embedded execution requires `embedded-v8`.
 ///
 /// # Examples
 ///
@@ -992,7 +1053,7 @@ pub async fn run(
     let initial = validate(code, &config)?;
     // The deadline includes guest startup.
     let start = Instant::now();
-    let guest = PreparedGuest::start(&config.deno)?;
+    let guest = PreparedGuest::from_config(&config)?;
     execute(
         ExecutionInput::Guest {
             guest: Box::new(guest),
@@ -1152,13 +1213,10 @@ async fn execute(
             guest,
             initial,
             code,
-        } => (
-            Some(guest),
-            Some(initial),
-            code,
-            &[][..],
-            ExecutionBackend::Deno,
-        ),
+        } => {
+            let backend = guest.backend;
+            (Some(guest), Some(initial), code, &[][..], backend)
+        }
         ExecutionInput::Native(calls) => (None, None, "", calls, ExecutionBackend::Native),
     };
     let native = backend == ExecutionBackend::Native;
@@ -1197,6 +1255,7 @@ async fn execute(
             input,
             output,
             spawned,
+            backend: _,
         } = *guest;
         if spawned < start {
             let waited = start.duration_since(spawned).as_millis();
@@ -1204,7 +1263,7 @@ async fn execute(
         } else {
             event(&mut report, start, None, "guest_spawned");
         }
-        (Some(child), Some(input), Some(output), Some(launcher))
+        (Some(child), Some(input), Some(output), launcher)
     } else {
         (None, None, None, None)
     };

@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use codemode::{
-    BridgeError, DispatchPolicy, InspectOptions, MockProvider, RunCancellation, RunConfig,
-    RunReport, Sections, inspect, run, serve_bridge,
+    BridgeError, DispatchPolicy, GuestBackend, InspectOptions, MockProvider, RunCancellation,
+    RunConfig, RunReport, Sections, inspect, run, serve_bridge,
 };
 
 mod plan_cli;
@@ -34,6 +34,7 @@ Options:
   --max-output-bytes <n>  Cumulative JSON response/output bytes (default: 262144)
   --trace <file.json>     Save the full trace; print only status, output, and path (run only)
   --deno <executable>     Deno executable (default: deno from PATH)
+  --backend <engine>      deno (default) or embedded-v8 (optional build feature)
   -h, --help             Show this help
   -V, --version          Show the version
 
@@ -162,6 +163,7 @@ fn parse_arguments() -> Result<Command, CliError> {
             "--code"
                 | "--trace"
                 | "--deno"
+                | "--backend"
                 | "--timeout-ms"
                 | "--max-calls"
                 | "--concurrency"
@@ -186,6 +188,16 @@ fn parse_arguments() -> Result<Command, CliError> {
             }
             "--trace" => trace = Some(PathBuf::from(value)),
             "--deno" => config.deno = PathBuf::from(value),
+            "--backend" => {
+                config.backend = match value.to_str() {
+                    Some("deno") => GuestBackend::Deno,
+                    Some("embedded-v8") => GuestBackend::EmbeddedV8 {
+                        executable: env::current_exe()
+                            .map_err(|error| CliError(error.to_string()))?,
+                    },
+                    _ => return Err(CliError("--backend must be deno or embedded-v8".into())),
+                };
+            }
             "--dispatch" => {
                 config.dispatch = match value.to_str() {
                     Some("rolling") => DispatchPolicy::Rolling,

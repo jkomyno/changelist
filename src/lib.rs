@@ -63,8 +63,8 @@ pub use recovery::{
 };
 pub use runtime::{
     BridgeTotals, ByteTotals, CallContext, CallOutcome, CallRecord, ClockInfo, DispatchPolicy,
-    ExecutionBackend, FactSink, MockProvider, NativeCall, PreparedGuest, ProviderError,
-    ProviderFact, ProviderFactKind, REPORT_SCHEMA_VERSION, RunCancellation, RunConfig, RunError,
-    RunEvent, RunLimits, RunReport, RunStatus, ToolCall, ToolProvider, run, run_calls,
-    run_prepared,
+    ExecutionBackend, FactSink, GuestBackend, MockProvider, NativeCall, PreparedGuest,
+    ProviderError, ProviderFact, ProviderFactKind, REPORT_SCHEMA_VERSION, RunCancellation,
+    RunConfig, RunError, RunEvent, RunLimits, RunReport, RunStatus, ToolCall, ToolProvider, run,
+    run_calls, run_prepared,
 };

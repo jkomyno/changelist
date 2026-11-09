@@ -65,8 +65,10 @@ export interface BridgeCall {
 export interface BridgeLimits {
   /** Absolute path of the `codemode` executable. */
   bin: string;
-  /** Absolute path of the Deno executable for the guest. */
-  deno: string;
+  /** Absolute Deno path for the default backend; unused by embedded-v8. */
+  deno?: string;
+  /** Program engine; defaults to deno. The binary must include embedded-v8 to select it. */
+  backend?: "deno" | "embedded-v8";
   cwd: string;
   timeoutMs: number;
   concurrency: number;
@@ -154,8 +156,9 @@ function bridgeArgs(limits: BridgeLimits): string[] {
     String(limits.maxCalls),
     "--max-output-bytes",
     String(limits.maxOutputBytes ?? OUTPUT_BYTES),
-    "--deno",
-    limits.deno,
+    "--backend",
+    limits.backend ?? "deno",
+    ...(limits.deno === undefined ? [] : ["--deno", limits.deno]),
   ];
 }
 

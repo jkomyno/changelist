@@ -453,7 +453,7 @@ where
 {
     // Start the guest while waiting for the program. A waiting bridge still stops
     // on cancellation (SIGTERM) or when its guest dies, so an unused one cannot linger.
-    let mut guest = PreparedGuest::start(&config.deno).map_err(BridgeError::Run)?;
+    let mut guest = PreparedGuest::from_config(config).map_err(BridgeError::Run)?;
     let mut input = BufReader::new(input);
     let mut partial = Vec::new();
     let first = tokio::select! {
