@@ -5,6 +5,14 @@ Rust core stays provider-independent: `codemode bridge` admits, schedules, and
 records every call, and this adapter runs each one in the trusted host process
 that holds the Composio credential. Verified with Composio CLI 0.6.0.
 
+Both CLI entrypoints find `codemode` on PATH by default; use `--bin` for a
+specific binary. Repository demo scripts pass `target/debug/codemode` explicitly.
+
+The program host defaults to Deno. Pass `--backend embedded-v8` to use a
+binary built with `--features embedded-v8`; this selection does not look up or
+require Deno. `--deno` applies only to the default Deno backend. Plan sessions
+use native Rust execution and require neither engine.
+
 ```text
 composio run (Bun, holds the CLI credential)
   host.ts ── start ──► codemode bridge (empty env) ──► Deno guest
@@ -110,7 +118,7 @@ Write a host-owned config with the stable connected-account id
 composio run --file integrations/composio/plan-host.ts -- declare --config config.json > declaration.json
 codemode plan check plan.json --provider declaration.json
 codemode plan approve plan.json --journal j.db --provider declaration.json --digest <sha256:...> --approver <name>
-composio run --file integrations/composio/plan-host.ts -- preflight --config config.json --plan plan.json  # read-only
+composio run --file integrations/composio/plan-host.ts -- preflight --config config.json --plan plan.json --bin /absolute/path/to/codemode  # read-only
 composio run --file integrations/composio/plan-host.ts -- run --config config.json --journal j.db \
   --bin target/debug/codemode --deno "$(mise which deno)"
 composio run --file integrations/composio/plan-host.ts -- resume ...   # after an interruption
@@ -197,3 +205,10 @@ machine has only a CLI user key, which `@composio/core` 0.28.0 does not accept.
 - [`composio-tools.d.ts`](composio-tools.d.ts): guest declarations for the example slugs.
 - [`demo/`](demo): the example program, the offline fake helpers (`fake-labels.ts` for
   plans), the SDK and plan-handler checks, and the credential check.
+
+Preflight first runs `codemode plan check --json` through the configured binary
+on a private snapshot of the bounded plan input. Malformed plans fail before any
+provider request. The output includes the authoritative `digest` and
+`checked_operations` count alongside provider readiness checks. The snapshot is
+also the source of the read-only checks, so a concurrent edit cannot change the
+operations after validation.

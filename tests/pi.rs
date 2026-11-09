@@ -147,16 +147,48 @@ fn pi_nested_calls_keep_pi_permissions_and_rust_scheduling() {
         .filter(|entry| entry["nested"] == true)
         .map(|entry| (entry["tool"].clone(), entry["decision"].clone()))
         .collect();
-    assert_eq!(
-        nested,
-        [
-            (json!("read"), json!("allowed")),
-            (json!("ls"), json!("allowed")),
-            (json!("bash"), json!("blocked")),
-        ]
-    );
+    assert_eq!(nested.len(), 3, "unexpected nested calls: {nested:?}");
+    // Concurrent calls need not reach Pi's handlers in submission order.
+    for expected in [
+        (json!("read"), json!("allowed")),
+        (json!("ls"), json!("allowed")),
+        (json!("bash"), json!("blocked")),
+    ] {
+        assert!(
+            nested.contains(&expected),
+            "missing {expected:?}: {nested:?}"
+        );
+    }
     let everything = format!("{stdout}{trace}");
     assert!(!everything.contains(SECRET), "Pi's environment leaked");
+}
+
+#[test]
+#[cfg(feature = "embedded-v8")]
+#[ignore = "requires Pi 1.4.0; run `mise run pi-check`"]
+fn pi_can_select_embedded_execution_without_a_deno_executable() {
+    let scratch = Scratch::new();
+    let output = pi(&scratch, "integrations/pi/demo/workflow.ts", &["--print"])
+        .args([
+            "--codemode-backend",
+            "embedded-v8",
+            "--codemode-deno",
+            "/codemode-test-no-deno/deno",
+            "Run the embedded workflow.",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .expect("Pi starts");
+    assert!(output.status.success(), "{output:?}");
+    let trace = scratch.json("trace.json");
+    assert_eq!(trace["backend"], "embedded_v8");
+    assert_eq!(trace["status"], "success", "{trace}");
+    assert!(
+        scratch
+            .audit()
+            .iter()
+            .any(|entry| entry["decision"] == "blocked")
+    );
 }
 
 fn read_until(

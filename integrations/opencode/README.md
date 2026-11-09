@@ -4,6 +4,11 @@ An OpenCode plugin that runs agent-written TypeScript through `codemode bridge`.
 Every guest tool call is gated by OpenCode's permission service, then runs a host
 tool inside the OpenCode process. Verified with OpenCode 1.19.5.
 
+Program execution defaults to Deno. Set `backend: "embedded-v8"` in
+`codemode({ tools, bin, backend })` to use a binary built with
+`--features embedded-v8`; the adapter then neither looks up nor requires Deno.
+The `deno` option applies only to the default Deno backend.
+
 ```text
 OpenCode model ── rust_codemode {code} ──► plugin ── start ──► codemode bridge ──► Deno guest
                                             ▲   │                (Rust limits,       │
@@ -22,8 +27,12 @@ OpenCode model ── rust_codemode {code} ──► plugin ── start ──�
 | Other plugins' `tool.execute.before`/`after` hooks for nested calls | **Not available** | A plugin cannot trigger them. Those hooks see only the outer `rust_codemode` call. |
 
 Guest code can therefore call only the host tools you pass to `codemode({ tools })`.
-They are OpenCode custom tool definitions (`{ description, args, execute }`, the
-objects `tool()` from `@opencode-ai/plugin` returns). Calling an OpenCode built-in
+They are OpenCode custom tool definitions (`{ description, args, execute }`).
+The adapter preserves OpenCode 1.19.5's legacy raw JSON-schema argument support;
+its published plugin types describe only Zod argument schemas. The typecheck uses
+the real package's execution, result, and context types, with an explicit legacy
+argument type. Guest arguments must be JSON objects; other values are refused
+with `invalid_arguments` before requesting permission. Calling an OpenCode built-in
 such as `bash` from guest code is rejected by Rust as `tool_denied`.
 
 Approval outcomes follow OpenCode's own semantics for a tool call:

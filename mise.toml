@@ -5,6 +5,14 @@ min_version = "2026.9.2"
 mr-boxington = "1.26.0"
 rust = { version = "stable", profile = "minimal", components = ["clippy", "rustfmt"], mr_boxington = true }
 deno = "2.9.8"
+node = "24.22.1"
+
+[tasks.typecheck]
+description = "Install locked development types and check the host adapters"
+run = [
+    "npm ci --ignore-scripts --no-audit --no-fund",
+    "npm run typecheck",
+]
 
 [tasks.check]
 description = "Check formatting, lints, tests, and documentation"
@@ -37,7 +45,7 @@ run = "integrations/pi/run-demo.sh"
 
 [tasks.pi-check]
 description = "Run native Pi 1.4.0 integration checks"
-run = "mise exec npm:@earendil-works/pi-coding-agent@1.4.0 -- cargo test --locked --test pi --test pi_plan -- --ignored"
+run = "mise exec npm:@earendil-works/pi-coding-agent@1.4.0 -- cargo test --locked --all-features --test pi --test pi_plan -- --ignored"
 
 [tasks.opencode-demo]
 description = "Run the offline OpenCode 1.19.5 integration example"
@@ -45,7 +53,7 @@ run = "integrations/opencode/run-demo.sh"
 
 [tasks.opencode-check]
 description = "Run native OpenCode 1.19.5 integration checks"
-run = "mise exec aqua:anomalyco/opencode@1.19.5 -- cargo test --locked --test opencode -- --ignored"
+run = "mise exec aqua:anomalyco/opencode@1.19.5 -- cargo test --locked --all-features --test opencode -- --ignored"
 
 [tasks.composio-demo]
 description = "Run the offline Composio provider example"

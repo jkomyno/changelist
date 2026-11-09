@@ -15,7 +15,7 @@
  *       integrations/composio/host.ts --offline --program ... --tools ...
  *
  * Options: --program <file> (required), --tools <slug,...> (required),
- * --trace <file>, --bin <codemode>, --deno <deno>, --timeout-ms <n> (30000),
+ * --trace <file>, --bin <codemode> (codemode on PATH), --deno <deno>, --backend deno|embedded-v8, --timeout-ms <n> (30000),
  * --concurrency <n> (4), --max-calls <n> (16), --offline.
  * stdout receives one compact JSON summary; the exit status is 0 only on success.
  * The host exits after the report, abandoning any call Rust recorded as unknown.
@@ -27,10 +27,10 @@
  */
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { findExecutable, positive, summarize } from "../shared/bridge-client.ts";
+import { findExecutable, positive, parseBackend, summarize } from "../shared/bridge-client.ts";
 import { type RunHelperExecute, runComposio, runHelperExecutor } from "./composio-provider.ts";
 
-const VALUE_OPTIONS = new Set(["program", "tools", "trace", "bin", "deno", "timeout-ms", "concurrency", "max-calls"]);
+const VALUE_OPTIONS = new Set(["program", "tools", "trace", "bin", "deno", "backend", "timeout-ms", "concurrency", "max-calls"]);
 
 /** Strict parsing: an unknown option or a missing value never selects an executor. */
 function options(argv: string[]): Map<string, string> {
@@ -69,12 +69,14 @@ async function main(): Promise<void> {
     : (globalThis as { execute?: RunHelperExecute }).execute;
   if (!execute) throw new Error("run under `composio run`, or pass --offline");
 
+  const backend = parseBackend(args.get("backend") ?? "deno");
   const controller = new AbortController();
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => controller.abort());
 
   const { report, hostDiagnostic } = await runComposio({
-    bin: findExecutable(args.get("bin") ?? "target/debug/codemode", cwd),
-    deno: findExecutable(args.get("deno") ?? "deno", cwd),
+    bin: findExecutable(args.get("bin") ?? "codemode", cwd),
+    backend,
+    deno: backend === "deno" ? findExecutable(args.get("deno") ?? "deno", cwd) : undefined,
     cwd,
     code: readFileSync(resolve(cwd, program), "utf8"),
     tools,

@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "strict": true,
+    "types": ["node"],
+    "skipLibCheck": false
+  },
+  "include": [
+    "integrations/shared/bridge-client.ts",
+    "integrations/pi/codemode-bridge.ts",
+    "integrations/opencode/codemode-bridge.ts",
+    "integrations/composio/host.ts",
+    "integrations/composio/plan-host.ts",
+    "integrations/composio/composio-provider.ts",
+    "integrations/composio/composio-plan.ts"
+  ]
+}

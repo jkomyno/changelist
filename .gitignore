@@ -3,3 +3,6 @@
 
 # Third-party code fetched by bench/setup.sh
 bench/.cache/
+
+# Pinned adapter typecheck dependencies
+node_modules/

@@ -582,3 +582,74 @@ fn opencode_abort_during_approval_prevents_a_late_approved_call() {
         "a late approval ran the tool: {audit:?}"
     );
 }
+
+#[test]
+#[ignore = "requires OpenCode 1.19.5; run `mise run opencode-check`"]
+fn opencode_refuses_nonobject_arguments_before_permission_or_execution() {
+    let scratch = Scratch::new();
+    let program = scratch.file("invalid-arguments.ts");
+    fs::write(
+        &program,
+        r#"
+const errors = [];
+for (const args of [null, 42, []]) {
+  try { await tools.call('publish', args); }
+  catch (error) { errors.push(error.code); }
+}
+return errors;
+"#,
+    )
+    .expect("program");
+    let output = output_within(
+        opencode(
+            &scratch,
+            program.to_str().expect("UTF-8 path"),
+            &["run", "--model", "codemode-demo/scripted"],
+        )
+        .arg("Run the invalid arguments program.")
+        .stdin(Stdio::null()),
+        Duration::from_secs(30),
+    );
+    assert!(output.status.success(), "{output:?}");
+    let trace = scratch.json("trace.json");
+    assert_eq!(trace["status"], "success", "{trace}");
+    assert_eq!(
+        trace["output"],
+        json!([
+            "invalid_arguments",
+            "invalid_arguments",
+            "invalid_arguments"
+        ])
+    );
+    assert_eq!(
+        scratch.events(),
+        [json!("model"), json!("model")],
+        "no permission or execution: {:?}",
+        scratch.audit()
+    );
+    assert!(facts(&trace).iter().all(|(_, kind)| kind == "received"));
+}
+
+#[cfg(feature = "embedded-v8")]
+#[test]
+#[ignore = "requires OpenCode 1.19.5; run `mise run opencode-check` with embedded-v8"]
+fn opencode_embedded_backend_does_not_resolve_deno() {
+    let scratch = Scratch::new();
+    let output = output_within(
+        opencode(
+            &scratch,
+            "integrations/opencode/demo/workflow.ts",
+            &["run", "--model", "codemode-demo/scripted"],
+        )
+        .env("CODEMODE_OC_BACKEND", "embedded-v8")
+        .env("CODEMODE_OC_DENO", "/codemode-test-no-deno/deno")
+        .arg("Run the embedded backend workflow.")
+        .stdin(Stdio::null()),
+        Duration::from_secs(30),
+    );
+    assert!(output.status.success(), "{output:?}");
+    let trace = scratch.json("trace.json");
+    assert_eq!(trace["status"], "success", "{trace}");
+    assert_eq!(trace["backend"], "embedded_v8");
+    assert_eq!(trace["output"]["stock"], json!([3, 0]));
+}

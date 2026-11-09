@@ -27,12 +27,14 @@
  */
 import { renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import type { ToolContext as OpenCodeToolContext, ToolDefinition } from "@opencode-ai/plugin";
 import {
   type BridgeCall,
   findExecutable,
   type HostFact,
   type HostReply,
   positive,
+  parseBackend,
   type RunReport,
   runBridge,
   summarize,
@@ -42,28 +44,16 @@ const TOOL = "rust_codemode";
 /** Permission key prefix for guest calls: `codemode_lookup` gates the `lookup` host tool. */
 const PERMISSION_PREFIX = "codemode_";
 
-/** The subset of OpenCode 1.19.5's plugin `ToolContext` this adapter uses. */
-export interface ToolContext {
-  sessionID: string;
-  messageID: string;
-  agent: string;
-  directory: string;
-  worktree: string;
-  abort: AbortSignal;
-  callID?: string;
-  metadata(input: { title?: string; metadata?: Record<string, unknown> }): void;
-  ask(input: { permission: string; patterns: string[]; always: string[]; metadata: Record<string, unknown> }): Promise<void>;
-  [key: string]: unknown;
-}
+/** OpenCode 1.19.5's context; callID is optional metadata on some hosts. */
+export type ToolContext = OpenCodeToolContext & { callID?: string };
 
 /**
- * An OpenCode custom tool definition, as returned by `tool()` from `@opencode-ai/plugin`.
- * As for OpenCode's own plugin tools, arguments are not validated before `execute`.
+ * OpenCode custom tool, using the runtime's legacy JSON-schema args support.
+ * Its published ToolDefinition types accept only Zod args; execute and context
+ * come from the real pinned package. The offline host checks cover legacy args.
  */
-export interface HostTool {
-  description: string;
+export interface HostTool extends Omit<ToolDefinition, "args"> {
   args: Record<string, unknown>;
-  execute(args: any, context: ToolContext): Promise<string | { output: string; title?: string; metadata?: unknown }>;
 }
 
 export interface CodemodeOptions {
@@ -73,6 +63,8 @@ export interface CodemodeOptions {
   bin?: string;
   /** Deno executable for the guest (default: `deno` on PATH). */
   deno?: string;
+  /** Program engine (default deno); embedded-v8 requires a binary built with that feature. */
+  backend?: "deno" | "embedded-v8";
   /** Run deadline in milliseconds, including time waiting for approvals (default 30000). */
   timeoutMs?: number;
   /** Maximum concurrent host calls (default 4). */
@@ -81,6 +73,10 @@ export interface CodemodeOptions {
   maxCalls?: number;
   /** Write each run's full JSON report to this file, relative to the session directory. */
   trace?: string;
+}
+
+function isArguments(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function message(error: unknown): string {
@@ -118,11 +114,12 @@ function describe(allowed: readonly string[]): string {
 export function codemode(options: CodemodeOptions) {
   const tools = new Map(Object.entries(options.tools));
   const allowed = [...tools.keys()];
+  const backend = parseBackend(options.backend ?? "deno");
   const timeoutMs = positive("timeoutMs", options.timeoutMs ?? 30_000);
   const concurrency = positive("concurrency", options.concurrency ?? 4);
   const maxCalls = positive("maxCalls", options.maxCalls ?? 32);
 
-  return async (input: { directory: string }) => ({
+  return async (input: { directory: string }): Promise<{ tool: Record<string, HostTool> }> => ({
     tool: {
       [TOOL]: {
         description: describe(allowed),
@@ -144,6 +141,9 @@ export function codemode(options: CodemodeOptions) {
               error: { code: "permission_rejected", message: "an earlier approval in this run was rejected" },
             });
             if (rejection !== undefined) return refused();
+            if (!isArguments(call.arguments)) {
+              return { ok: false, error: { code: "invalid_arguments", message: "OpenCode tool arguments must be a JSON object" } };
+            }
             report("permission_requested");
             try {
               await untilAborted(
@@ -172,11 +172,12 @@ export function codemode(options: CodemodeOptions) {
             report("permission_granted");
             if (rejection !== undefined) return refused();
             report("executor_started");
-            const result = await tools.get(call.tool)!.execute(call.arguments, {
+            const callContext: ToolContext = {
               ...context,
               abort: signal,
               callID: `${context.callID ?? TOOL}/${call.id}`,
-            });
+            };
+            const result = await tools.get(call.tool)!.execute(call.arguments, callContext);
             return { ok: true, value: typeof result === "string" ? result : result.output };
           };
 
@@ -184,7 +185,8 @@ export function codemode(options: CodemodeOptions) {
           try {
             report = await runBridge({
               bin: findExecutable(options.bin ?? "codemode", cwd),
-              deno: findExecutable(options.deno ?? "deno", cwd),
+              backend,
+              deno: backend === "deno" ? findExecutable(options.deno ?? "deno", cwd) : undefined,
               cwd,
               code: args.code,
               tools: allowed,

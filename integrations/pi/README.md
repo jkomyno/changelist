@@ -3,6 +3,11 @@
 A Pi extension that runs agent-written TypeScript through `codemode bridge` and
 executes its tool calls as Pi nested tool calls. Verified with Pi 1.4.0.
 
+Program execution defaults to Deno. Select `--codemode-backend embedded-v8` to
+use a binary built with `--features embedded-v8`; this selection does not look
+up or require Deno. `--codemode-deno` applies only to the default Deno backend.
+`rust_codemode_plan` uses native Rust execution and requires neither engine.
+
 ```text
 Pi model ── rust_codemode {code} ──► extension ── start ──► codemode bridge ──► Deno guest
                                        ▲    │                  (Rust limits,       │

@@ -36,6 +36,7 @@ import {
   type PlanScope,
   type ProviderDeclaration,
   positive,
+  parseBackend,
   type ReconcileRequest,
   type Authorized,
   type Reconciled,
@@ -130,9 +131,11 @@ async function runPi(
     return typeof value === "string" && value !== "" ? value : fallback;
   };
   const { allowed, unavailable } = authorizedTools(flag("codemode-tools", ""), ctx.tools);
+  const backend = parseBackend(flag("codemode-backend", "deno"));
   const report = await runBridge({
     bin: findExecutable(flag("codemode-bin", "codemode"), ctx.cwd),
-    deno: findExecutable(flag("codemode-deno", "deno"), ctx.cwd),
+    backend,
+    deno: backend === "deno" ? findExecutable(flag("codemode-deno", "deno"), ctx.cwd) : undefined,
     cwd: ctx.cwd,
     code,
     tools: allowed,
@@ -274,6 +277,7 @@ function summarizePlan(outcome: PlanOutcome, diagnostic: string | undefined): Re
 
 export default function codemodeBridge(pi: ExtensionAPI) {
   pi.registerFlag("codemode-bin", { type: "string", description: "codemode executable (default: codemode on PATH)" });
+  pi.registerFlag("codemode-backend", { type: "string", description: "Program engine: deno (default) or embedded-v8" });
   pi.registerFlag("codemode-deno", { type: "string", description: "Deno executable for the guest (default: deno on PATH)" });
   pi.registerFlag("codemode-tools", {
     type: "string",
