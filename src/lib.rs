@@ -9,9 +9,13 @@
 //! [`run`] takes any [`ToolProvider`]. [`serve_bridge`] supplies one whose calls
 //! are executed by a parent host, such as an agent extension, over a versioned
 //! stdio protocol; the host keeps its permissions, approvals, and credentials.
+//!
+//! [`fixture`] is an offline issue tracker with its own side-effect ledger, for
+//! demos, tests, and baselines of recoverable operations.
 
 mod bridge;
 mod executor;
+pub mod fixture;
 mod inspect;
 mod journal;
 mod plan;
