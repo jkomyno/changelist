@@ -55,9 +55,13 @@ jobs:
             echo 'run=true' >> "$GITHUB_OUTPUT"
           else
             git diff --name-only "$BASE_SHA" "$GITHUB_SHA" > "$RUNNER_TEMP/codemode-changed-paths"
-            if rg -q '^(src/|integrations/|tests/|scripts/|Cargo\.(toml|lock)$|mise\.toml$|package(-lock)?\.json$|tsconfig.*\.json$|\.github/workflows/ci\.yml$)' "$RUNNER_TEMP/codemode-changed-paths"; then
-              echo 'run=true' >> "$GITHUB_OUTPUT"
-            fi
+            while IFS= read -r path; do
+              case "$path" in
+                src/*|integrations/*|tests/*|scripts/*|Cargo.toml|Cargo.lock|mise.toml|package.json|package-lock.json|tsconfig*.json|.github/workflows/ci.yml)
+                  echo 'run=true' >> "$GITHUB_OUTPUT"
+                  break ;;
+              esac
+            done < "$RUNNER_TEMP/codemode-changed-paths"
           fi
       - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
         if: steps.scope.outputs.run == 'true'
