@@ -56,7 +56,7 @@ use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::bridge::{BRIDGE_FRAME_BYTES, Outbound, present, write_frames};
+use crate::bridge::{BRIDGE_FRAME_BYTES, Outbound, encode, present, write_frames};
 use crate::executor::{SessionError, SessionOptions, SessionOutcome, run_session};
 use crate::journal::Journal;
 use crate::plan::{Operation, Scope};
@@ -183,12 +183,6 @@ enum BridgeFrame<'a> {
     Error {
         message: &'a str,
     },
-}
-
-fn encode(frame: &BridgeFrame<'_>) -> io::Result<Vec<u8>> {
-    let mut bytes = serde_json::to_vec(frame).map_err(io::Error::other)?;
-    bytes.push(b'\n');
-    Ok(bytes)
 }
 
 /// Where to deliver the host's answer to one request.

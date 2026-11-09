@@ -174,7 +174,8 @@ pub(crate) enum Outbound {
     Last(Vec<u8>),
 }
 
-fn encode(frame: &BridgeFrame<'_>) -> io::Result<Vec<u8>> {
+/// One LF-terminated JSON frame.
+pub(crate) fn encode(frame: &impl Serialize) -> io::Result<Vec<u8>> {
     let mut bytes = serde_json::to_vec(frame).map_err(io::Error::other)?;
     bytes.push(b'\n');
     Ok(bytes)

@@ -12,9 +12,13 @@ use std::fmt::Write as _;
 use serde::Serialize;
 
 use crate::executor::assess_history;
+use crate::inspect::sanitize;
 use crate::journal::{History, Journal, JournalError};
 use crate::plan::Digest;
 use crate::recovery::{Approval, Basis, Conclusion, FailureEffect, NextStep, Observed, Resolution};
+
+/// Characters of a message, evidence, or note printed before truncation.
+const MAX_TEXT_CHARS: usize = 300;
 
 /// What [`inspect_journal`] includes.
 #[derive(Debug, Clone, Copy, Default)]
@@ -372,7 +376,11 @@ fn build(
             scopes,
         },
         approval: history.approvals.last().map(|approval| ApprovalSummary {
-            approval: approval.clone(),
+            // A reviewer note is private text, like an error message.
+            approval: Approval {
+                note: approval.note.clone().filter(|_| options.messages),
+                ..approval.clone()
+            },
             approvals: history.approvals.len(),
         }),
         sessions,
@@ -554,7 +562,7 @@ impl JournalInspection {
                     let _ = write!(out, ", {bytes} B result");
                 }
                 if let Some(message) = &attempt.message {
-                    let _ = write!(out, ": {}", sanitize(message));
+                    let _ = write!(out, ": {}", sanitize(message, MAX_TEXT_CHARS));
                 }
                 lines.push((attempt.ordinal, out));
             }
@@ -565,7 +573,7 @@ impl JournalInspection {
                     "  reconciled in session {}: {} - {} ({} ms)",
                     probe.session,
                     probe.verdict,
-                    sanitize(&probe.evidence),
+                    sanitize(&probe.evidence, MAX_TEXT_CHARS),
                     probe.elapsed_ms
                 );
                 lines.push((probe.ordinal, out));
@@ -575,7 +583,7 @@ impl JournalInspection {
                 let note = review
                     .note
                     .as_ref()
-                    .map(|note| format!(": {}", sanitize(note)))
+                    .map(|note| format!(": {}", sanitize(note, MAX_TEXT_CHARS)))
                     .unwrap_or_default();
                 let _ = write!(
                     out,
@@ -608,7 +616,7 @@ impl JournalInspection {
             .collect();
         let _ = writeln!(
             out,
-            "applied by us ({}): {}",
+            "applied: the provider confirmed our operation ({}): {}",
             changed.len(),
             names(&changed)
         );
@@ -668,11 +676,4 @@ fn names(operations: &[&OperationReport]) -> String {
         .map(|operation| operation.operation.as_str())
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-fn sanitize(text: &str) -> String {
-    text.chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .take(300)
-        .collect()
 }

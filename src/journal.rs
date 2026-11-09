@@ -418,6 +418,28 @@ pub(crate) fn bounded_observation(observed: Observed) -> Observed {
 impl Journal {
     /// Create a journal for `plan` at `path`, which must not exist.
     ///
+    /// # Examples
+    ///
+    /// ```
+    /// use codemode::{Durability, Journal, Plan, SessionKind};
+    ///
+    /// let plan = Plan::parse(r#"{"version": 1, "operations": [
+    ///   {"id": "label-101", "tool": "issues.add_label",
+    ///    "scope": {"provider": "fixture.issues", "account": "triage-bot"},
+    ///    "arguments": {"issue": 101, "label": "triage"}}]}"#)?;
+    /// let path = std::env::temp_dir().join(format!("codemode-doc-{}.db", std::process::id()));
+    /// # let _ = std::fs::remove_file(&path);
+    /// let mut journal = Journal::create(&path, &plan, Durability::Process)?;
+    /// let session = journal.begin_session(SessionKind::Run)?;
+    /// journal.record_intent("key-1", "label-101", 1, session, None)?;
+    /// // The attempt has an intent and no observation: its outcome is unknown.
+    /// assert!(journal.history()?.attempts[0].observation.is_none());
+    /// # drop(journal);
+    /// # std::fs::remove_file(&path)?;
+    /// # let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
     /// # Errors
     /// Returns [`JournalError::Exists`] if the file exists, or a storage error.
     pub fn create(

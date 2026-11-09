@@ -248,7 +248,9 @@ fn check(flags: Flags) -> Result<u8, Box<dyn Error>> {
         .map(|path| read_declaration(&PathBuf::from(path)))
         .transpose()?;
     if let Some(declaration) = &declaration {
-        declaration.admits(&plan).map_err(CliError)?;
+        declaration
+            .admits(&plan)
+            .map_err(|error| CliError(error.to_string()))?;
     }
     if flags.has("--json") {
         let operations: Vec<_> = plan
@@ -335,7 +337,9 @@ fn approve(flags: Flags) -> Result<u8, Box<dyn Error>> {
         ))
         .into());
     }
-    declaration.admits(&plan).map_err(CliError)?;
+    declaration
+        .admits(&plan)
+        .map_err(|error| CliError(error.to_string()))?;
     let defaults = RecoveryPolicy::default();
     let policy = RecoveryPolicy {
         concurrency: flags.number("--concurrency", defaults.concurrency)?,
@@ -345,7 +349,9 @@ fn approve(flags: Flags) -> Result<u8, Box<dyn Error>> {
         probe_timeout_ms: flags.number("--probe-timeout-ms", defaults.probe_timeout_ms)?,
         session_timeout_ms: flags.number("--session-timeout-ms", defaults.session_timeout_ms)?,
     };
-    policy.validate().map_err(CliError)?;
+    policy
+        .validate()
+        .map_err(|error| CliError(error.to_string()))?;
     let durability = flags.durability()?;
     let mut journal = if journal_path.exists() {
         Journal::open(&journal_path, durability)?

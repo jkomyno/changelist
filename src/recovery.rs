@@ -68,21 +68,24 @@ impl ProviderDeclaration {
     /// same account, and a declared tool.
     ///
     /// # Errors
-    /// Returns a message naming the first operation that does not match.
-    pub fn admits(&self, plan: &FrozenPlan) -> Result<(), String> {
+    /// Returns a [`DeclarationError`] naming the first operation that does not match.
+    pub fn admits(&self, plan: &FrozenPlan) -> Result<(), DeclarationError> {
         for operation in &plan.plan().operations {
             let scope = &operation.scope;
             if scope.provider != self.provider || scope.account != self.account {
-                return Err(format!(
-                    "operation {} is scoped to {}, but the provider acts as {}/{}",
-                    operation.id, scope, self.provider, self.account
-                ));
+                return Err(DeclarationError::OtherScope {
+                    operation: operation.id.clone(),
+                    scope: scope.to_string(),
+                    provider: self.provider.clone(),
+                    account: self.account.clone(),
+                });
             }
             if !self.contracts.contains_key(&operation.tool) {
-                return Err(format!(
-                    "operation {} uses tool {}, which provider {} does not declare",
-                    operation.id, operation.tool, self.provider
-                ));
+                return Err(DeclarationError::UndeclaredTool {
+                    operation: operation.id.clone(),
+                    tool: operation.tool.clone(),
+                    provider: self.provider.clone(),
+                });
             }
         }
         Ok(())
@@ -146,8 +149,8 @@ impl RecoveryPolicy {
     /// Check that every budget and deadline is positive.
     ///
     /// # Errors
-    /// Returns a message naming the first invalid field.
-    pub fn validate(&self) -> Result<(), String> {
+    /// Returns a [`PolicyError`] naming the first field that is zero.
+    pub fn validate(&self) -> Result<(), PolicyError> {
         let fields = [
             ("concurrency", self.concurrency as u64),
             ("max_attempts", u64::from(self.max_attempts)),
@@ -157,11 +160,77 @@ impl RecoveryPolicy {
             ("session_timeout_ms", self.session_timeout_ms),
         ];
         match fields.iter().find(|(_, value)| *value == 0) {
-            Some((name, _)) => Err(format!("{name} must be positive")),
+            Some((field, _)) => Err(PolicyError { field }),
             None => Ok(()),
         }
     }
 }
+
+/// Why a provider declaration cannot run a plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeclarationError {
+    /// An operation is scoped to another provider or account.
+    OtherScope {
+        /// The operation's identity.
+        operation: String,
+        /// The operation's scope, as `provider/account on destination`.
+        scope: String,
+        /// The provider the declaration names.
+        provider: String,
+        /// The account the provider acts as.
+        account: String,
+    },
+    /// An operation uses a tool the provider does not declare.
+    UndeclaredTool {
+        /// The operation's identity.
+        operation: String,
+        /// The undeclared tool.
+        tool: String,
+        /// The provider the declaration names.
+        provider: String,
+    },
+}
+
+impl fmt::Display for DeclarationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OtherScope {
+                operation,
+                scope,
+                provider,
+                account,
+            } => write!(
+                formatter,
+                "operation {operation} is scoped to {scope}, but the provider acts as {provider}/{account}"
+            ),
+            Self::UndeclaredTool {
+                operation,
+                tool,
+                provider,
+            } => write!(
+                formatter,
+                "operation {operation} uses tool {tool}, which provider {provider} does not declare"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DeclarationError {}
+
+/// A policy field that must be positive is zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PolicyError {
+    /// The field's name, as serialized.
+    pub field: &'static str,
+}
+
+impl fmt::Display for PolicyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{} must be positive", self.field)
+    }
+}
+
+impl std::error::Error for PolicyError {}
 
 /// A person's approval of one frozen plan, provider declaration, and policy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

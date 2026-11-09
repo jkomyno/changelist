@@ -29,7 +29,7 @@ mod runtime;
 pub use bridge::{BRIDGE_FRAME_BYTES, BRIDGE_PROTOCOL_VERSION, BridgeError, serve_bridge};
 pub use executor::{
     OperationStatus, SessionError, SessionOptions, SessionOutcome, SessionTiming, assess_history,
-    run_session,
+    dispatcher_program, run_session,
 };
 pub use inspect::{
     CallRow, CallTiming, Calls, Evidence, InspectOptions, Inspection, Phase, Reconcile,
@@ -50,10 +50,10 @@ pub use plan_inspect::{
     PlanSummary, ProbeLine, ReviewLine, SessionSummary, inspect_journal,
 };
 pub use recovery::{
-    Approval, Assessment, Attempt, AttemptError, Basis, Conclusion, Fact, FailureEffect, NextStep,
-    Observed, ProbeContext, ProviderDeclaration, ReconcileMethod, Reconciliation,
-    RecoverableProvider, RecoveryContract, RecoveryPolicy, RepeatSafety, Resolution, Verdict,
-    approval_binding, assess,
+    Approval, Assessment, Attempt, AttemptError, Basis, Conclusion, DeclarationError, Fact,
+    FailureEffect, NextStep, Observed, PolicyError, ProbeContext, ProviderDeclaration,
+    ReconcileMethod, Reconciliation, RecoverableProvider, RecoveryContract, RecoveryPolicy,
+    RepeatSafety, Resolution, Verdict, approval_binding, assess,
 };
 pub use runtime::{
     BridgeTotals, ByteTotals, CallContext, CallOutcome, CallRecord, ClockInfo, DispatchPolicy,

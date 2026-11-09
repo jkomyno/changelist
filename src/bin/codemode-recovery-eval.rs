@@ -306,21 +306,6 @@ fn ledger_counts(ledger: &Ledger) -> (u64, u64) {
     (duplicates, repeats.saturating_sub(duplicates))
 }
 
-/// The same trusted program shape as codemode's dispatcher: it names operations
-/// only, and all calls are submitted together.
-fn dispatcher(operations: &[Operation]) -> String {
-    let list: Vec<Value> = operations
-        .iter()
-        .map(|operation| json!([operation.id, operation.tool]))
-        .collect();
-    format!(
-        "const operations = {};\n\
-         const settled = await Promise.allSettled(operations.map(([operation, tool]) => tools.call(tool, {{ operation }})));\n\
-         return {{ offered: settled.length, failed: settled.filter((result) => result.status === \"rejected\").length }};\n",
-        Value::Array(list)
-    )
-}
-
 /// Sends each named operation to the fixture with a fresh attempt key and no
 /// journal: no intent, no observation, no reconciliation.
 struct PlainProvider {
@@ -366,7 +351,11 @@ async fn runtime_run(
     number: u32,
     deno: &Path,
 ) -> Result<RunReport, Box<dyn Error>> {
-    let code = dispatcher(&operations);
+    let code = codemode::dispatcher_program(
+        operations
+            .iter()
+            .map(|operation| (operation.id.as_str(), operation.tool.as_str())),
+    );
     let tools: BTreeSet<String> = operations.iter().map(|op| op.tool.clone()).collect();
     let config = RunConfig {
         timeout_ms: RUN_TIMEOUT_MS,

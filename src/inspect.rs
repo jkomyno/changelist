@@ -737,7 +737,7 @@ fn shape(value: &Value) -> String {
 }
 
 /// One line of at most `max` characters with control characters replaced.
-fn sanitize(text: &str, max: usize) -> String {
+pub(crate) fn sanitize(text: &str, max: usize) -> String {
     let mut out: String = text
         .chars()
         .take(max)

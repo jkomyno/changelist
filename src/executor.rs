@@ -479,9 +479,12 @@ fn check_approval(
     let Some(approval) = history.approvals.last() else {
         return Err("the plan has not been approved".into());
     };
-    approval.policy.validate()?;
+    approval
+        .policy
+        .validate()
+        .map_err(|error| error.to_string())?;
     let current = provider.declaration();
-    current.admits(plan)?;
+    current.admits(plan).map_err(|error| error.to_string())?;
     let current = current.for_plan(plan);
     let approved = &approval.declaration;
     if current.provider != approved.provider || current.account != approved.account {
@@ -613,12 +616,24 @@ async fn probe<P: RecoverableProvider>(
     Ok(probed)
 }
 
-/// The trusted program that offers each operation to the runtime's scheduler.
-/// It names operations only; their arguments never pass through the guest.
-fn dispatcher(operations: &[(Operation, u32)]) -> String {
+/// The trusted program a session runs to offer operations to the runtime's
+/// scheduler, given each operation's identity and tool, in order.
+///
+/// It names operations only; their arguments never pass through the guest, and
+/// all calls are submitted together so the rolling scheduler sees them at once.
+///
+/// # Examples
+///
+/// ```
+/// let program = codemode::dispatcher_program([("label-101", "issues.add_label")]);
+/// assert!(program.contains(r#"["label-101","issues.add_label"]"#));
+/// ```
+pub fn dispatcher_program<'op>(
+    operations: impl IntoIterator<Item = (&'op str, &'op str)>,
+) -> String {
     let list: Vec<Value> = operations
-        .iter()
-        .map(|(operation, _)| json!([operation.id, operation.tool]))
+        .into_iter()
+        .map(|(operation, tool)| json!([operation, tool]))
         .collect();
     format!(
         "const operations = {};\n\
@@ -637,7 +652,11 @@ async fn dispatch_run<P: RecoverableProvider>(
     options: &SessionOptions,
     cancellation: &RunCancellation,
 ) -> Result<RunReport, RunError> {
-    let code = dispatcher(&operations);
+    let code = dispatcher_program(
+        operations
+            .iter()
+            .map(|(operation, _)| (operation.id.as_str(), operation.tool.as_str())),
+    );
     let tools: BTreeSet<String> = operations
         .iter()
         .map(|(operation, _)| operation.tool.clone())

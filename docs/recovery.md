@@ -235,15 +235,18 @@ journal, or startup errors.
 - **What was attempted and observed?** Sessions (including ones that never
   recorded an end, such as a killed executor), and per operation its attempts,
   probes, and reviews in journal order, with trace call identities.
-- **What changed or is currently satisfied?** Operations applied by us, and
-  operations satisfied with unknown attribution.
+- **What changed or is currently satisfied?** Operations the provider
+  confirmed it executed for us, and operations satisfied with unknown
+  attribution. `applied` means the provider executed our operation; under set
+  semantics it may have found the state already as requested, which the
+  provider's result (and, for the fixture, its ledger) shows.
 - **What remains uncertain?** Unknown operations.
 - **What can safely happen next, and why?** Each remaining operation's next step
   and the reason.
 
 It prints tools, argument keys, error codes, verdicts, and provider evidence, but
-not argument values, results, error messages, or review notes unless
-`--messages` is given. `--json` returns the same answers as one object.
+not argument values, results, error messages, or approval and review notes
+unless `--messages` is given. `--json` returns the same answers as one object.
 
 ## Host integration
 
