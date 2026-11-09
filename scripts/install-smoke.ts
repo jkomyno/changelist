@@ -24,9 +24,12 @@ const report = await runBridge({
   async execute(call) { return { ok: true, value: { tool: call.tool, arguments: call.arguments } }; },
 });
 assert(report.status === "success" && report.calls.length === 1, "installed shared adapter failed");
-assert(JSON.stringify(report.output) === JSON.stringify({
-  tool: "installed.echo", arguments: { message: "outside-checkout" },
-}), "installed host returned an unexpected value");
+const output = report.output;
+assert(typeof output === "object" && output !== null && "tool" in output && output.tool === "installed.echo"
+  && "arguments" in output, "installed host returned an unexpected value");
+const args = output.arguments;
+assert(typeof args === "object" && args !== null && "message" in args && args.message === "outside-checkout",
+  "installed host returned unexpected arguments");
 await Deno.writeTextFile("trace.json", JSON.stringify(report));
 await Deno.writeTextFile("trace-inspection.txt", await command(bin, ["inspect", "trace.json"]));
 
