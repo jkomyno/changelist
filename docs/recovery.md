@@ -269,9 +269,15 @@ with the intent and observation commits. Scheduler requests name operation
 identities only; the wrapper returns small `{operation, attempt}` receipts.
 No program is generated or guest process started.
 
-Cancellation (Ctrl-C, SIGTERM) stops new dispatches; attempts already sent stay
-unknown. `run` refuses a journal that already has sessions; `resume` reconciles
-and continues. Exit status: 0 everything applied or satisfied, 3 work remains
+Cancellation (Ctrl-C, SIGTERM) interrupts authorization and reconciliation as
+well as dispatch, even when a yielding provider ignores the signal. Rust stops
+new scope checks, probes, and dispatches, then aborts and joins active probe
+tasks before returning an `interrupted` session. Recorded probe starts stay
+unanswered and count against the approved budget across resumes. Dropping a read
+future does not prove that its remote request never happened; it supplies no
+new evidence about an uncertain operation. Attempts already sent stay unknown
+unless an observation has settled them. `run` refuses a journal that already has
+sessions; `resume` reconciles and continues. Exit status: 0 everything applied or satisfied, 3 work remains
 (review or another resume), 4 refused, 124 deadline, 130 cancelled, 2 usage,
 journal, or startup errors.
 

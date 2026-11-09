@@ -87,7 +87,7 @@ pub struct SessionOutcome {
     /// Why a session was refused or interrupted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    /// Operations probed in this session.
+    /// Operations charged for a probe in this session, including unanswered probes.
     pub probed: usize,
     /// Attempts this session recorded an intent for: dispatched, or withdrawn
     /// after the intent and before the provider saw them.
@@ -309,7 +309,8 @@ async fn after_queued_writes<T: Send + 'static>(
 /// approval matches the current plan, provider declaration, and policy, or a
 /// scope is not authorized now; [`SessionError::AlreadyStarted`] for `run` on a
 /// journal with sessions; and journal or runtime failures. A dispatch run that
-/// ends early, for example on cancellation, returns an `interrupted` outcome.
+/// ends early, or cancellation during authorization or reconciliation, returns an
+/// `interrupted` outcome.
 pub async fn run_session<P: RecoverableProvider>(
     journal: Journal,
     provider: P,
@@ -332,8 +333,9 @@ pub async fn run_session<P: RecoverableProvider>(
         Err(reason) => return refuse(&journal, session, reason).await,
     };
     let policy = approval.policy;
-    if let Err(reason) = authorize(&plan, provider.as_ref(), &policy, &cancellation).await {
-        return refuse(&journal, session, reason).await;
+    match authorize(&plan, provider.as_ref(), &policy, &cancellation).await {
+        Err(AuthorizationError::Refused(reason)) => return refuse(&journal, session, reason).await,
+        Ok(()) | Err(AuthorizationError::Cancelled) => {}
     }
     let checks_ms = millis(started.elapsed());
 
@@ -358,7 +360,7 @@ pub async fn run_session<P: RecoverableProvider>(
     .await?;
     let reconcile_ms = millis(reconcile_started.elapsed());
 
-    // Probes are the only facts written since the first read.
+    // Include unanswered probe starts: cancellation does not refund their budget.
     let history = if probed.is_empty() {
         history
     } else {
@@ -440,7 +442,13 @@ pub async fn run_session<P: RecoverableProvider>(
         None => "incomplete",
     }
     .to_string();
-    let detail = interrupted.map(|status| format!("the dispatch run ended with {status}"));
+    let detail = interrupted.map(|status| {
+        if trace.is_some() {
+            format!("the dispatch run ended with {status}")
+        } else {
+            format!("the session ended with {status} before dispatch")
+        }
+    });
     let stored = (status.clone(), detail.clone(), trace.clone());
     journaled(&journal, move |journal| {
         let (status, detail, trace) = stored;
@@ -528,13 +536,18 @@ fn check_approval(
     Ok(approval.clone())
 }
 
+enum AuthorizationError {
+    Cancelled,
+    Refused(String),
+}
+
 /// Ask the provider whether every scope the plan uses is authorized now.
 async fn authorize(
     plan: &FrozenPlan,
     provider: &impl RecoverableProvider,
     policy: &RecoveryPolicy,
     cancellation: &RunCancellation,
-) -> Result<(), String> {
+) -> Result<(), AuthorizationError> {
     let scopes: BTreeSet<_> = plan
         .plan()
         .operations
@@ -542,24 +555,32 @@ async fn authorize(
         .map(|operation| &operation.scope)
         .collect();
     for scope in scopes {
+        if cancellation.is_cancelled() {
+            return Err(AuthorizationError::Cancelled);
+        }
         let timeout = Duration::from_millis(policy.probe_timeout_ms);
         let context = ProbeContext {
             deadline: Instant::now() + timeout,
             cancellation: cancellation.clone(),
         };
-        match time::timeout(timeout, provider.authorize(scope, context)).await {
+        let outcome = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(AuthorizationError::Cancelled),
+            outcome = time::timeout(timeout, provider.authorize(scope, context)) => outcome,
+        };
+        match outcome {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
-                return Err(format!(
+                return Err(AuthorizationError::Refused(format!(
                     "the provider refused authorization for {scope} ({})",
                     machine_code(&error.code)
-                ));
+                )));
             }
             Err(_) => {
-                return Err(format!(
+                return Err(AuthorizationError::Refused(format!(
                     "authorization for {scope} did not answer within {} ms",
                     policy.probe_timeout_ms
-                ));
+                )));
             }
         }
     }
@@ -567,7 +588,8 @@ async fn authorize(
 }
 
 /// Probe each operation once, at most `policy.concurrency` at a time, and record
-/// every answer. Returns the operations probed.
+/// every answer. Returns the operations charged for a probe, including those
+/// cancelled before an answer was recorded.
 #[expect(clippy::too_many_arguments, reason = "one internal call site")]
 async fn probe<P: RecoverableProvider>(
     journal: &Shared,
@@ -603,6 +625,10 @@ async fn probe<P: RecoverableProvider>(
                 journal.record_probe_start(&operation, session, &keys)
             })
             .await?;
+            probed.insert(operation.id.clone());
+            if cancellation.is_cancelled() {
+                break;
+            }
             let provider = Arc::clone(provider);
             let timeout = Duration::from_millis(policy.probe_timeout_ms);
             let context = ProbeContext {
@@ -611,26 +637,37 @@ async fn probe<P: RecoverableProvider>(
             };
             running.spawn(async move {
                 let started = Instant::now();
-                let outcome = time::timeout(
-                    timeout,
-                    provider.reconcile(operation.clone(), keys.clone(), context),
-                )
-                .await
-                .unwrap_or_else(|_| {
-                    Err(ProviderError {
-                        code: "probe_timeout".into(),
-                        message: "the reconciliation probe did not answer in time".into(),
-                    })
-                });
-                (probe, operation.id, millis(started.elapsed()), outcome)
+                let cancellation = context.cancellation.clone();
+                let outcome = tokio::select! {
+                    biased;
+                    () = cancellation.cancelled() => return None,
+                    outcome = time::timeout(timeout, provider.reconcile(operation, keys, context)) => {
+                        outcome.unwrap_or_else(|_| {
+                            Err(ProviderError {
+                                code: "probe_timeout".into(),
+                                message: "the reconciliation probe did not answer in time".into(),
+                            })
+                        })
+                    }
+                };
+                Some((probe, millis(started.elapsed()), outcome))
             });
         }
-        let Some(result) = running.join_next().await else {
-            break;
+        let result = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => {
+                running.abort_all();
+                while running.join_next().await.is_some() {}
+                break;
+            }
+            result = running.join_next() => result,
         };
-        let (probe, operation, elapsed, outcome) =
-            result.map_err(|error| JournalError::Storage(error.to_string()))?;
-        probed.insert(operation);
+        let Some(result) = result else { break };
+        let Some((probe, elapsed, outcome)) =
+            result.map_err(|error| JournalError::Storage(error.to_string()))?
+        else {
+            continue;
+        };
         journaled(journal, move |journal| {
             journal.record_probe(probe, elapsed, &outcome, retention)
         })

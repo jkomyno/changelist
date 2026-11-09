@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use codemode::{
     Approval, Attempt, AttemptError, CallContext, Conclusion, Durability, FailureEffect, Journal,
@@ -14,6 +15,7 @@ use codemode::{
     approval_binding, run_session,
 };
 use serde_json::{Value, json};
+use tokio::sync::Notify;
 
 static SCRATCH: AtomicU64 = AtomicU64::new(0);
 
@@ -179,7 +181,12 @@ fn plan(operations: &[(&str, &str)]) -> codemode::FrozenPlan {
     Plan::parse(&json!({"version": 1, "operations": operations}).to_string()).expect("valid plan")
 }
 
-fn approve(path: &PathBuf, plan: &codemode::FrozenPlan, remote: &Remote, policy: RecoveryPolicy) {
+fn approve(
+    path: &PathBuf,
+    plan: &codemode::FrozenPlan,
+    remote: &impl RecoverableProvider,
+    policy: RecoveryPolicy,
+) {
     let mut journal = Journal::create(path, plan, Durability::Process).expect("create");
     let declaration = remote.declaration().for_plan(plan);
     journal
@@ -373,5 +380,327 @@ async fn a_second_run_is_refused_and_an_unapproved_plan_sends_nothing() {
     .expect_err("already started");
     assert!(matches!(error, SessionError::AlreadyStarted), "{error}");
     assert!(remote.requests().is_empty());
+    let _ = std::fs::remove_file(&path);
+}
+
+#[derive(Clone, Copy)]
+enum HeldPhase {
+    Authorization,
+    Reconciliation,
+}
+
+/// Yields while a read is pending, deliberately ignoring its cancellation context.
+#[derive(Clone)]
+struct HeldReads {
+    remote: Remote,
+    phase: HeldPhase,
+    entered: Arc<Notify>,
+    dropped: Arc<AtomicU64>,
+    scopes: Arc<Mutex<Vec<Scope>>>,
+    probes: Arc<Mutex<Vec<String>>>,
+}
+
+struct PendingRead(Arc<AtomicU64>);
+
+impl Drop for PendingRead {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl HeldReads {
+    fn new(remote: Remote, phase: HeldPhase) -> Self {
+        Self {
+            remote,
+            phase,
+            entered: Arc::default(),
+            dropped: Arc::default(),
+            scopes: Arc::default(),
+            probes: Arc::default(),
+        }
+    }
+
+    async fn hold(&self) {
+        let _pending = PendingRead(Arc::clone(&self.dropped));
+        self.entered.notify_one();
+        std::future::pending::<()>().await;
+    }
+}
+
+impl RecoverableProvider for HeldReads {
+    fn declaration(&self) -> ProviderDeclaration {
+        self.remote.declaration()
+    }
+
+    async fn authorize(&self, scope: &Scope, context: ProbeContext) -> Result<(), ProviderError> {
+        self.scopes.lock().unwrap().push(scope.clone());
+        if matches!(self.phase, HeldPhase::Authorization) {
+            self.hold().await;
+        }
+        self.remote.authorize(scope, context).await
+    }
+
+    async fn execute(&self, attempt: Attempt, context: CallContext) -> Result<Value, AttemptError> {
+        self.remote.execute(attempt, context).await
+    }
+
+    async fn reconcile(
+        &self,
+        operation: Operation,
+        keys: Vec<String>,
+        context: ProbeContext,
+    ) -> Result<Reconciliation, ProviderError> {
+        self.probes.lock().unwrap().push(operation.id.clone());
+        if matches!(self.phase, HeldPhase::Reconciliation) {
+            self.hold().await;
+        }
+        self.remote.reconcile(operation, keys, context).await
+    }
+}
+
+#[tokio::test]
+async fn cancellation_interrupts_authorization_without_reading_the_next_scope() {
+    let path = journal_path();
+    let plan = Plan::parse(
+        r#"{"version":1,"operations":[
+          {"id":"a","tool":"label","scope":{"provider":"test","account":"bot","destination":"a"},"arguments":{}},
+          {"id":"b","tool":"label","scope":{"provider":"test","account":"bot","destination":"b"},"arguments":{}}
+        ]}"#,
+    )
+    .expect("distinct scopes");
+    let provider = HeldReads::new(Remote::new(), HeldPhase::Authorization);
+    approve(
+        &path,
+        &plan,
+        &provider,
+        RecoveryPolicy {
+            probe_timeout_ms: 60_000,
+            ..RecoveryPolicy::default()
+        },
+    );
+    let cancellation = RunCancellation::default();
+    let session = tokio::spawn(run_session(
+        open(&path),
+        provider.clone(),
+        options(SessionKind::Run),
+        cancellation.clone(),
+    ));
+    tokio::time::timeout(Duration::from_secs(2), provider.entered.notified())
+        .await
+        .expect("authorization entered");
+    cancellation.cancel();
+    let outcome = tokio::time::timeout(Duration::from_secs(2), session)
+        .await
+        .expect("Rust cancellation must not wait for the 60-second provider timeout")
+        .expect("session task")
+        .expect("cancellation interrupts rather than refusing authorization");
+    assert_eq!(outcome.status, "interrupted");
+    assert_eq!((outcome.probed, outcome.dispatched), (0, 0));
+    assert!(outcome.trace.is_none());
+    assert_eq!(provider.scopes.lock().unwrap().len(), 1);
+    assert_eq!(provider.dropped.load(Ordering::SeqCst), 1);
+    assert!(provider.probes.lock().unwrap().is_empty());
+    assert!(provider.remote.requests().is_empty());
+
+    // A pre-cancelled resume must not even enter the first authorization.
+    let outcome = run_session(
+        open(&path),
+        provider.clone(),
+        options(SessionKind::Resume),
+        cancellation,
+    )
+    .await
+    .expect("pre-cancelled resume");
+    assert_eq!(outcome.status, "interrupted");
+    assert_eq!(provider.scopes.lock().unwrap().len(), 1);
+    let history = open(&path)
+        .history()
+        .expect("journal reopens after cancellation");
+    assert!(history.attempts.is_empty());
+    assert!(history.probes.is_empty());
+    assert_eq!(history.sessions.len(), 2);
+    assert!(
+        history
+            .sessions
+            .iter()
+            .all(|session| { session.end.as_ref().unwrap().status == "interrupted" })
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn cancellation_joins_probes_and_keeps_their_unanswered_budget_across_resumes() {
+    let path = journal_path();
+    let plan = plan(&[
+        ("a", "label"),
+        ("b", "label"),
+        ("d", "label"),
+        ("c", "label"),
+    ]);
+    let mut remote = Remote::new();
+    remote.contracts.insert(
+        "label".into(),
+        RecoveryContract {
+            repeat: RepeatSafety::Unsafe,
+            reconcile: ReconcileMethod::Receipt,
+        },
+    );
+    let provider = HeldReads::new(remote, HeldPhase::Reconciliation);
+    approve(
+        &path,
+        &plan,
+        &provider,
+        RecoveryPolicy {
+            concurrency: 2,
+            max_probes: 2,
+            probe_timeout_ms: 60_000,
+            ..RecoveryPolicy::default()
+        },
+    );
+    // Model a crash after three intents; c has never been dispatched.
+    let mut journal = open(&path);
+    let initial = journal
+        .begin_session(SessionKind::Run)
+        .expect("initial session");
+    journal
+        .record_intent("key-a", "a", 1, initial, None)
+        .expect("intent a");
+    journal
+        .record_intent("key-b", "b", 1, initial, None)
+        .expect("intent b");
+    journal
+        .record_intent("key-d", "d", 1, initial, None)
+        .expect("intent d");
+    journal
+        .end_session(initial, "interrupted", None, None)
+        .expect("initial end");
+    drop(journal);
+
+    for (round, started, total) in [(1_usize, 2, 2), (2, 2, 4), (3, 1, 5), (4, 1, 6)] {
+        let cancellation = RunCancellation::default();
+        let session = tokio::spawn(run_session(
+            open(&path),
+            provider.clone(),
+            options(SessionKind::Resume),
+            cancellation.clone(),
+        ));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while provider.probes.lock().unwrap().len() < total {
+                provider.entered.notified().await;
+            }
+        })
+        .await
+        .expect("admitted probes entered");
+        cancellation.cancel();
+        let outcome = tokio::time::timeout(Duration::from_secs(2), session)
+            .await
+            .expect("Rust cancellation must not wait for the 60-second probe timeout")
+            .expect("session task")
+            .expect("interrupted resume");
+        assert_eq!(outcome.status, "interrupted");
+        assert_eq!((outcome.probed, outcome.dispatched), (started, 0));
+        assert!(outcome.trace.is_none());
+        assert_eq!(provider.dropped.load(Ordering::SeqCst), total as u64);
+        assert!(provider.remote.requests().is_empty());
+        assert_eq!(
+            conclusions(&outcome),
+            [
+                ("a".into(), Conclusion::Unknown, NextStep::Review),
+                ("b".into(), Conclusion::Unknown, NextStep::Review),
+                (
+                    "d".into(),
+                    Conclusion::Unknown,
+                    if round <= 2 {
+                        NextStep::Reconcile
+                    } else {
+                        NextStep::Review
+                    }
+                ),
+                ("c".into(), Conclusion::Pending, NextStep::Dispatch),
+            ]
+        );
+        let history = open(&path)
+            .history()
+            .expect("journal reopens after probe cancellation");
+        assert_eq!(history.attempts.len(), 3);
+        assert_eq!(history.probes.len(), total);
+        assert!(
+            history
+                .probes
+                .iter()
+                .all(|probe| { probe.outcome.as_ref().unwrap_err().code == codemode::UNANSWERED })
+        );
+        assert_eq!(
+            history
+                .probes
+                .iter()
+                .filter(|probe| probe.operation == "a")
+                .count(),
+            round.min(2)
+        );
+        assert_eq!(
+            history
+                .probes
+                .iter()
+                .filter(|probe| probe.operation == "b")
+                .count(),
+            round.min(2)
+        );
+        assert_eq!(
+            history
+                .probes
+                .iter()
+                .filter(|probe| probe.operation == "d")
+                .count(),
+            round.saturating_sub(2)
+        );
+        assert!(
+            history
+                .probes
+                .iter()
+                .all(|probe| probe.keys == [format!("key-{}", probe.operation)])
+        );
+        assert_eq!(
+            history
+                .sessions
+                .last()
+                .unwrap()
+                .end
+                .as_ref()
+                .unwrap()
+                .status,
+            "interrupted"
+        );
+    }
+
+    // Exhausted unanswered probes stay unknown and cannot trigger more reads or retries.
+    let outcome = run_session(
+        open(&path),
+        provider.clone(),
+        options(SessionKind::Resume),
+        RunCancellation::default(),
+    )
+    .await
+    .expect("resume after probe budget exhaustion");
+    assert_eq!(outcome.status, "needs_review");
+    assert_eq!((outcome.probed, outcome.dispatched), (0, 1));
+    assert_eq!(provider.probes.lock().unwrap().len(), 6);
+    assert_eq!(provider.remote.requests(), ["c"]);
+    assert_eq!(
+        outcome.operations[0].assessment.conclusion,
+        Conclusion::Unknown
+    );
+    assert_eq!(
+        outcome.operations[1].assessment.conclusion,
+        Conclusion::Unknown
+    );
+    assert_eq!(
+        outcome.operations[2].assessment.conclusion,
+        Conclusion::Unknown
+    );
+    assert_eq!(
+        outcome.operations[3].assessment.conclusion,
+        Conclusion::Applied
+    );
     let _ = std::fs::remove_file(&path);
 }
