@@ -341,9 +341,9 @@ offline fixture provider behind the demo and tests is development-only and is
 not installed. A host such as Pi runs plan sessions over the bridge protocol (see
 [host integration](integrations.md)); a host is then the trusted provider: it
 declares the contracts, executes each operation through its own permission
-gates, and answers reconciliation probes. The Composio plan provider (GitHub
-issue labels, state reconciliation) is checked offline through the bridge and
-live only read-only. Only the host flows listed there have
+gates, and answers reconciliation probes. The Composio GitHub host (labels,
+issue state, and marked comments) is checked offline through the bridge; see
+[its guide](composio-github.md) for what ran live. Only the host flows listed there have
 been verified for plan execution; a CLI-only check does not establish recovery
 support for any other adapter.
 

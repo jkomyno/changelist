@@ -16,9 +16,10 @@ A native [Pi 1.4.0 integration](integrations/pi/README.md) uses the bridge to ru
 Pi's own tools with Pi's permission gates. An [OpenCode 1.19.5 plugin](integrations/opencode/README.md)
 gates every call through OpenCode's permission service and abort, but runs only
 host tools passed to it: OpenCode exposes no plugin API for calling its own tools.
-An optional [Composio provider](integrations/composio/README.md) runs guest calls
-as Composio tools from `composio run`, which keeps the credential in the host;
-it has passed a live, read-only check. Codex remains a target. See
+An optional [Composio GitHub host](docs/composio-github.md) investigates a
+repository with read-only Composio tools from `composio run`, which keeps the
+credential in the host, and executes the reviewed change list as a recoverable
+plan; its investigation has passed a live, read-only check. Codex remains a target. See
 [host integration](docs/integrations.md) for what each host has and has not been
 verified to do.
 
@@ -148,7 +149,7 @@ outside this runtime.
 
 ```sh
 mise run composio-demo        # offline
-mise run composio-live-check  # read-only, needs `composio login`
+COMPOSIO_GITHUB_ACCOUNT=ca_... mise run composio-live-check  # read-only, needs `composio login`
 ```
 
 ## Development

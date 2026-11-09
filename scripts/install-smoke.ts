@@ -93,4 +93,27 @@ assert(effects.length === 1, `resume repeated or lost the effect: ${effects.leng
 await Deno.writeTextFile("plan-inspection.txt", await command(bin, ["plan", "inspect", "--journal", "journal.db"]));
 await Deno.writeTextFile("native-trace.json", await command(bin, ["plan", "trace", "--journal", "journal.db", "--session", "1"]));
 await command(bin, ["inspect", "native-trace.json"]);
+// The Composio launcher runs the bundled host with the bundled binary through
+// `composio run`, under a private TMPDIR it removes afterwards. A stub stands in
+// for the Composio CLI and records what it was given.
+await Deno.mkdir("stub-bin");
+await Deno.writeTextFile("stub-bin/composio",
+  `#!/bin/sh\n{ printf '%s\\n' "$TMPDIR"; ls -ld "$TMPDIR" | cut -c1-10; printf '%s\\n' "$@"; } > '${cwd}/launcher.txt'\n`,
+  { mode: 0o755 });
+const launched = await new Deno.Command(`${installation}/bin/codemode-composio`, {
+  args: ["declare", "--account", "ca_smoke", "--repo", "acme/widgets"],
+  env: { PATH: `${cwd}/stub-bin:${Deno.env.get("PATH") ?? ""}` },
+}).output();
+assert(launched.success, "the Composio launcher failed");
+const [privateDir, mode, ...forwarded] = (await Deno.readTextFile("launcher.txt")).trimEnd().split("\n");
+assert(mode === "drwx------", `the launcher's TMPDIR is not private: ${mode}`);
+assert(JSON.stringify(forwarded) === JSON.stringify(["run", "--file", `${installation}/integrations/composio/host.ts`, "--",
+  "declare", "--account", "ca_smoke", "--repo", "acme/widgets", "--bin", bin]), `the launcher ran: ${forwarded.join(" ")}`);
+let removed = false;
+try {
+  await Deno.stat(privateDir);
+} catch {
+  removed = true;
+}
+assert(removed, "the launcher left its TMPDIR behind");
 console.log(JSON.stringify({ status: "success", installed: installation, work: cwd }));

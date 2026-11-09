@@ -14,11 +14,10 @@
     "integrations/pi/codemode-bridge.ts",
     "integrations/opencode/codemode-bridge.ts",
     "integrations/composio/host.ts",
-    "integrations/composio/plan-host.ts",
-    "integrations/composio/composio-plan-host.ts",
-    "integrations/composio/testing/offline-host.ts",
-    "integrations/composio/testing/plan-host.ts",
+    "integrations/composio/composio-host.ts",
     "integrations/composio/composio-provider.ts",
-    "integrations/composio/composio-plan.ts"
+    "integrations/composio/github-plan.ts",
+    "integrations/composio/testing/host.ts",
+    "integrations/composio/testing/fake-github.ts"
   ]
 }

@@ -6,7 +6,7 @@ exact lockfile with `npm ci --ignore-scripts` and run `npm run typecheck` (Node
 which uses Node built-ins, or by deployed adapters inside their existing hosts.
 
 The strict TypeScript check covers the shared client, Pi extension, OpenCode
-plugin, and Composio program and plan entrypoints. Pi imports the real 1.4.0
+plugin, and Composio GitHub host. Pi imports the real 1.4.0
 host APIs. OpenCode imports the real 1.19.5 context, execution, and result APIs;
 its legacy raw JSON-schema arguments remain an explicit exception to the
 published Zod-only argument type, covered by the offline host checks.

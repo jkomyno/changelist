@@ -412,6 +412,8 @@ export interface PlanBridgeRun {
   /** The approved plan's journal. */
   journal: string;
   kind: "run" | "resume";
+  /** The session deadline (`--deadline-ms`); Rust's default when omitted. */
+  deadlineMs?: number;
   /** Sent in the start frame; the session is refused unless the approval binds exactly it. */
   declaration: ProviderDeclaration;
   /** Aborting it cancels the session. */
@@ -464,7 +466,8 @@ function resultFrame(id: number, reply: PlanReply): string {
  * environment, explicit paths, and `cancel` then SIGKILL after two seconds on abort.
  */
 export async function runPlanBridge(run: PlanBridgeRun): Promise<PlanBridgeResult> {
-  const child = spawn(run.bin, ["plan", run.kind, "--journal", run.journal, "--bridge"], {
+  const deadline = run.deadlineMs === undefined ? [] : ["--deadline-ms", String(run.deadlineMs)];
+  const child = spawn(run.bin, ["plan", run.kind, "--journal", run.journal, "--bridge", ...deadline], {
     cwd: run.cwd,
     env: {},
     stdio: ["pipe", "pipe", "pipe"],

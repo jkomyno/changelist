@@ -43,20 +43,20 @@ description = "Run native OpenCode 1.19.5 integration checks"
 run = "mise exec aqua:anomalyco/opencode@1.19.5 -- cargo test --locked --all-features --test opencode -- --ignored"
 
 [tasks.composio-demo]
-description = "Run the offline Composio provider example"
+description = "Run the GitHub triage workflow offline: investigate, review, approve, run, inspect"
 run = "integrations/composio/run-demo.sh"
 
 [tasks.composio-live-check]
-description = "Run read-only Composio tools through the logged-in Composio CLI"
+description = "Live, read-only investigation of jkomyno/codemode through the logged-in Composio CLI (COMPOSIO_GITHUB_ACCOUNT=ca_...)"
 run = "integrations/composio/run-live-check.sh"
 
 [tasks.composio-plan-check]
-description = "Run the offline Composio plan host checks: lost reply, killed executor, resume"
-run = "cargo test --locked --test composio_plan"
+description = "Run the offline Composio host checks: investigation, lost replies, killed executors, resume"
+run = "cargo test --locked --all-features --test composio --test composio_plan"
 
 [tasks.composio-plan-preflight]
-description = "Read-only Composio plan preflight for one issue and label: <owner/repo> <issue> <label>"
-run = "integrations/composio/run-plan-preflight.sh"
+description = "Live, read-only preflight of a plan (COMPOSIO_GITHUB_ACCOUNT=ca_...): <owner/repo> <plan.json>"
+run = "integrations/composio/run-preflight.sh"
 
 [tasks.bench-setup]
 description = "Fetch and verify the pinned code-mode engines and build the release binary"

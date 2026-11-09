@@ -78,8 +78,8 @@ pi --extension "$INSTALL/integrations/pi/codemode-bridge.ts" \
   --codemode-bin "$INSTALL/bin/codemode" --codemode-tools read,grep,find,ls
 ```
 
-Pi's `--codemode-backend embedded-v8`, OpenCode's `backend: "embedded-v8"`,
-and Composio's `--backend embedded-v8` select the optional engine.
+Pi's `--codemode-backend embedded-v8` and OpenCode's `backend: "embedded-v8"`
+select the optional engine.
 The chosen binary must have been built with the feature. Deno remains the
 default, and unsupported engine names are refused. Native plans ignore this
 program-engine choice.
@@ -88,18 +88,20 @@ For OpenCode, import the absolute path to
 `$INSTALL/integrations/opencode/codemode-bridge.ts` in your plugin file and pass
 `bin: "$INSTALL/bin/codemode"` as an actual expanded path string, together with
 your host tools. OpenCode can only call those supplied tools. It exposes no
-plugin API for invoking its built-ins. For Composio, use the installed
-`integrations/composio/host.ts` entrypoint with `--bin` set to the
-matching binary:
+plugin API for invoking its built-ins. For Composio, the installed
+`bin/codemode-composio` launcher runs the bundled GitHub host under
+`composio run` with the matching binary (see the
+[GitHub triage guide](composio-github.md)):
 
 ```sh
-composio run --file "$INSTALL/integrations/composio/host.ts" -- \
-  --program "$PWD/my-program.ts" --tools SLUG_A,SLUG_B \
-  --bin "$INSTALL/bin/codemode" --deno "$(command -v deno)"
+"$INSTALL/bin/codemode-composio" investigate --account ca_... --repo owner/repo \
+  --program "$INSTALL/integrations/composio/examples/triage.ts" --out plan.json
 ```
 
-Composio CLI 0.6.0 temporarily copies its entrypoint next to the original, so
-that installed integration directory must remain writable by its owner.
+It points `TMPDIR` at a private directory removed on exit, because the Composio
+CLI writes each call's arguments to plaintext files there. Composio CLI 0.6.0
+temporarily copies its entrypoint next to the original, so the installed
+integration directory must remain writable by its owner.
 Account setup and host-specific options are described in the
 installed [Pi](../integrations/pi/README.md),
 [OpenCode](../integrations/opencode/README.md), and

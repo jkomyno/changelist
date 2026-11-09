@@ -19,7 +19,7 @@ plan, `codemode plan run|resume --bridge`) plus a host-specific adapter.
 | Pi 1.4.0 | Native callbacks through [`integrations/pi`](../integrations/pi/README.md): nested calls, Pi permission gates, Rust-side authorization, cancellation, and environment containment. Checked offline with a scripted model. **Plan mode** (`rust_codemode_plan`, protocol 3): an approved plan runs with every attempt passing Pi's gates through `ctx.executeTool()`; after Pi is killed with SIGKILL following a lost response, resume reconciles through a host-registered reconciler with no duplicate effect; a gate-blocked operation stays `unknown` and needs review. Fixture tools and a scripted model only. | A live model session; interactive approval prompts (`ctx.ui.confirm`) were not exercised; other Pi versions. |
 | OpenCode 1.19.5 | Plugin tool through [`integrations/opencode`](../integrations/opencode/README.md): each guest call passes OpenCode's permission service (`allow`, `deny`, `ask`; approvals granted over OpenCode's HTTP API and refused by `opencode run`, handled as a native rejection), Rust-side authorization, session abort (including during an approval wait), and environment containment. Checked offline with a scripted model. | Plan mode (recoverable plans) not checked. **Blocker:** plugins cannot call OpenCode's registered tools (built-in, plugin, or MCP), and nested calls do not reach other plugins' `tool.execute` hooks; guest calls reach only host tools passed to the adapter. A live model session; the TUI approval dialog; other OpenCode versions. |
 | Codex | Not checked, for runs or plans. | Native callbacks need a demonstrated interface for calling Codex tools back; MCP exposes our tool to Codex, not Codex's tools to us. |
-| Composio CLI 0.6.0 | Provider through [`integrations/composio`](../integrations/composio/README.md): `composio run` hosts the bridge, and guest calls execute as Composio tools through the CLI's authenticated `execute` helper. **Live, read-only:** two identity reads in parallel, a CLI-rejected invalid input, a Rust-side denial, and the CLI credential absent from the trace. **Offline:** result mapping, cancellation and unobserved executions (`unknown`), and environment containment with a fake helper; the `@composio/core` executor against a stand-in client. **Plan mode, live:** an approved single issue-label addition, a deliberately lost successful host reply, SIGKILL, and a fresh host resuming to `satisfied` through a state probe, with one journaled attempt and one GitHub label-add event; cleanup verified. See [live validation](composio-live-validation.md). | Other mutation families and receipt-based reconciliation are unverified; the CLI helper provides no receipts. **Blocker:** a live SDK run needs a project API key; the checked machine has only a CLI user key, which `@composio/core` 0.28.0 rejects. The CLI's approval flow (off for the checked account); other CLI versions. |
+| Composio CLI 0.6.0 | GitHub triage host through [`integrations/composio`](../integrations/composio/README.md): `composio run` hosts an investigation program over the bridge and serves approved plans over the plan bridge, with the CLI's authenticated `execute` helper and one pinned connected account. **Live, read-only:** investigation of `jkomyno/codemode` with the example program. **Offline:** read restrictions, signed-URL stripping, unobserved reads (`unknown`), the four write contracts, lost replies, killed executors, late effects, dry-run results, and identity drift, against a stand-in GitHub with its own ledger. **Plan mode, live:** one approved label addition with a lost reply, SIGKILL, and a resume to `satisfied`, with an earlier host; cleanup verified. See [live validation](composio-live-validation.md). | Live writes of the current four contracts are prepared but not run. The CLI's approval flow (off for the checked account); other CLI versions. A live SDK run needs a project API key. |
 
 Validate launch, framing, tool scope, failure states, approval behavior, and
 cancellation for each host/version before marking it compatible. Do not install
@@ -192,68 +192,39 @@ spent waiting for approvals.
 
 ## Composio adapter
 
-The [Composio provider](../integrations/composio/composio-provider.ts) maps one
-bridge call to one Composio tool execution by slug. Its [host script](../integrations/composio/host.ts)
-runs under `composio run`, which injects an authenticated `execute(slug, data)`
-helper and keeps the CLI credential in that process. For each run it:
+The [Composio host](../integrations/composio/README.md) runs one workflow under
+`composio run`, which injects an authenticated `execute(slug, data, { account })`
+helper and keeps the CLI credential in that process; the
+[guide](composio-github.md) walks through it. One entry,
+[`host.ts`](../integrations/composio/host.ts), has five commands, each bound to
+one connected-account id (`--account ca_...`) and one repository (`--repo`):
 
-1. authorizes exactly the slugs passed in `--tools`;
-2. starts `codemode bridge` with an empty environment and explicit executable paths;
-3. refuses non-object arguments, then runs the call with the CLI helper, which
-   starts one `composio execute` process per call;
-4. maps `successful: true` to the tool's `data` and `successful: false` to
-   `composio_tool_failed`. An execution that ends without a result is left
-   unanswered and the run cancelled, so Rust records it as `unknown`;
-5. on SIGINT, SIGTERM, or the deadline, prints the summary and exits; running calls
-   are `unknown`, because the helper cannot abort an execution.
+- `investigate` runs a program through `codemode bridge` with GitHub read tools
+  only. Rust denies every other tool; the host refuses reads of another
+  repository without calling Composio, strips signed download URLs, and maps a
+  failed read to a code without Composio's or GitHub's text. The program's
+  returned proposal becomes a plan file: the host adds each operation's scope,
+  appends a `<!-- codemode:<plan id>:<operation id> -->` marker to each comment,
+  checks every operation against the contracts, and runs `codemode plan check`.
+  The trace records result sizes, not values.
+- `declare`, `preflight`, `run`, and `resume` serve the plan through the plan
+  bridge with four contracts: add a label, remove a label, and set issue state
+  (reconciled by state), and create a comment (reconciled by its marker,
+  authored by the approved GitHub login). An `issue_state` precondition is read
+  before each attempt. Each session re-checks the connection, the GitHub login,
+  and the numeric repository id that the approval binds.
 
-`codemode bridge` treats SIGTERM like Ctrl-C on Unix: it cancels the run and
-still emits its record. `composio run` forwards signals to its process
-group, which includes the bridge.
+An unobserved execution is left unanswered and the run cancelled, so Rust records
+it as `unknown`; the CLI helper cannot abort an execution. `codemode bridge`
+treats SIGTERM like Ctrl-C on Unix, and `composio run` forwards signals to its
+process group. An `@composio/core` executor (`sdkExecutor`) forwards each call's
+abort signal; it is checked offline only. The Rust core contains nothing
+Composio-specific.
 
-An `@composio/core` executor (`sdkExecutor`) forwards each call's abort signal to
-the SDK request. The Rust core contains nothing Composio-specific.
-
-### Composio plan provider
-
-[`composio-plan.ts`](../integrations/composio/composio-plan.ts) and its
-[`plan-host.ts`](../integrations/composio/plan-host.ts) serve recoverable plan
-sessions over the plan bridge for one operation family: add one existing label
-to one GitHub issue (`GITHUB_ADD_LABELS_TO_AN_ISSUE`, tool version `20261104_00`
-observed before approval; the helper cannot pin a version at execution). The
-declaration is `repeat: unsafe`, `reconcile: state`, retention `summary/1`.
-
-- **Account and destination.** A host-owned config names one stable
-  connected-account id and an allowlist of `owner/repo`. Every helper call,
-  reads included, passes `{ account }`, which the CLI resolves or fails; it
-  never falls back to a default account. A scope with another provider,
-  account, or destination, arguments naming another repository, extra
-  arguments, more or fewer than one label, or any precondition is refused
-  before any call.
-- **Authorization** runs each session: `composio connections list` must show
-  the approved id as active and as no other connection's alias or word id (the
-  CLI resolves a selector as an active id first, then as an alias), and the
-  account must still read the repository with `triage` or `push` permission.
-  This is checked per session, not atomically with each call.
-- **Execution** first confirms the label exists (GitHub would otherwise create
-  it); this read is not atomic with the mutation. A missing label is `refused`;
-  a failed check is `not_applied` (the mutation was never sent). Any failure
-  after the mutation was handed to the CLI is `unknown`. Nothing is retried.
-- **Reconciliation** reads all of the issue's labels, 100 per page, up to ten
-  pages. Present: `satisfied`, attribution unknown. Absent: `unknown`, because an
-  earlier request may still apply, so after the probe budget the operation goes
-  to review rather than being sent again. A failed, malformed, or incomplete
-  read is a probe error.
-- **Retention.** Replies carry the host's fixed messages and evidence and a
-  projected value (`{"label_added": true}`); raw Composio results, GitHub error
-  text, and label or account details never cross the bridge.
-
-What has been verified: offline, through the real plan bridge with the
-stand-in helper (`tests/composio_plan.rs`); and live, read-only, the helper's
-account selection, the three read tools, and a wrong selector failing closed
-(`mise run composio-plan-preflight`). One scoped live label mutation and recovery
-was also verified before the native-dispatch change; see the [live record](composio-live-validation.md).
-The native path has been rechecked offline, not with an additional live write.
+What has been verified: offline, through the real bridges with a stand-in GitHub
+and its own ledger (`tests/composio.rs`, `tests/composio_plan.rs`); live,
+read-only investigation; and one scoped live label write and recovery with an
+earlier host. See the [live record](composio-live-validation.md).
 
 ## Guest protocol
 

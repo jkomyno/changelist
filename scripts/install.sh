@@ -57,6 +57,7 @@ destination="$prefix/versions/$version"
 # docs, and the installed-workflow check. Fixtures, mock tools, test harnesses,
 # demos, and checkout-only scripts are never installed.
 ASSETS='bin/codemode
+bin/codemode-composio
 integrations/README.md
 integrations/shared/bridge-client.ts
 integrations/pi/README.md
@@ -66,13 +67,14 @@ integrations/opencode/README.md
 integrations/opencode/codemode-bridge.ts
 integrations/composio/README.md
 integrations/composio/host.ts
-integrations/composio/plan-host.ts
-integrations/composio/composio-plan-host.ts
+integrations/composio/composio-host.ts
 integrations/composio/composio-provider.ts
-integrations/composio/composio-plan.ts
+integrations/composio/github-plan.ts
 integrations/composio/composio-tools.d.ts
+integrations/composio/examples/triage.ts
 types/codemode.d.ts
 docs/installation.md
+docs/composio-github.md
 docs/integrations.md
 docs/recovery.md
 scripts/install-check.sh
@@ -91,7 +93,30 @@ validate_bundle() {
     }
   done
   [ "$(cat "$bundle/REVISION")" = "$revision" ] &&
-    [ -x "$bundle/bin/codemode" ] && [ -x "$bundle/scripts/install-check.sh" ]
+    [ -x "$bundle/bin/codemode" ] && [ -x "$bundle/bin/codemode-composio" ] &&
+    [ -x "$bundle/scripts/install-check.sh" ]
+}
+# The Composio host launcher: `composio run` on the bundled host with the bundled
+# binary. The CLI writes each call's arguments to plaintext files under TMPDIR,
+# so TMPDIR points at a private directory that is removed when the run ends.
+write_launcher() {
+  cat > "$1" <<'LAUNCHER'
+#!/bin/sh
+# codemode-composio <investigate|declare|preflight|run|resume> --account <ca_...> --repo <owner/repo> ...
+set -eu
+bundle=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
+command -v composio >/dev/null || { echo 'codemode-composio needs the Composio CLI (composio) on PATH' >&2; exit 2; }
+private=$(mktemp -d "${TMPDIR:-/tmp}/codemode-composio.XXXXXX")
+chmod 700 "$private"
+trap 'rm -rf -- "$private"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+status=0
+TMPDIR=$private composio run --file "$bundle/integrations/composio/host.ts" -- "$@" --bin "$bundle/bin/codemode" || status=$?
+exit "$status"
+LAUNCHER
+  chmod 755 "$1"
 }
 if [ -e "$destination" ] || [ -L "$destination" ]; then
   validate_bundle "$destination" || {
@@ -113,6 +138,7 @@ else
     mise exec -- cargo build --release --locked --bin codemode
     mkdir "$stage/bin"
     cp target/release/codemode "$stage/bin/"
+    write_launcher "$stage/bin/codemode-composio"
     for asset in $ASSETS; do
       case "$asset" in
         bin/*) ;;
