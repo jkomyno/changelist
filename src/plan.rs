@@ -283,14 +283,40 @@ impl Plan {
     /// # Errors
     /// Returns [`PlanError`] for malformed JSON, unknown fields, an unsupported
     /// version, invalid identities or names, non-object arguments, oversized
-    /// arguments, duplicate identities, or credential-like keys.
+    /// arguments, duplicate identities, credential-like keys, or a number outside
+    /// -(2^53-1)..=2^53-1, which a JSON host such as JavaScript would round; the
+    /// error names the operation and the field.
     pub fn parse(text: &str) -> Result<FrozenPlan, PlanError> {
         if text.len() > MAX_PLAN_BYTES {
             return Err(PlanError::TooLarge);
         }
+        // Before parsing: serde_json reads an integer outside 64 bits as a rounded
+        // float, so only the text still holds the number the author wrote.
+        let inexact = inexact_number_token(text);
         let plan: Self =
             serde_json::from_str(text).map_err(|error| PlanError::Format(error.to_string()))?;
+        if let Some((path, token)) = inexact {
+            return Err(plan.inexact_number(&path, token));
+        }
         plan.freeze()
+    }
+
+    /// The refusal of `token`, found at `path` in this plan's text.
+    fn inexact_number(&self, path: &[Segment], token: &str) -> PlanError {
+        if let [Segment::Key(operations), Segment::Index(index), field @ ..] = path
+            && operations == "operations"
+            && let Some(operation) = self.operations.get(*index)
+        {
+            return PlanError::Invalid {
+                operation: if valid_id(&operation.id) {
+                    operation.id.clone()
+                } else {
+                    format!("#{index}")
+                },
+                reason: inexact_reason(token, field),
+            };
+        }
+        PlanError::Format(inexact_reason(token, path))
     }
 
     /// Validate this plan and freeze it.
@@ -395,18 +421,21 @@ impl Operation {
         {
             return Err(invalid("each precondition must be a JSON object"));
         }
-        let values = std::iter::once(&self.arguments).chain(&self.preconditions);
-        for value in values {
+        let arguments = vec![Segment::Key("arguments".into())];
+        let preconditions = self.preconditions.iter().enumerate().map(|(index, value)| {
+            let path = vec![Segment::Key("preconditions".into()), Segment::Index(index)];
+            (path, value)
+        });
+        for (mut path, value) in std::iter::once((arguments, &self.arguments)).chain(preconditions)
+        {
             if let Some(key) = credential_key(value) {
                 return Err(PlanError::CredentialLike {
                     operation: self.id.clone(),
                     key,
                 });
             }
-            if has_inexact_integer(value) {
-                return Err(invalid(
-                    "an integer is outside -(2^53-1)..=2^53-1, which a JavaScript host would round",
-                ));
+            if let Some(number) = inexact_number(value, &mut path) {
+                return Err(invalid(&inexact_reason(&number.to_string(), &path)));
             }
         }
         Ok(())
@@ -424,19 +453,164 @@ fn valid_id(id: &str) -> bool {
 /// Largest integer every JSON host carries exactly (`Number.MAX_SAFE_INTEGER`).
 const MAX_EXACT_INTEGER: u64 = (1 << 53) - 1;
 
-/// Whether `value` holds an integer a JavaScript host, such as a bridge client,
-/// would round: the host would then act on a value nobody approved.
-fn has_inexact_integer(value: &Value) -> bool {
+/// One step of a path into a plan's JSON.
+enum Segment {
+    Key(String),
+    Index(usize),
+}
+
+/// `path` as `arguments.items[2]["odd key"]`.
+fn field(path: &[Segment]) -> String {
+    let mut text = String::new();
+    for segment in path {
+        match segment {
+            Segment::Key(key)
+                if !key.is_empty()
+                    && key
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_') =>
+            {
+                if !text.is_empty() {
+                    text.push('.');
+                }
+                text.push_str(key);
+            }
+            Segment::Key(key) => text.push_str(&format!("[{key:?}]")),
+            Segment::Index(index) => text.push_str(&format!("[{index}]")),
+        }
+    }
+    text
+}
+
+fn inexact_reason(number: &str, path: &[Segment]) -> String {
+    format!(
+        "{}: {number} is outside -(2^53-1)..=2^53-1, where a JSON host such as \
+         JavaScript rounds numbers, so the provider could receive another value",
+        field(path)
+    )
+}
+
+/// Whether a JSON number token's magnitude exceeds [`MAX_EXACT_INTEGER`]. An integer
+/// token is compared exactly, and one outside 64 bits is out of range; a token with
+/// a fraction or exponent is compared after its nearest-double parse.
+fn exceeds_exact_range(token: &str) -> bool {
+    let digits = token.strip_prefix('-').unwrap_or(token);
+    if digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        // Digits that overflow u64 are out of range; no digits, as in "-", is malformed.
+        digits
+            .parse::<u64>()
+            .map_or(!digits.is_empty(), |n| n > MAX_EXACT_INTEGER)
+    } else {
+        // Malformed tokens are left to the parser.
+        token
+            .parse::<f64>()
+            .is_ok_and(|number| number.abs() > MAX_EXACT_INTEGER as f64)
+    }
+}
+
+/// The path and text of the first number token in `text` whose magnitude exceeds
+/// [`MAX_EXACT_INTEGER`], skipping string contents. Tracks only enough structure to
+/// name the field; invalid JSON is left to the parser, which runs next.
+fn inexact_number_token(text: &str) -> Option<(Vec<Segment>, &str)> {
+    enum Frame {
+        Object(Option<String>),
+        Array(usize),
+    }
+    let bytes = text.as_bytes();
+    let mut stack = Vec::new();
+    let mut expect_key = false;
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'"' => {
+                let start = at;
+                at += 1;
+                while at < bytes.len() && bytes[at] != b'"' {
+                    at += if bytes[at] == b'\\' { 2 } else { 1 };
+                }
+                at += 1;
+                if expect_key {
+                    expect_key = false;
+                    if let Some(Frame::Object(key)) = stack.last_mut() {
+                        *key = text
+                            .get(start..at)
+                            .and_then(|raw| serde_json::from_str(raw).ok());
+                    }
+                }
+                continue;
+            }
+            b'{' => {
+                stack.push(Frame::Object(None));
+                expect_key = true;
+            }
+            b'[' => stack.push(Frame::Array(0)),
+            b'}' | b']' => {
+                stack.pop();
+            }
+            b',' => match stack.last_mut() {
+                Some(Frame::Object(_)) => expect_key = true,
+                Some(Frame::Array(index)) => *index += 1,
+                None => {}
+            },
+            b'-' | b'0'..=b'9' => {
+                let start = at;
+                while at < bytes.len()
+                    && matches!(bytes[at], b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E')
+                {
+                    at += 1;
+                }
+                let token = &text[start..at];
+                if exceeds_exact_range(token) {
+                    let path = stack
+                        .iter()
+                        .map(|frame| match frame {
+                            Frame::Object(key) => Segment::Key(key.clone().unwrap_or_default()),
+                            Frame::Array(index) => Segment::Index(*index),
+                        })
+                        .collect();
+                    return Some((path, token));
+                }
+                continue;
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    None
+}
+
+/// The first number in `value` that a JavaScript host, such as a bridge client,
+/// would round, extending `path` to it: the host would then act on a value nobody
+/// approved. Covers plans built in code; [`Plan::parse`] checks the text first.
+fn inexact_number(value: &Value, path: &mut Vec<Segment>) -> Option<serde_json::Number> {
     match value {
         Value::Number(number) => {
-            number.as_u64().is_some_and(|n| n > MAX_EXACT_INTEGER)
-                || number
-                    .as_i64()
-                    .is_some_and(|n| n.unsigned_abs() > MAX_EXACT_INTEGER)
+            let exceeds = if let Some(n) = number.as_u64() {
+                n > MAX_EXACT_INTEGER
+            } else if let Some(n) = number.as_i64() {
+                n.unsigned_abs() > MAX_EXACT_INTEGER
+            } else {
+                number
+                    .as_f64()
+                    .is_some_and(|n| n.abs() > MAX_EXACT_INTEGER as f64)
+            };
+            exceeds.then(|| number.clone())
         }
-        Value::Array(items) => items.iter().any(has_inexact_integer),
-        Value::Object(map) => map.values().any(has_inexact_integer),
-        _ => false,
+        Value::Array(items) => items.iter().enumerate().find_map(|(index, item)| {
+            path.push(Segment::Index(index));
+            inexact_number(item, path).or_else(|| {
+                path.pop();
+                None
+            })
+        }),
+        Value::Object(map) => map.iter().find_map(|(key, item)| {
+            path.push(Segment::Key(key.clone()));
+            inexact_number(item, path).or_else(|| {
+                path.pop();
+                None
+            })
+        }),
+        _ => None,
     }
 }
 
@@ -512,6 +686,89 @@ mod tests {
                 "{error} should mention {expected}"
             );
         }
+    }
+
+    fn with_arguments(arguments: &str) -> String {
+        plan(&format!(
+            r#"{{"id":"big","tool":"t","scope":{{"provider":"p","account":"x"}},"arguments":{arguments},"preconditions":[{{"state":"open"}}]}}"#
+        ))
+    }
+
+    #[test]
+    fn numbers_a_json_host_would_round_are_refused_with_operation_and_field() {
+        let cases = [
+            (r#"{"n":18446744073709551616}"#, "arguments.n"),
+            (r#"{"n":-9223372036854775809}"#, "arguments.n"),
+            (r#"{"n":9007199254740992}"#, "arguments.n"),
+            (r#"{"n":-9007199254740992}"#, "arguments.n"),
+            (
+                r#"{"a\"b":"x","deep":[0,{"n":123456789012345678901234567890}]}"#,
+                "arguments.deep[1].n",
+            ),
+            (
+                r#"{"weird key":[9007199254740993.0]}"#,
+                r#"arguments["weird key"][0]"#,
+            ),
+            (r#"{"n":1e20}"#, "arguments.n"),
+        ];
+        for (arguments, field) in cases {
+            let text = with_arguments(arguments);
+            let error = Plan::parse(&text).expect_err(&text).to_string();
+            assert!(
+                error.contains("operation big") && error.contains(field),
+                "{error} should name operation big and {field}"
+            );
+        }
+        let precondition = plan(
+            r#"{"id":"big","tool":"t","scope":{"provider":"p","account":"x"},"arguments":{},"preconditions":[{"n":1},{"n":18446744073709551616}]}"#,
+        );
+        let error = Plan::parse(&precondition).expect_err("refused").to_string();
+        assert!(error.contains("preconditions[1].n"), "{error}");
+    }
+
+    #[test]
+    fn exact_numbers_and_numbers_inside_strings_are_kept() {
+        let arguments = r#"{"max":9007199254740991,"min":-9007199254740991,"text":"18446744073709551616","escaped":"\"9007199254740992\\","9007199254740992":0.5,"small":-1.25e-3,"nothing":null}"#;
+        let frozen = Plan::parse(&with_arguments(arguments)).expect("exact plan");
+        let canonical = frozen.canonical();
+        for kept in [
+            r#""max":9007199254740991"#,
+            r#""min":-9007199254740991"#,
+            r#""text":"18446744073709551616""#,
+            r#""escaped":"\"9007199254740992\\""#,
+            r#""9007199254740992":0.5"#,
+            r#""nothing":null"#,
+        ] {
+            assert!(canonical.contains(kept), "{kept} in {canonical}");
+        }
+        assert_eq!(
+            Plan::parse(canonical).expect("reopens").digest(),
+            frozen.digest()
+        );
+    }
+
+    #[test]
+    fn a_plan_frozen_in_code_cannot_hold_a_rounded_number() {
+        let plan = Plan {
+            version: PLAN_FORMAT_VERSION,
+            summary: None,
+            operations: vec![Operation {
+                id: "big".into(),
+                tool: "t".into(),
+                scope: Scope {
+                    provider: "p".into(),
+                    account: "x".into(),
+                    destination: None,
+                },
+                arguments: serde_json::json!({ "list": [1, 1.8446744073709552e19] }),
+                preconditions: Vec::new(),
+            }],
+        };
+        let error = plan.freeze().expect_err("rounded").to_string();
+        assert!(
+            error.contains("operation big") && error.contains("arguments.list[1]"),
+            "{error}"
+        );
     }
 
     #[test]

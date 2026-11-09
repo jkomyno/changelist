@@ -34,8 +34,13 @@ Usage:
                         --reviewer <name> [--note <text>]
   codemode plan trace   --journal <file> --session <n>
 
-check validates a plan and prints its digest and operations; with a provider
-declaration it also shows each tool's recovery contract. approve records an
+check validates a plan and prints its digest and every operation exactly as
+approval binds it: tool, scope, and canonical arguments and preconditions in
+full, never truncated (a plan is at most 1 MiB). With a provider declaration it
+also shows each tool's recovery contract and the retention policy; it always
+shows the default policy. --json prints the same as one object whose plan field
+is the canonical plan the digest covers. Plans hold numbers only within
+-(2^53-1)..=2^53-1, which every JSON host reads exactly. approve records an
 approval bound to the plan digest (which --digest must repeat), the provider's
 identity and contracts, and the policy. run executes an approved plan once;
 resume reconciles uncertain operations with the provider and continues the
@@ -219,26 +224,17 @@ fn check(flags: Flags) -> Result<u8, Box<dyn Error>> {
             .admits(&plan)
             .map_err(|error| CliError(error.to_string()))?;
     }
+    let declaration = declaration.map(|declaration| declaration.for_plan(&plan));
+    let policy = RecoveryPolicy::default();
     if flags.has("--json") {
-        let operations: Vec<_> = plan
-            .plan()
-            .operations
-            .iter()
-            .map(|operation| {
-                serde_json::json!({
-                    "operation": operation.id,
-                    "tool": operation.tool,
-                    "scope": operation.scope,
-                    "argument_keys": operation.arguments.as_object().map(|map| map.keys().collect::<Vec<_>>()),
-                    "preconditions": operation.preconditions.len(),
-                    "contract": declaration.as_ref().and_then(|d| d.contracts.get(&operation.tool)),
-                })
-            })
-            .collect();
+        // The canonical plan, whose bytes the digest covers.
+        let mut canonical = serde_json::to_value(plan.plan())?;
+        canonical.sort_all_objects();
         print_json(&serde_json::json!({
             "digest": plan.digest(),
-            "summary": plan.plan().summary,
-            "operations": operations,
+            "plan": canonical,
+            "declaration": declaration,
+            "default_policy": policy,
         }))?;
         return Ok(0);
     }
@@ -247,27 +243,22 @@ fn check(flags: Flags) -> Result<u8, Box<dyn Error>> {
     if let Some(summary) = &plan.plan().summary {
         out.push_str(&format!("summary: {summary:?}\n"));
     }
-    out.push_str(&format!("{} operations:\n", plan.plan().operations.len()));
+    out.push_str(&format!(
+        "{} operations, each exactly as approval binds it:\n",
+        plan.plan().operations.len()
+    ));
     for operation in &plan.plan().operations {
-        let keys: Vec<&String> = operation
-            .arguments
-            .as_object()
-            .map(|map| map.keys().collect())
-            .unwrap_or_default();
+        out.push_str(&format!("  {:?}\n", operation.id));
+        out.push_str(&format!("    tool {:?}\n", operation.tool));
+        out.push_str(&format!("    scope {}\n", review_json(&operation.scope)?));
         out.push_str(&format!(
-            "  {:?} {:?} {:?} {{{}}}",
-            operation.id,
-            operation.tool,
-            operation.scope.to_string(),
-            keys.iter()
-                .map(|key| format!("{key:?}"))
-                .collect::<Vec<_>>()
-                .join(", ")
+            "    arguments {}\n",
+            review_json(&operation.arguments)?
         ));
         if !operation.preconditions.is_empty() {
             out.push_str(&format!(
-                ", {} precondition(s)",
-                operation.preconditions.len()
+                "    preconditions {}\n",
+                review_json(&operation.preconditions)?
             ));
         }
         if let Some(contract) = declaration
@@ -276,20 +267,57 @@ fn check(flags: Flags) -> Result<u8, Box<dyn Error>> {
         {
             let value = serde_json::to_value(contract)?;
             out.push_str(&format!(
-                "; if its response is lost: reconcile by {}, repeat {}",
+                "    if its response is lost: reconcile by {}, repeat {}\n",
                 value["reconcile"].as_str().unwrap_or("?"),
                 value["repeat"].as_str().unwrap_or("?")
             ));
         }
-        out.push('\n');
     }
-    out.push_str("Arguments are not printed; read the plan file to review values.\n");
+    match &declaration {
+        Some(declaration) => out.push_str(&format!(
+            "provider {:?} as {:?}, retention {}\n",
+            declaration.provider, declaration.account, declaration.retention
+        )),
+        None => out.push_str(
+            "provider: not given; pass --provider to see the contracts and retention \
+             approval binds\n",
+        ),
+    }
+    out.push_str(&format!(
+        "default policy: concurrency {}, max-attempts {}, max-probes {} \
+         (approve's policy options change it)\n",
+        policy.concurrency, policy.max_attempts, policy.max_probes
+    ));
     out.push_str(&format!(
         "To approve exactly this plan: codemode plan approve <plan> --digest {} ...\n",
         plan.digest()
     ));
     io::stdout().write_all(out.as_bytes())?;
     Ok(0)
+}
+
+/// Canonical JSON of `value` for a terminal: keys sorted, and every character a
+/// terminal could act on (controls, bidirectional overrides) written as a JSON
+/// escape, so the line still parses to exactly the approved value.
+fn review_json(value: &impl serde::Serialize) -> Result<String, serde_json::Error> {
+    let mut value = serde_json::to_value(value)?;
+    value.sort_all_objects();
+    let mut text = String::new();
+    for character in value.to_string().chars() {
+        let printable = if character.is_ascii() {
+            !character.is_ascii_control()
+        } else {
+            character.escape_debug().next() != Some('\\')
+        };
+        if printable {
+            text.push(character);
+        } else {
+            for unit in character.encode_utf16(&mut [0; 2]) {
+                text.push_str(&format!("\\u{unit:04x}"));
+            }
+        }
+    }
+    Ok(text)
 }
 
 fn approve(flags: Flags) -> Result<u8, Box<dyn Error>> {

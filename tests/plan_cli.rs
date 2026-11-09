@@ -594,3 +594,306 @@ fn the_fixture_refuses_a_scope_it_does_not_act_as() {
     );
     assert_eq!(authorize(own), Some(1));
 }
+
+/// A provider declaration for plans whose operations use tool `t` as `host.issues/bot`.
+fn host_declaration() -> Value {
+    json!({"provider": "host.issues", "account": "bot",
+           "contracts": {"t": {"repeat": "safe", "reconcile": "receipt"}}})
+}
+
+/// A plan whose operation `id` passes `arguments`, written verbatim.
+fn host_operation(id: &str, arguments: &str) -> String {
+    format!(
+        r#"{{"id":"{id}","tool":"t","scope":{{"provider":"host.issues","account":"bot","destination":"acme/widgets"}},"arguments":{arguments}}}"#
+    )
+}
+
+fn host_plan(operations: &[String]) -> String {
+    format!(r#"{{"version":1,"operations":[{}]}}"#, operations.join(","))
+}
+
+fn check_json(plan: &Path) -> Value {
+    serde_json::from_str(&ok(CODEMODE, &["plan", "check", path(plan), "--json"]))
+        .expect("check prints JSON")
+}
+
+/// Approve `plan` with `digest` against the host declaration.
+fn approve_with(scratch: &Scratch, plan: &Path, digest: &str) -> Output {
+    std::fs::write(
+        scratch.file("provider.json"),
+        host_declaration().to_string(),
+    )
+    .expect("write declaration");
+    let journal = scratch.journal();
+    let provider = scratch.file("provider.json");
+    command(
+        CODEMODE,
+        &[
+            "plan",
+            "approve",
+            path(plan),
+            "--journal",
+            path(&journal),
+            "--provider",
+            path(&provider),
+            "--digest",
+            digest,
+            "--approver",
+            "tester",
+        ],
+    )
+    .output()
+    .expect("approve starts")
+}
+
+/// Run the approved journal through `plan run --bridge`, acting as the host, and
+/// return the raw text of every call frame the host received.
+fn run_as_host(scratch: &Scratch) -> Vec<String> {
+    use std::io::{BufRead, BufReader, Write};
+    let journal = scratch.journal();
+    let mut run = command(
+        CODEMODE,
+        &["plan", "run", "--journal", path(&journal), "--bridge"],
+    );
+    let mut child = run
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run starts");
+    let mut input = child.stdin.take().expect("stdin");
+    let frames = BufReader::new(child.stdout.take().expect("stdout"));
+    let start = json!({"type": "start", "version": 3, "declaration": host_declaration()});
+    writeln!(input, "{start}").expect("start");
+    let mut calls = Vec::new();
+    for line in frames.lines() {
+        let line = line.expect("frame");
+        let frame: Value = serde_json::from_str(&line).expect("frame is JSON");
+        let reply = match frame["type"].as_str() {
+            Some("authorize") => json!({"type": "authorized", "id": frame["id"], "ok": true}),
+            Some("call") => {
+                calls.push(line.clone());
+                json!({"type": "result", "id": frame["id"], "ok": true, "value": null})
+            }
+            Some("outcome") => break,
+            _ => panic!("unexpected frame {line}"),
+        };
+        writeln!(input, "{reply}").expect("reply");
+    }
+    drop(input);
+    let output = child.wait_with_output().expect("run exits");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    calls
+}
+
+#[test]
+fn numbers_a_json_host_would_round_are_refused_by_check() {
+    let scratch = Scratch::new();
+    let plan = scratch.file("plan.json");
+    for token in [
+        "18446744073709551616",
+        "-9223372036854775809",
+        "9007199254740992",
+    ] {
+        let text = host_plan(&[
+            host_operation("fine", r#"{"n":1}"#),
+            host_operation(
+                "big",
+                &format!(r#"{{"text":"{token}","nested":{{"n":[0,{token}]}}}}"#),
+            ),
+        ]);
+        std::fs::write(&plan, text).expect("write plan");
+        let output = command(CODEMODE, &["plan", "check", path(&plan)])
+            .output()
+            .expect("check starts");
+        assert_eq!(output.status.code(), Some(2), "{token}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("operation big")
+                && stderr.contains("arguments.nested.n[1]")
+                && stderr.contains(token),
+            "{stderr}"
+        );
+    }
+}
+
+#[test]
+fn exact_values_and_explicit_nulls_reach_the_host_unchanged() {
+    let scratch = Scratch::new();
+    let with_null = scratch.file("with-null.json");
+    let without = scratch.file("without.json");
+    std::fs::write(
+        &with_null,
+        host_plan(&[host_operation("op", r#"{"a":null,"b":1}"#)]),
+    )
+    .expect("write");
+    std::fs::write(&without, host_plan(&[host_operation("op", r#"{"b":1}"#)])).expect("write");
+    assert_ne!(
+        check_json(&with_null)["digest"],
+        check_json(&without)["digest"],
+        "an explicit null is part of the approved plan"
+    );
+
+    let plan = scratch.file("plan.json");
+    std::fs::write(
+        &plan,
+        host_plan(&[
+            host_operation(
+                "exact",
+                r#"{"max":9007199254740991,"min":-9007199254740991,"text":"18446744073709551616"}"#,
+            ),
+            host_operation("null", r#"{"a":null,"b":1}"#),
+            host_operation("absent", r#"{"b":1}"#),
+        ]),
+    )
+    .expect("write plan");
+    let digest = check_json(&plan)["digest"]
+        .as_str()
+        .expect("digest")
+        .to_string();
+    let approved = approve_with(&scratch, &plan, &digest);
+    assert!(approved.status.success(), "{approved:?}");
+    let calls = run_as_host(&scratch);
+    assert_eq!(calls.len(), 3, "{calls:?}");
+    let arguments = |operation: &str| {
+        let line = calls
+            .iter()
+            .find(|line| line.contains(&format!(r#""operation":"{operation}""#)))
+            .expect("operation called");
+        let frame: Value = serde_json::from_str(line).expect("JSON");
+        (line.clone(), frame["arguments"].clone())
+    };
+    let (line, exact) = arguments("exact");
+    assert!(
+        line.contains("9007199254740991") && line.contains("-9007199254740991"),
+        "{line}"
+    );
+    assert_eq!(
+        exact,
+        json!({"max": 9_007_199_254_740_991_u64, "min": -9_007_199_254_740_991_i64,
+               "text": "18446744073709551616"})
+    );
+    let (line, null) = arguments("null");
+    assert!(line.contains(r#""a":null"#), "{line}");
+    assert_eq!(null, json!({"a": null, "b": 1}));
+    let (_, absent) = arguments("absent");
+    assert_eq!(absent, json!({"b": 1}), "absent stays absent");
+}
+
+#[test]
+fn one_changed_character_changes_the_digest_and_refuses_the_earlier_approval() {
+    let scratch = Scratch::new();
+    let plan = scratch.file("plan.json");
+    let body = |text: &str| {
+        host_plan(&[
+            host_operation("label", r#"{"issue":7,"label":"triage"}"#),
+            host_operation("comment", &format!(r#"{{"issue":7,"body":"{text}"}}"#)),
+        ])
+    };
+    std::fs::write(&plan, body("Reproduced on main.")).expect("write plan");
+    let reviewed = check_json(&plan)["digest"]
+        .as_str()
+        .expect("digest")
+        .to_string();
+    std::fs::write(&plan, body("Reproduced on main!")).expect("edit plan");
+    let changed = check_json(&plan)["digest"]
+        .as_str()
+        .expect("digest")
+        .to_string();
+    assert_ne!(reviewed, changed);
+    let refused = approve_with(&scratch, &plan, &reviewed);
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("does not match"),
+        "{refused:?}"
+    );
+    assert!(
+        !scratch.journal().exists(),
+        "a refused approval creates nothing"
+    );
+    let approved = approve_with(&scratch, &plan, &changed);
+    assert!(approved.status.success(), "{approved:?}");
+}
+
+#[test]
+fn check_shows_every_value_approval_binds() {
+    let scratch = Scratch::new();
+    // 256 operations whose bodies bring the plan near its size limit.
+    let operations: Vec<String> = (0..codemode::MAX_OPERATIONS)
+        .map(|index| {
+            let body = format!("comment {index} ").repeat(200);
+            host_operation(
+                &format!("op-{index}"),
+                &format!(r#"{{"issue":{index},"body":"{body}","label":null}}"#),
+            )
+        })
+        .collect();
+    let text = host_plan(&operations);
+    assert!(text.len() > codemode::MAX_PLAN_BYTES / 2, "{}", text.len());
+    let plan = scratch.file("plan.json");
+    std::fs::write(&plan, &text).expect("write plan");
+    std::fs::write(
+        scratch.file("provider.json"),
+        host_declaration().to_string(),
+    )
+    .expect("write declaration");
+    let frozen = codemode::Plan::parse(&text).expect("valid plan");
+    let provider = scratch.file("provider.json");
+
+    let human = ok(
+        CODEMODE,
+        &["plan", "check", path(&plan), "--provider", path(&provider)],
+    );
+    for operation in &frozen.plan().operations {
+        let mut arguments = operation.arguments.clone();
+        arguments.sort_all_objects();
+        assert!(
+            human.contains(&format!("arguments {arguments}\n")),
+            "{} missing from the review",
+            operation.id
+        );
+    }
+    assert!(human.contains(frozen.digest().as_str()), "{human}");
+    assert!(human.contains("reconcile by receipt, repeat safe"));
+    assert!(human.contains("retention metadata/1"), "{human}");
+    assert!(
+        human.contains("concurrency 4, max-attempts 3, max-probes 3"),
+        "{human}"
+    );
+
+    let output = ok(
+        CODEMODE,
+        &[
+            "plan",
+            "check",
+            path(&plan),
+            "--provider",
+            path(&provider),
+            "--json",
+        ],
+    );
+    assert!(
+        output.len() < 2 * codemode::MAX_PLAN_BYTES,
+        "{} bytes",
+        output.len()
+    );
+    assert!(
+        output.contains(&format!(r#""plan":{}"#, frozen.canonical())),
+        "--json carries the canonical plan verbatim"
+    );
+    let checked: Value = serde_json::from_str(&output).expect("JSON");
+    assert_eq!(checked["digest"], frozen.digest().as_str());
+    let reread: codemode::Plan = serde_json::from_value(checked["plan"].clone()).expect("a plan");
+    let refrozen = reread.freeze().expect("valid");
+    assert_eq!(refrozen.canonical(), frozen.canonical());
+    assert_eq!(refrozen.digest(), frozen.digest());
+    assert_eq!(checked["declaration"]["retention"], "metadata/1");
+    assert_eq!(
+        checked["declaration"]["contracts"]["t"],
+        json!({"repeat": "safe", "reconcile": "receipt"})
+    );
+    assert_eq!(
+        checked["default_policy"],
+        json!({"concurrency": 4, "max_attempts": 3, "max_probes": 3})
+    );
+}

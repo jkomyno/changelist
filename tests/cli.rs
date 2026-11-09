@@ -192,8 +192,8 @@ fn plan_preview_escapes_terminal_text_without_changing_the_approved_data() {
     let decoded: Value = serde_json::from_str(&check(&["--json"])).expect("JSON preview");
     let _ = std::fs::remove_dir_all(&directory);
     assert_eq!(decoded["digest"], expected.digest().as_str());
-    assert_eq!(decoded["summary"], summary);
-    assert_eq!(decoded["operations"][0]["argument_keys"][0], key);
+    assert_eq!(decoded["plan"]["summary"], summary);
+    assert_eq!(decoded["plan"]["operations"][0]["arguments"][key], 1);
 }
 
 #[test]
