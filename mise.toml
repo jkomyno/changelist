@@ -66,3 +66,10 @@ run = [
 [tasks.recovery-demo]
 description = "Run the offline recovery demonstration: approve a batch, kill the executor, reconcile, and review"
 run = "examples/recovery/demo.sh"
+
+[tasks.recovery-eval]
+description = "Compare recovery strategies after a killed run, and measure journal overhead"
+run = [
+    "cargo build --release --locked --bin codemode",
+    "cargo run --release --locked --bin codemode-recovery-eval -- --reps 15 --out eval/recovery > eval/recovery/summary.md",
+]
