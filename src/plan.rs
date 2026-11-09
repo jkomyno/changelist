@@ -298,6 +298,10 @@ impl Plan {
         let value = serde_json::to_value(&self).map_err(|e| PlanError::Format(e.to_string()))?;
         let canonical =
             serde_json::to_string(&value).map_err(|e| PlanError::Format(e.to_string()))?;
+        // A larger plan could be journaled but never read back by `parse` to recover it.
+        if canonical.len() > MAX_PLAN_BYTES {
+            return Err(PlanError::TooLarge);
+        }
         let digest = Digest::of(canonical.as_bytes());
         Ok(FrozenPlan {
             plan: self,
@@ -388,6 +392,11 @@ impl Operation {
                     key,
                 });
             }
+            if has_inexact_integer(value) {
+                return Err(invalid(
+                    "an integer is outside -(2^53-1)..=2^53-1, which a JavaScript host would round",
+                ));
+            }
         }
         Ok(())
     }
@@ -399,6 +408,25 @@ fn valid_id(id: &str) -> bool {
         && id
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+/// Largest integer every JSON host carries exactly (`Number.MAX_SAFE_INTEGER`).
+const MAX_EXACT_INTEGER: u64 = (1 << 53) - 1;
+
+/// Whether `value` holds an integer a JavaScript host, such as a bridge client,
+/// would round: the host would then act on a value nobody approved.
+fn has_inexact_integer(value: &Value) -> bool {
+    match value {
+        Value::Number(number) => {
+            number.as_u64().is_some_and(|n| n > MAX_EXACT_INTEGER)
+                || number
+                    .as_i64()
+                    .is_some_and(|n| n.unsigned_abs() > MAX_EXACT_INTEGER)
+        }
+        Value::Array(items) => items.iter().any(has_inexact_integer),
+        Value::Object(map) => map.values().any(has_inexact_integer),
+        _ => false,
+    }
 }
 
 /// The first object key, at any depth, that names a credential.

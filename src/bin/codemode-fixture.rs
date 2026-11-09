@@ -33,6 +33,7 @@ Usage:
                         [--preconditions JSON-ARRAY] [--scope JSON]
   codemode-fixture authorize --db PATH --account NAME --scope JSON
   codemode-fixture reconcile --db PATH --account NAME --tool TOOL --arguments JSON --keys K1,K2
+                             [--scope JSON]
 
 Tools: issues.add_label {issue, label}, issues.remove_label {issue, label},
 issues.add_comment {issue, body}. Precondition: {\"issue_state\": \"open\"|\"closed\"}.
@@ -42,7 +43,7 @@ init fails if the file exists. edit acts as 'external', outside codemode.
 call prints one JSON line, {\"ok\":true,\"value\":...} or
 {\"ok\":false,\"error\":{\"code\",\"message\"},\"effect\":\"refused|not_applied|unknown\"};
 a matching fault makes it never return. With --scope, call refuses a scope that is
-not this account and repository (permission_denied). authorize prints
+not this account and repository (permission_denied), and reconcile one (unauthorized). authorize prints
 {\"ok\":true} or {\"ok\":false,\"error\":{...}}. reconcile prints {\"verdict\",\"evidence\"}
 or {\"error\":{...}}.
 
@@ -364,9 +365,14 @@ async fn run(command: &str, args: &[String]) -> Result<(), Failure> {
             }
         }
         "reconcile" => {
-            let flags = Flags::parse(args, &["db", "account", "tool", "arguments", "keys"], false)?;
+            let flags = Flags::parse(
+                args,
+                &["db", "account", "tool", "arguments", "keys", "scope"],
+                false,
+            )?;
             let account = flags.required("account")?;
             let provider = FixtureProvider::open(flags.required("db")?, account)?;
+            let scope = flags.json_value("scope")?.map(scope).transpose()?;
             let arguments = flags
                 .json_value("arguments")?
                 .ok_or_else(|| usage("--arguments is required"))?;
@@ -376,7 +382,10 @@ async fn run(command: &str, args: &[String]) -> Result<(), Failure> {
                 .filter(|key| !key.is_empty())
                 .map(String::from)
                 .collect();
-            let operation = operation(account, flags.required("tool")?, arguments, Vec::new());
+            let mut operation = operation(account, flags.required("tool")?, arguments, Vec::new());
+            if let Some(scope) = scope {
+                operation.scope = scope;
+            }
             match provider.reconcile(operation, keys, context()).await {
                 Ok(found) => {
                     print_json(&json!({"verdict": found.verdict, "evidence": found.evidence}))

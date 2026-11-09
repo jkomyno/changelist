@@ -456,7 +456,7 @@ impl Journal {
                 std::io::ErrorKind::AlreadyExists => JournalError::Exists(path.clone()),
                 _ => JournalError::Storage(error.to_string()),
             })?;
-        let mut connection = lock(&path, durability, false)?;
+        let (mut connection, _) = lock(&path, durability, false)?;
         let id = journal_id(plan);
         let transaction = connection.transaction().map_err(storage)?;
         transaction.execute_batch(SCHEMA).map_err(storage)?;
@@ -497,31 +497,9 @@ impl Journal {
         if !path.exists() {
             return Err(JournalError::NotFound(path));
         }
-        let connection = lock(&path, durability, true)?;
-        let corrupt = |detail: String| JournalError::Corrupt {
-            path: path.clone(),
-            detail,
-        };
-        let meta = |key: &str| -> Result<Option<String>, JournalError> {
-            connection
-                .query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| {
-                    row.get(0)
-                })
-                .optional()
-                .map_err(|error| corrupt(format!("metadata: {error}")))
-        };
-        let id = meta("journal_id")?.ok_or_else(|| corrupt("missing journal id".into()))?;
-        let (digest, canonical): (String, String) = connection
-            .query_row(
-                "SELECT digest, canonical FROM plan WHERE id = 1",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .map_err(|error| corrupt(format!("plan: {error}")))?;
-        let plan = Plan::parse(&canonical).map_err(|error| corrupt(format!("plan: {error}")))?;
-        if plan.digest().as_str() != digest || plan.canonical() != canonical {
-            return Err(corrupt("stored plan does not match its digest".into()));
-        }
+        let (connection, stored) = lock(&path, durability, true)?;
+        let (id, plan) =
+            stored.ok_or_else(|| JournalError::Storage("journal was not validated".into()))?;
         Ok(Self {
             connection,
             path,
@@ -1083,7 +1061,14 @@ impl Journal {
 /// Open `path` and take SQLite's exclusive lock, failing at once if it is held.
 /// For an `existing` file, check that it is a sound journal of this format under
 /// the lock and before anything is written, so a foreign file is left unchanged.
-fn lock(path: &Path, durability: Durability, existing: bool) -> Result<Connection, JournalError> {
+/// The journal identity and plan read and checked under the lock.
+type Stored = (String, FrozenPlan);
+
+fn lock(
+    path: &Path,
+    durability: Durability,
+    existing: bool,
+) -> Result<(Connection, Option<Stored>), JournalError> {
     let connection = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -1124,9 +1109,11 @@ fn lock(path: &Path, durability: Durability, existing: bool) -> Result<Connectio
     connection
         .execute_batch("BEGIN EXCLUSIVE")
         .map_err(classify)?;
-    if existing {
-        validate(&connection, path)?;
-    }
+    let stored = if existing {
+        Some(validate(&connection, path)?)
+    } else {
+        None
+    };
     connection.execute_batch("COMMIT").map_err(classify)?;
     let mode: String = connection
         .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
@@ -1139,11 +1126,12 @@ fn lock(path: &Path, durability: Durability, existing: bool) -> Result<Connectio
     connection
         .execute_batch(&format!("PRAGMA synchronous = {synchronous};"))
         .map_err(classify)?;
-    Ok(connection)
+    Ok((connection, stored))
 }
 
-/// Fail closed unless `connection` holds an intact journal of this format version.
-fn validate(connection: &Connection, path: &Path) -> Result<(), JournalError> {
+/// Fail closed unless `connection` holds an intact journal of this format version
+/// whose plan matches its digest; return its identity and plan.
+fn validate(connection: &Connection, path: &Path) -> Result<Stored, JournalError> {
     let corrupt = |detail: String| JournalError::Corrupt {
         path: path.to_path_buf(),
         detail,
@@ -1178,7 +1166,19 @@ fn validate(connection: &Connection, path: &Path) -> Result<(), JournalError> {
             "journal format version {version}; this build reads version {JOURNAL_FORMAT_VERSION}"
         )));
     }
-    Ok(())
+    let id = meta("journal_id")?.ok_or_else(|| corrupt("missing journal id".into()))?;
+    let (digest, canonical): (String, String) = connection
+        .query_row(
+            "SELECT digest, canonical FROM plan WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| corrupt(format!("plan: {error}")))?;
+    let plan = Plan::parse(&canonical).map_err(|error| corrupt(format!("plan: {error}")))?;
+    if plan.digest().as_str() != digest || plan.canonical() != canonical {
+        return Err(corrupt("stored plan does not match its digest".into()));
+    }
+    Ok((id, plan))
 }
 
 #[cfg(test)]
@@ -1253,6 +1253,17 @@ mod tests {
             error.to_string().contains("does not match its digest"),
             "{error}"
         );
+
+        // A damaged journal in rollback mode stays in rollback mode.
+        let connection = Connection::open(&path).expect("open");
+        let mode: String = connection
+            .query_row("PRAGMA journal_mode = DELETE", [], |row| row.get(0))
+            .expect("rollback mode");
+        assert_eq!(mode, "delete");
+        drop(connection);
+        let before = std::fs::read(&path).expect("read");
+        Journal::open(&path, Durability::Storage).expect_err("still tampered");
+        assert_eq!(std::fs::read(&path).expect("read"), before);
         let _ = std::fs::remove_file(&path);
     }
 

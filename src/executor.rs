@@ -88,7 +88,8 @@ pub struct SessionOutcome {
     pub detail: Option<String>,
     /// Operations probed in this session.
     pub probed: usize,
-    /// Operations dispatched in this session.
+    /// Attempts this session recorded an intent for: dispatched, or withdrawn
+    /// after the intent and before the provider saw them.
     pub dispatched: usize,
     /// Every operation, in plan order.
     pub operations: Vec<OperationStatus>,
@@ -369,7 +370,6 @@ pub async fn run_session<P: RecoverableProvider>(
                 .map(|operation| (operation.clone(), status.assessment.attempts + 1))
         })
         .collect();
-    let dispatched = dispatch.len();
 
     let dispatch_started = Instant::now();
     let mut trace = None;
@@ -415,6 +415,11 @@ pub async fn run_session<P: RecoverableProvider>(
     })
     .await?;
     let operations = assess_history(&plan, &history, &probed);
+    let dispatched = history
+        .attempts
+        .iter()
+        .filter(|attempt| attempt.session == session)
+        .count();
     let status = match &interrupted {
         Some(_) => "interrupted",
         None if operations

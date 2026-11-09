@@ -96,8 +96,9 @@ Pi model ── rust_codemode_plan ──► extension ── start {declaration
   tool's provider confirms that its live account may act on every approved scope
   (`authorize`; the fixture tools run `codemode-fixture authorize`, which also
   refuses a revoked account). Every attempt and probe carries the operation's
-  approved scope, and the adapter passes it to the tool, which must refuse a scope
-  that is not the account and destination it acts as: a host whose configuration
+  approved scope. The adapter passes it to the tool, which must refuse a scope
+  that is not the account and destination it acts as, and the fixture's
+  reconciler forwards it so a probe never reads state or fences keys elsewhere: a host whose configuration
   changed since approval cannot act under that approval. Pi's gates still decide
   each call when it is dispatched.
 - **Failures.** Pi reports gate blocks, validation errors, and thrown errors alike

@@ -109,6 +109,8 @@ export default function fixtureTools(pi: ExtensionAPI) {
           const { db, account } = settings();
           const args = ["reconcile", "--db", db, "--account", account, "--tool", tool.fixture];
           args.push("--arguments", JSON.stringify(request.arguments), "--keys", request.keys.join(","));
+          // The fixture refuses to read state or fence keys outside the approved scope.
+          args.push("--scope", JSON.stringify(request.scope));
           const result = await fixture(args, signal);
           if (typeof result.verdict === "string") return { verdict: result.verdict as never, evidence: String(result.evidence) };
           return { error: (result.error as { code: string; message: string }) ?? { code: "reconcile_failed", message: "no verdict" } };

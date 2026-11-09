@@ -573,6 +573,31 @@ fn the_fixture_refuses_a_scope_it_does_not_act_as() {
         .status
         .code()
     };
+    let reconcile = command(
+        FIXTURE,
+        &[
+            "reconcile",
+            "--db",
+            path(&fixture),
+            "--account",
+            ACCOUNT,
+            "--tool",
+            "issues.add_label",
+            "--arguments",
+            r#"{"issue":101,"label":"triage"}"#,
+            "--keys",
+            "k1",
+            "--scope",
+            r#"{"provider":"fixture.issues","account":"triage-bot","destination":"acme/other"}"#,
+        ],
+    )
+    .output()
+    .expect("reconcile runs");
+    assert!(
+        String::from_utf8_lossy(&reconcile.stdout).contains("unauthorized"),
+        "{reconcile:?}"
+    );
+
     let own =
         json!({"provider": "fixture.issues", "account": ACCOUNT, "destination": "acme/widgets"});
     assert_eq!(authorize(own.clone()), Some(0));

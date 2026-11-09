@@ -766,6 +766,16 @@ impl RecoverableProvider for FixtureProvider {
         keys: Vec<String>,
         _context: ProbeContext,
     ) -> Result<Reconciliation, ProviderError> {
+        // Probing reads state and fences keys: only in the scope the operation was approved for.
+        if !self.in_scope(&operation.scope) {
+            return Err(ProviderError {
+                code: "unauthorized".into(),
+                message: format!(
+                    "this provider acts as {FIXTURE_PROVIDER}/{} on {}, not {}",
+                    self.account, self.repository, operation.scope
+                ),
+            });
+        }
         let change = Change::parse(&operation.tool, &operation.arguments)?;
         let path = self.path.clone();
         let probed = match change {

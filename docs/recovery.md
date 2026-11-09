@@ -60,7 +60,9 @@ A plan (format version 1) is JSON:
   Preconditions are provider-defined objects the provider checks atomically when
   it applies the operation.
 - Unknown fields, unsupported versions, duplicate identities, more than 256
-  operations, and argument keys that name credentials (`token`, `password`,
+  operations, a canonical plan over 1 MiB, integers outside ±(2^53−1) (a
+  JavaScript host such as Pi would round them and act on a value nobody
+  approved), and argument keys that name credentials (`token`, `password`,
   `api_key`, ...) are refused. The credential check is a guard against obvious
   mistakes, not a secret scanner.
 - `Plan::parse` freezes the plan into canonical JSON (keys sorted, no
@@ -140,7 +142,8 @@ process"; inspection therefore waits until a session ends.
 
 **Failing closed.** A file that is not SQLite, not a codemode journal, of
 another format version, fails `quick_check`, or whose stored plan does not match
-its digest is refused with a diagnostic and left unchanged.
+its digest is refused with a diagnostic and left unchanged: these checks run under
+the lock before anything is written.
 
 **What is stored.** Plan arguments (needed to retry), error codes, error
 messages and probe evidence truncated to 1 KiB, and provider results up to

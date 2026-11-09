@@ -1317,6 +1317,8 @@ async fn execute(
         cancellation.cancel();
     }
     running.abort_all();
+    // Wait until every provider task has stopped, so none still runs after the report.
+    while running.join_next().await.is_some() {}
     let _ = child.start_kill();
     let wait_result = child.wait().await;
     if let Some(error) = io_failure {
