@@ -157,8 +157,15 @@ Verification status:
   CLI (verified on a public repository; a wrong account selector fails closed).
   The account must be the `ca_...` id, never an alias or word id, which the CLI
   would also resolve but which can be reassigned.
-- **Live writes:** not yet run. They need an explicitly authorized account,
-  repository, issue, label, and cleanup plan.
+- **Live, scoped plan write and recovery:** verified on CLI 0.6.0 against
+  `jkomyno/codemode` issue 2: one existing label added, the successful local reply
+  deliberately dropped, Rust killed with SIGKILL, and a fresh host resumed to
+  `satisfied` with one probe and no additional dispatch attempt. Independent
+  GitHub reads confirmed the state and one label-add event. The test label was
+  removed and the dedicated issue closed. See the [validation record](../../docs/composio-live-validation.md)
+  for the exact scope, harness correction, and limits. Other live writes still
+  need an explicitly authorized account, repository, issue, label, and cleanup
+  plan; interactive CLI approval prompts remain unverified.
 
 ## Using the SDK instead
 
