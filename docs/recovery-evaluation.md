@@ -10,24 +10,33 @@ nothing fails. It answers two questions:
 2. With no faults, what does journaling every attempt add to a dispatch run, per
    operation and per commit, under each durability setting?
 
-It makes no claim that Rust is faster than anything. Every strategy and mode runs
-the same Rust runtime, the same Deno guest program shape, and the same fixture.
+Every dispatch uses the same finite native submission path, Rust scheduler, and
+fixture. Approved operations need no JavaScript guest. This matches the runtime-only
+and blind-retry baselines to native plan execution.
 
 ## Run it
 
 ```sh
-cargo build --release --locked --bin codemode
-cargo run --release --locked --bin codemode-recovery-eval -- --reps 15 --out eval/recovery \
-    > eval/recovery/summary.md      # about 80 s
+mise exec -- cargo build --release --locked --bin codemode
+mkdir -p eval/recovery-native
+mise exec -- cargo run --release --locked --bin codemode-recovery-eval -- \
+    --reps 15 --out eval/recovery-native > eval/recovery-native/summary.md
 ```
 
 `codemode-recovery-eval` ([source](../src/bin/codemode-recovery-eval.rs)) needs the
 release `codemode` binary next to it (or `--bin PATH`), because part A kills a real
 `codemode plan run` process. It prints a Markdown summary and, with `--out`, writes
 `summary.json`: every run's metrics, the aggregates, the configuration, and a build
-fingerprint (commit, rustc, OS, CPU, Deno). It exits 1 if a check that should hold
+fingerprint (checkout commit and dirty state, rustc, OS, CPU, binary SHA-256 digests,
+and compiled evaluator, fixture, and recovery-plan source digests). Checkout metadata
+is observed when the evaluation runs; binary and compiled source digests identify
+the measured artifacts independently. The backend is recorded as `native`, and each
+dispatch cell records its observed backend and total guest transport bytes.
+The legacy `--deno PATH` option is accepted but unused; the harness does not discover
+or launch Deno, including for version reporting. It exits 1 if a check that should hold
 fails and 2 on a setup error. `tests/recovery_eval.rs` runs one repetition at 0 ms
-latency in `mise run check` (under a second of evaluation time).
+latency in `mise run check`, using a nonexistent Deno path and checking the persisted
+backend and absent startup evidence as well as fixture correctness.
 
 ## Method
 
@@ -39,7 +48,8 @@ latency in `mise run check` (under a second of evaluation time).
 | Concurrency | 4 operations in flight |
 | Fixture latency | 0 ms and 25 ms per request, one profile at a time |
 | Provider | the offline issue tracker in [`src/fixture.rs`](../src/fixture.rs), one SQLite file per run |
-| Dispatch | the runtime's rolling dispatch, with a trusted program that names operations only and submits them together |
+| Dispatch | `codemode::run_calls`, with the same finite native requests naming each operation as its tool plus `{"operation": id}`; rolling dispatch |
+| Dispatch deadline | 60,000 ms, matching the approved session policy |
 | Repetitions | 15 measured after 2 discarded warmups; strategies (A) and modes (B) run round-robin, and the starting one rotates every repetition |
 | Statistics | nearest-rank percentiles; totals measured in µs and shown in ms; phases from the session's millisecond timings and the trace |
 
@@ -64,7 +74,7 @@ Each strategy then recovers its own copy from that identical state:
   stops it: it probes and sends nothing.
 - **Blind retry** reads the journal once to learn which operations were not observed
   applied (the 4 unknown and the 1 pending), then sends all 5 again through the same
-  runtime with a generated dispatcher and a plain provider that calls the fixture
+  native submission path with a plain provider that calls the fixture
   directly. It ignores recovery contracts, does no reconciliation, and writes no
   journal. Each request carries a fresh attempt key, so the fixture's receipts and
   fences do not deduplicate anything: this baseline has no idempotency keys. Reading
@@ -90,8 +100,10 @@ Metrics per strategy:
   added no effect.
 - *Recovery time*: wall time from the strategy's start (before opening the journal)
   to done, including closing the journal.
-- *Guest startup*: `guest_spawned` to the first `admitted` event in the dispatch
-  trace. *Dispatch execution*: first `admitted` to the end of the run.
+- *Guest startup*: absent for native execution, shown as `—`; no startup event or
+  zero-duration guest phase is invented. *Dispatch execution*: the complete native
+  run's elapsed time, including admission, scheduling, and provider work, in whole
+  milliseconds. Stop dispatches nothing and has no execution timing.
 
 Hard checks (exit 1): the crashed state above; codemode resume ends `needs_review`
 with exactly `comment-105` open, a correct final state, and no duplicate; stop sends
@@ -103,7 +115,7 @@ recorded, not failed.
 Each run gets a fresh fixture with no faults, and runs the whole plan once, in one
 of three modes:
 
-- **Runtime only**: `codemode::run` with the same dispatcher and plain fixture
+- **Runtime only**: `codemode::run_calls` with the same native requests and plain fixture
   provider as blind retry; no journal.
 - **Journal, storage**: `run_session` with `Durability::Storage`
   (`synchronous=FULL`, and `F_FULLFSYNC` on macOS).
@@ -117,9 +129,17 @@ The journal cost is paired by repetition: each mode's total minus the runtime-on
 total of the same repetition, workload, and latency. The tables give the median of
 those differences, divided by operations and by commits.
 
-## Results
+## Historical Deno results
 
-Apple M1 Pro (10 logical CPUs), macOS, Deno 2.9.8, rustc 1.99.1, release build.
+The tables and interpretation below describe the earlier Deno dispatch backend.
+They remain historical evidence and do not measure the current native execution
+path. In these tables, guest startup is measured from `guest_spawned` to the first
+`admitted` event, and execution from first admission to the end of the run; the
+native execution metric above instead covers the full dispatch run. Keep new native
+results in a separate directory so these original artifacts remain unchanged.
+
+Saved 2026-11-09: Apple M1 Pro (10 logical CPUs), macOS, Deno 2.9.8,
+rustc 1.99.1, release build.
 Measured code: commit `21c84f8`, after the review fixes that journal each probe's
 start before the provider is asked. Full output:
 [`eval/recovery/summary.md`](../eval/recovery/summary.md); every run:

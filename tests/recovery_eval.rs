@@ -3,9 +3,14 @@
 
 use std::process::Command;
 
+use serde_json::Value;
+
 #[test]
 fn recovery_evaluation_checks_every_strategy_and_mode() {
-    let deno = std::env::var_os("CODEMODE_TEST_DENO").unwrap_or_else(|| "deno".into());
+    let results = std::env::temp_dir().join(format!(
+        "codemode-recovery-eval-test-{}",
+        std::process::id()
+    ));
     let output = Command::new(env!("CARGO_BIN_EXE_codemode-recovery-eval"))
         .args([
             "--reps",
@@ -20,7 +25,9 @@ fn recovery_evaluation_checks_every_strategy_and_mode() {
         .arg("--bin")
         .arg(env!("CARGO_BIN_EXE_codemode"))
         .arg("--deno")
-        .arg(deno)
+        .arg(results.join("nonexistent-deno"))
+        .arg("--out")
+        .arg(&results)
         .output()
         .expect("evaluation binary starts");
     let summary = String::from_utf8_lossy(&output.stdout);
@@ -46,5 +53,22 @@ fn recovery_evaluation_checks_every_strategy_and_mode() {
             summary.contains(&format!("| recovery-plan | 11 | 0 ms | {mode} | 1/1 |")),
             "summary lacks {mode}:\n{summary}"
         );
+    }
+    let persisted: Value = serde_json::from_slice(
+        &std::fs::read(results.join("summary.json")).expect("persisted evaluation summary"),
+    )
+    .expect("valid summary JSON");
+    std::fs::remove_dir_all(results).expect("remove evaluation results");
+    assert_eq!(persisted["environment"]["backend"], "native");
+    assert_eq!(persisted["config"]["backend"], "native");
+    assert!(persisted["environment"].get("deno_version").is_none());
+    for kind in ["recovery_runs", "overhead_runs", "recovery", "overhead"] {
+        for run in persisted[kind].as_array().expect("evaluation cells") {
+            assert!(run["guest_startup_ms"].is_null(), "{run}");
+            if kind.ends_with("_runs") && run["strategy"] != "stop" {
+                assert_eq!(run["backend"], "native", "{run}");
+                assert_eq!(run["guest_transport_bytes"], 0, "{run}");
+            }
+        }
     }
 }

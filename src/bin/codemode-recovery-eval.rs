@@ -40,10 +40,11 @@ use std::time::{Duration, Instant};
 
 use codemode::fixture::{FaultMode, Fixture, FixtureProvider, Ledger, Seed, State};
 use codemode::{
-    Approval, Attempt, CallContext, CallOutcome, Conclusion, DispatchPolicy, Durability,
-    FrozenPlan, Journal, NextStep, Operation, Plan, ProbeContext, ProviderError,
-    RecoverableProvider, RecoveryPolicy, RunCancellation, RunConfig, RunReport, SessionKind,
-    SessionOptions, ToolCall, ToolProvider, approval_binding, assess_history, run, run_session,
+    Approval, Attempt, CallContext, CallOutcome, Conclusion, Digest, DispatchPolicy, Durability,
+    ExecutionBackend, FrozenPlan, Journal, NativeCall, NextStep, Operation, Plan, ProbeContext,
+    ProviderError, RecoverableProvider, RecoveryPolicy, RunCancellation, RunConfig, RunReport,
+    SessionKind, SessionOptions, ToolCall, ToolProvider, approval_binding, assess_history,
+    run_calls, run_session,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -97,7 +98,7 @@ Options:
   --latency <list>   Fixture latency profiles in ms, comma-separated (default: 0,25)
   --large <n>        Operations in the extra label-only overhead plan; 0 skips it (default: 64)
   --out <dir>        Also write summary.json
-  --deno <path>      Deno executable (default: deno from PATH)
+  --deno <path>      Legacy option, accepted but unused by native execution
   --bin <path>       codemode executable that is killed mid-run
                      (default: codemode next to this executable)
   -h, --help         Show this help
@@ -351,11 +352,13 @@ async fn runtime_run(
     number: u32,
     deno: &Path,
 ) -> Result<RunReport, Box<dyn Error>> {
-    let code = codemode::dispatcher_program(
-        operations
-            .iter()
-            .map(|operation| (operation.id.as_str(), operation.tool.as_str())),
-    );
+    let calls: Vec<NativeCall> = operations
+        .iter()
+        .map(|operation| NativeCall {
+            tool: operation.tool.clone(),
+            arguments: json!({"operation": operation.id}),
+        })
+        .collect();
     let tools: BTreeSet<String> = operations.iter().map(|op| op.tool.clone()).collect();
     let config = RunConfig {
         timeout_ms: RUN_TIMEOUT_MS,
@@ -375,27 +378,13 @@ async fn runtime_run(
         key_prefix,
         number,
     };
-    Ok(run(&code, config, provider, RunCancellation::default()).await?)
+    Ok(run_calls(&calls, config, provider, RunCancellation::default()).await?)
 }
 
-/// Guest startup (`guest_spawned` to the first admitted call) and execution (first
-/// admitted call to the end of the run), from the trace, in ms.
-fn guest_split(report: &RunReport) -> (Option<u64>, Option<u64>) {
-    let at = |kind: &str| {
-        report
-            .events
-            .iter()
-            .find(|event| event.kind == kind)
-            .map(|event| event.at_ms)
-    };
-    let first = at("admitted");
-    let startup = at("guest_spawned")
-        .zip(first)
-        .map(|(spawned, first)| first.saturating_sub(spawned));
-    (
-        startup,
-        first.map(|first| report.elapsed_ms.saturating_sub(first)),
-    )
+/// Native execution has no guest startup. Execution covers the entire dispatch
+/// run, including admission, scheduling, and provider work, in whole milliseconds.
+fn dispatch_timing(report: &RunReport) -> (Option<u64>, Option<u64>) {
+    (None, Some(report.elapsed_ms))
 }
 
 fn micros(duration: Duration) -> i64 {
@@ -518,6 +507,9 @@ struct RecoveryRun {
     repetition: usize,
     /// Position of this strategy within its repetition's rotation.
     order: usize,
+    /// Observed dispatch backend; absent for stop, which dispatches no work.
+    backend: Option<ExecutionBackend>,
+    guest_transport_bytes: Option<u64>,
     /// Strategy start to done, wall clock.
     recovery_us: i64,
     /// Journal open and read (all strategies), µs.
@@ -563,6 +555,8 @@ impl RecoveryRun {
             strategy,
             repetition,
             order,
+            backend: None,
+            guest_transport_bytes: None,
             recovery_us: 0,
             journal_us: 0,
             unresolved: 0,
@@ -650,7 +644,9 @@ async fn recover(
             record.claims_complete = report.status.is_success() && succeeded.len() == targets.len();
             record.dispatched = Some(targets.len());
             record.dispatch_ms = Some(report.elapsed_ms);
-            (record.guest_startup_ms, record.execution_ms) = guest_split(&report);
+            record.backend = Some(report.backend);
+            record.guest_transport_bytes = Some(report.bytes.from_guest + report.bytes.to_guest);
+            (record.guest_startup_ms, record.execution_ms) = dispatch_timing(&report);
         }
         Strategy::CodemodeResume => {
             let journal = Journal::open(dir.join("j.db"), Durability::Storage)?;
@@ -677,7 +673,9 @@ async fn recover(
             record.reconcile_ms = Some(outcome.timing.reconcile_ms);
             record.dispatch_ms = Some(outcome.timing.dispatch_ms);
             if let Some(trace) = &outcome.trace {
-                (record.guest_startup_ms, record.execution_ms) = guest_split(trace);
+                record.backend = Some(trace.backend);
+                record.guest_transport_bytes = Some(trace.bytes.from_guest + trace.bytes.to_guest);
+                (record.guest_startup_ms, record.execution_ms) = dispatch_timing(trace);
             }
             if outcome.status != "needs_review" || open != [REVIEW_OPERATION] {
                 record.failures.push(format!(
@@ -718,6 +716,8 @@ struct OverheadRun {
     mode: Mode,
     repetition: usize,
     order: usize,
+    backend: Option<ExecutionBackend>,
+    guest_transport_bytes: Option<u64>,
     /// Journal open (when journaled) plus the session or run, wall clock.
     total_us: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -754,6 +754,8 @@ async fn overhead_run(
         mode,
         repetition,
         order,
+        backend: None,
+        guest_transport_bytes: None,
         total_us: 0,
         journal_open_us: None,
         checks_ms: None,
@@ -773,7 +775,9 @@ async fn overhead_run(
                 runtime_run(operations, &dir.join("fx.db"), "runtime".into(), 1, deno).await?;
             record.total_us = micros(started.elapsed());
             record.dispatch_ms = report.elapsed_ms;
-            (record.guest_startup_ms, record.execution_ms) = guest_split(&report);
+            record.backend = Some(report.backend);
+            record.guest_transport_bytes = Some(report.bytes.from_guest + report.bytes.to_guest);
+            (record.guest_startup_ms, record.execution_ms) = dispatch_timing(&report);
             if !report.status.is_success() {
                 record
                     .failures
@@ -795,7 +799,9 @@ async fn overhead_run(
             record.reconcile_ms = Some(outcome.timing.reconcile_ms);
             record.dispatch_ms = outcome.timing.dispatch_ms;
             if let Some(trace) = &outcome.trace {
-                (record.guest_startup_ms, record.execution_ms) = guest_split(trace);
+                record.backend = Some(trace.backend);
+                record.guest_transport_bytes = Some(trace.bytes.from_guest + trace.bytes.to_guest);
+                (record.guest_startup_ms, record.execution_ms) = dispatch_timing(trace);
             }
             if outcome.status != "completed" {
                 record
@@ -1045,7 +1051,7 @@ fn render_markdown(
     );
     let _ = writeln!(
         out,
-        "- Environment: {} {}, {}, {} logical CPUs, {}.",
+        "- Environment: {} {}, {}, {} logical CPUs.",
         environment.os,
         environment.arch,
         environment
@@ -1055,7 +1061,10 @@ fn render_markdown(
         environment
             .logical_cpus
             .map_or("unknown".into(), |n| n.to_string()),
-        environment.deno_version
+    );
+    let _ = writeln!(
+        out,
+        "- Backend: native for every dispatch. Guest startup is absent (—); execution is the full native dispatch run. No Deno executable is discovered or launched."
     );
     let _ = writeln!(
         out,
@@ -1064,7 +1073,7 @@ fn render_markdown(
     );
     let _ = writeln!(
         out,
-        "- Matching parameters: concurrency {CONCURRENCY} for every strategy and mode; fixture latency per profile; the same frozen plan and fixture seed."
+        "- Matching parameters: concurrency {CONCURRENCY} and dispatch deadline {RUN_TIMEOUT_MS} ms for every strategy and mode; fixture latency per profile; the same frozen plan and fixture seed."
     );
     let _ = writeln!(
         out,
@@ -1209,6 +1218,7 @@ fn render_markdown(
 
 #[derive(Debug, Serialize)]
 struct Environment {
+    backend: ExecutionBackend,
     os: &'static str,
     arch: &'static str,
     cpu_model: Option<String>,
@@ -1217,11 +1227,15 @@ struct Environment {
     build_profile: &'static str,
     /// `rustc --version` on PATH when the evaluation ran.
     rustc: Option<String>,
-    /// Commit of the source checkout this binary was built from, when `git` works.
+    /// Commit of the source checkout when the evaluation runs, when `git` works.
     git_commit: Option<String>,
     /// Whether tracked files differ from that commit (untracked files ignored).
     git_dirty: Option<bool>,
-    deno_version: String,
+    evaluator_binary_digest: Option<Digest>,
+    codemode_binary_digest: Option<Digest>,
+    evaluator_source_digest: Digest,
+    fixture_source_digest: Digest,
+    recovery_plan_source_digest: Digest,
     /// The executable killed mid-run, relative to the source checkout when inside it.
     codemode_bin: PathBuf,
 }
@@ -1249,16 +1263,9 @@ fn cpu_model() -> Option<String> {
 
 fn environment(args: &Args) -> Environment {
     let source = env!("CARGO_MANIFEST_DIR");
-    let deno_version = Command::new(&args.deno)
-        .arg("--version")
-        .output()
-        .ok()
-        .and_then(|output| {
-            let text = String::from_utf8_lossy(&output.stdout).into_owned();
-            text.lines().next().map(str::to_owned)
-        })
-        .unwrap_or_else(|| "deno version unavailable".into());
+    let binary_digest = |path: &Path| std::fs::read(path).ok().map(|bytes| Digest::of(&bytes));
     Environment {
+        backend: ExecutionBackend::Native,
         os: std::env::consts::OS,
         arch: std::env::consts::ARCH,
         cpu_model: cpu_model().filter(|model| !model.is_empty()),
@@ -1282,7 +1289,13 @@ fn environment(args: &Args) -> Environment {
             ],
         )
         .map(|status| !status.is_empty()),
-        deno_version,
+        evaluator_binary_digest: std::env::current_exe()
+            .ok()
+            .and_then(|path| binary_digest(&path)),
+        codemode_binary_digest: binary_digest(&args.bin),
+        evaluator_source_digest: Digest::of(include_bytes!("codemode-recovery-eval.rs")),
+        fixture_source_digest: Digest::of(include_bytes!("../fixture.rs")),
+        recovery_plan_source_digest: Digest::of(RECOVERY_PLAN.as_bytes()),
         codemode_bin: args
             .bin
             .strip_prefix(source)
@@ -1293,10 +1306,12 @@ fn environment(args: &Args) -> Environment {
 
 #[derive(Debug, Serialize)]
 struct EvalConfig {
+    backend: ExecutionBackend,
     reps: usize,
     warmup: usize,
     latencies_ms: Vec<u64>,
     concurrency: usize,
+    dispatch_timeout_ms: u64,
     workloads: Vec<(String, usize)>,
     faults: Vec<String>,
     percentiles: &'static str,
@@ -1608,10 +1623,12 @@ async fn evaluate() -> Result<ExitCode, Box<dyn Error>> {
 
     if let Some(dir) = &args.out {
         let config = EvalConfig {
+            backend: ExecutionBackend::Native,
             reps: args.reps,
             warmup: args.warmup,
             latencies_ms: args.latencies.clone(),
             concurrency: CONCURRENCY,
+            dispatch_timeout_ms: RUN_TIMEOUT_MS,
             workloads: workloads
                 .iter()
                 .map(|w| (w.name.clone(), w.plan.plan().operations.len()))
