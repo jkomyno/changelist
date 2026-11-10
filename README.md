@@ -9,9 +9,11 @@ reconciles what it can with GitHub and hands the rest to a person.
 
 It is a small Rust CLI (`codemode`) plus a Composio host
 (`integrations/composio/host.ts`) run by the installed `codemode-composio`
-launcher. Status: the investigation path ran live, read-only, on 2026-11-10
-([record](docs/composio-live-validation.md)); the four write contracts are tested
-offline against a stand-in GitHub and are not yet validated live.
+launcher. Status: on 2026-11-10 the installed bundle ran the investigation live
+and one authorized four-write plan on a dedicated issue, including a lost reply,
+a killed executor, and a resume that sent no duplicate comment
+([record](docs/composio-live-validation.md)). Other failures are tested offline
+against a stand-in GitHub.
 
 ## Install
 
@@ -154,8 +156,15 @@ run the TypeScript host tests and scripts; codemode does not use it. See
 
 ## Evaluation
 
-See [docs/comparison.md](docs/comparison.md) for how this workflow compares
-with Pi Durable, OpenCode Code Mode, and a Composio CLI script. Earlier
+[docs/comparison.md](docs/comparison.md) runs the same GitHub triage workflow
+through codemode, Pi Durable 1.5.0, OpenCode Code Mode 2.2.6, and a competent
+Composio CLI script against one offline provider whose own ledger is the oracle.
+codemode was the only implementation with no wrong outcome in any fault
+scenario: it refused a change list widened after approval, sent nothing after the
+GitHub account switched, and never duplicated a comment that landed late, where
+each alternative failed at least one of these. It was also the slowest on the
+fault-free run against Pi and OpenCode, and after a kill it hands more operations
+to a person instead of resending them. Earlier
 measurements ([evaluation](docs/evaluation.md),
 [benchmark](docs/benchmark.md), [recovery](docs/recovery-evaluation.md),
 [embedded engine](docs/embedded-evaluation.md)) are historical records of

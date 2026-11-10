@@ -8,9 +8,9 @@ report what happened.
 and nothing in this repository should be read as usability evidence. The
 automated installation check (`scripts/install-check.sh`) proves that the
 installed bundle's files, adapters, and launcher work with synthetic input; it
-does not show that a person can follow the workflow. Writes through the current
-Composio host have also not yet been validated live, so the trial may be the
-first live run of the four write contracts: use a repository you can discard.
+does not show that a person can follow the workflow. The four write contracts
+have run live once, on the maintainer's own repository
+([record](composio-live-validation.md)); use a repository you can discard.
 
 ## What the trial should answer
 

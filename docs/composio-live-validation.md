@@ -1,5 +1,48 @@
 # Live Composio checks
 
+## 2026-11-10: four writes, a lost reply, a killed executor, and resume
+
+Composio CLI 0.6.0, the installed bundle of commit `84e2812` (launcher
+`bin/codemode-composio`), one active GitHub connection, repository
+`jkomyno/codemode`. The owner authorized this exact run beforehand: create one
+dedicated issue and run one four-operation plan on it. The dropped reply used the
+uninstalled `integrations/composio/testing/host.ts` from the same commit.
+
+1. A plain `composio execute` created issue
+   [#3](https://github.com/jkomyno/codemode/issues/3), `[validation] codemode U10
+   live write and recovery`. This was the only write outside the plan.
+2. `investigate` wrote the plan from a read-only program: add the existing
+   `documentation` label, post one marked comment, remove the label, close the
+   issue as completed; each operation required the issue to be open. `plan check`
+   showed every canonical argument, the scope `<account>:jkomyno` on
+   `jkomyno/codemode:1449378892`, the four contracts, retention `summary/1`, and
+   digest `sha256:93f2a76a4cbe5f401ea92ebf5e9e6a72311fd4f0c64c3073ff737923f81ed66c`.
+   `preflight` reported ready. The plan was approved with that digest at
+   concurrency 1, one attempt per operation, and two probes.
+3. `run` applied the label and posted the comment; the testing host withheld the
+   comment's observed reply. While the session waited, `plan inspect` in another
+   process showed `label-doc` applied, `comment-1` unknown with one attempt, the
+   last two operations pending, and the session open with the note that this does
+   not show an executor is running. The Rust executor was then SIGKILLed.
+4. `codemode-composio resume` probed `comment-1` by receipt: it found the marked
+   comment by `jkomyno` and concluded applied, sent no second comment, then removed
+   the label and closed the issue. Session 2 ended `completed`, exit 0.
+5. Independent reads after the run: the issue was closed (`completed`) with no
+   labels; it had exactly one comment, by `jkomyno`, carrying the marker; its
+   events were `labeled`, `unlabeled`, `closed`, once each.
+6. `plan inspect --json` (3.7 KiB) named all four operations applied, with the
+   comment's probe verdict. The CLI credential was absent from the journal, plan,
+   investigation trace, diagnosis, and captured host output. The only account id
+   in the diagnosis is the approved scope. The launcher's private temporary
+   directories were removed after each command.
+
+The plan's own operations restored the label set and closed the issue; the comment
+stays as evidence. The local journal, plan, and logs, which hold the account id and
+comment body, were deleted after this record was written. This run shows recovery
+from one injected local reply loss and one executor kill for these four tools; it
+does not show behavior for every remote failure, interactive CLI approval prompts,
+other CLI versions, or an exactly-once guarantee.
+
 ## 2026-11-10: installed GitHub host, read-only
 
 Composio CLI 0.6.0 on macOS. The bundle was installed with `scripts/install.sh`

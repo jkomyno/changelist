@@ -77,6 +77,8 @@ docs/installation.md
 docs/composio-github.md
 docs/integrations.md
 docs/recovery.md
+docs/operator-trial.md
+docs/composio-live-validation.md
 scripts/install-check.sh
 scripts/install-smoke.ts
 README.md
