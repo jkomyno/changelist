@@ -55,10 +55,22 @@ fn scratch(name: &str) -> PathBuf {
 /// environment, so it uses builtins and absolute paths only.
 fn script(directory: &Path, body: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
-    let path = directory.join("worker.sh");
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("script written");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+    let draft = directory.join("worker.sh.draft");
+    std::fs::write(&draft, format!("#!/bin/sh\n{body}\n")).expect("script written");
+    std::fs::set_permissions(&draft, std::fs::Permissions::from_mode(0o755))
         .expect("script is executable");
+    // Copy it into place from a child process. If this process had written the
+    // final file, a fork on another test thread could still hold the write
+    // descriptor when the worker is spawned, and Linux refuses to exec it
+    // (ETXTBSY).
+    let path = directory.join("worker.sh");
+    let copied = Command::new("/bin/cp")
+        .arg("-p")
+        .arg(&draft)
+        .arg(&path)
+        .status()
+        .expect("cp starts");
+    assert!(copied.success(), "script copied into place");
     path
 }
 

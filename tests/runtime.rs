@@ -32,10 +32,10 @@ fn forging_worker() -> RunConfig {
             std::process::id()
         ));
         std::fs::create_dir_all(&directory).expect("script directory");
-        let path = directory.join("worker.sh");
+        let draft = directory.join("worker.sh.draft");
         // Builtins only: the worker starts with an empty environment.
         std::fs::write(
-            &path,
+            &draft,
             r#"#!/bin/sh
 read -r frame
 case "$frame" in
@@ -50,8 +50,19 @@ while read -r frame; do :; done
 "#,
         )
         .expect("script written");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        std::fs::set_permissions(&draft, std::fs::Permissions::from_mode(0o755))
             .expect("script is executable");
+        // Copied into place by a child process so no fork on another test
+        // thread can still hold a write descriptor on the file it later execs
+        // (Linux refuses with ETXTBSY).
+        let path = directory.join("worker.sh");
+        let copied = std::process::Command::new("/bin/cp")
+            .arg("-p")
+            .arg(&draft)
+            .arg(&path)
+            .status()
+            .expect("cp starts");
+        assert!(copied.success(), "script copied into place");
         path
     });
     RunConfig {
