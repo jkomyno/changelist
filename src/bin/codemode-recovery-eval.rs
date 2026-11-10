@@ -1,12 +1,10 @@
 //! Offline evaluation of recovery after a killed executor, and of what durable
 //! accounting costs when nothing fails.
 //!
-//! **A. Recovery.** Each repetition and latency profile creates one crashed state
-//! with a real process kill: `codemode-fixture session run` executes the
-//! 11-operation plan of `examples/recovery/plan.json` against a fixture with three
-//! lost responses and one held request, and is sent SIGKILL once the fixture
-//! ledger shows the held request. The journal and fixture files are then copied three times, and each
-//! strategy recovers its own copy from the identical state:
+//! **A. Recovery.** Each repetition and latency profile kills `codemode-fixture
+//! session run` partway through the 11-operation plan of `examples/recovery/plan.json`
+//! (three lost responses, one held request), and each strategy recovers its own copy
+//! of that crashed state:
 //!
 //! - `stop`: read the journal and stop if any operation is unknown;
 //! - `blind_retry`: re-send every operation not observed applied through the same

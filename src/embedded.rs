@@ -12,9 +12,8 @@ use deno_error::JsErrorBox;
 use serde::Deserialize;
 use tokio::sync::{Mutex, mpsc};
 
-const MAX_HOST_FRAME: usize = 1024 * 1024;
-const MAX_GUEST_FRAME: usize = 64 * 1024;
-const MAX_CODE: usize = 64 * 1024;
+use crate::runtime::{FRAME_BYTES, REPLY_FRAME_BYTES};
+
 const MIB: usize = 1024 * 1024;
 /// Exit code of a worker that exhausted its memory, after its `memory_limit` frame.
 pub(crate) const MEMORY_LIMIT_EXIT_CODE: i32 = 75;
@@ -35,6 +34,10 @@ impl fmt::Display for EmbeddedWorkerError {
 }
 
 impl std::error::Error for EmbeddedWorkerError {}
+
+fn worker_error(error: impl fmt::Display) -> EmbeddedWorkerError {
+    EmbeddedWorkerError(error.to_string())
+}
 
 impl From<io::Error> for EmbeddedWorkerError {
     fn from(error: io::Error) -> Self {
@@ -60,7 +63,7 @@ fn halt_if_exhausted() {
 
 fn write_frames(text: &str) -> Result<(), JsErrorBox> {
     for line in text.split_terminator('\n') {
-        if line.len() > MAX_GUEST_FRAME {
+        if line.len() > FRAME_BYTES {
             return Err(JsErrorBox::generic("Guest frame exceeds 64 KiB"));
         }
     }
@@ -72,7 +75,7 @@ fn write_frames(text: &str) -> Result<(), JsErrorBox> {
 
 #[op2(fast)]
 fn op_guest_log(#[string] text: &str) -> Result<(), JsErrorBox> {
-    if text.len() > MAX_GUEST_FRAME {
+    if text.len() > FRAME_BYTES {
         return Err(JsErrorBox::generic("Log message exceeds 64 KiB"));
     }
     io::stderr()
@@ -128,7 +131,7 @@ fn read_input(send: mpsc::UnboundedSender<String>) {
         }
         let newline = bytes.iter().position(|byte| *byte == b'\n');
         let count = newline.unwrap_or(bytes.len());
-        if frame.len() + count > MAX_HOST_FRAME {
+        if frame.len() + count > REPLY_FRAME_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Input frame exceeds 1 MiB",
@@ -267,7 +270,7 @@ async fn execute_worker() -> Result<(), EmbeddedWorkerError> {
             "Expected run frame with string code and limits".into(),
         ));
     }
-    if frame.code.len() > MAX_CODE {
+    if frame.code.len() > FRAME_BYTES {
         return Err(EmbeddedWorkerError("Source exceeds 64 KiB".into()));
     }
     limit_process_data(frame.process_data_bytes)?;
@@ -275,9 +278,8 @@ async fn execute_worker() -> Result<(), EmbeddedWorkerError> {
     runtime.op_state().borrow_mut().put(input.clone());
     runtime
         .execute_script("codemode:bootstrap", include_str!("embedded_guest.js"))
-        .map_err(|error| EmbeddedWorkerError(error.to_string()))?;
-    let specifier = ModuleSpecifier::parse("codemode:program")
-        .map_err(|error| EmbeddedWorkerError(error.to_string()))?;
+        .map_err(worker_error)?;
+    let specifier = ModuleSpecifier::parse("codemode:program").map_err(worker_error)?;
     let source = format!(
         "globalThis.__codemode_run(async () => {{\n{}\n}});",
         frame.code
@@ -290,28 +292,26 @@ async fn execute_worker() -> Result<(), EmbeddedWorkerError> {
         scope_analysis: false,
         maybe_syntax: None,
     })
-    .map_err(|error| EmbeddedWorkerError(error.to_string()))?;
+    .map_err(worker_error)?;
     let code = parsed
         .transpile(
             &TranspileOptions::default(),
             &TranspileModuleOptions::default(),
             &EmitOptions::default(),
         )
-        .map_err(|error| EmbeddedWorkerError(error.to_string()))?
+        .map_err(worker_error)?
         .into_source()
         .text;
     let module = runtime
         .load_main_es_module_from_code(&specifier, code)
         .await
-        .map_err(|error| EmbeddedWorkerError(error.to_string()))?;
+        .map_err(worker_error)?;
     let evaluation = runtime.mod_evaluate(module);
     runtime
         .run_event_loop(Default::default())
         .await
-        .map_err(|error| EmbeddedWorkerError(error.to_string()))?;
-    evaluation
-        .await
-        .map_err(|error| EmbeddedWorkerError(error.to_string()))?;
+        .map_err(worker_error)?;
+    evaluation.await.map_err(worker_error)?;
     Err(EmbeddedWorkerError("Guest ended without output".into()))
 }
 

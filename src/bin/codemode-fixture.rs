@@ -65,7 +65,7 @@ Exit status: 0 success; 1 a tool error or refusal from call, authorize, or recon
 enum Failure {
     Usage(String),
     Fixture(FixtureError),
-    /// A journal or session error.
+    /// The journal could not be opened, or the session failed other than by refusal.
     Session(String),
     /// The JSON line was already printed.
     Tool,

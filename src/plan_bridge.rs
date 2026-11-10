@@ -51,7 +51,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -66,7 +66,7 @@ use crate::recovery::{
     Attempt, AttemptError, FailureEffect, ProbeContext, ProviderDeclaration, Reconciliation,
     RecoverableProvider, Verdict,
 };
-use crate::runtime::{CallContext, ProviderError, RunCancellation, frame};
+use crate::runtime::{CallContext, ProviderError, RunCancellation, frame, lock};
 
 /// The bridge protocol version that serves plan sessions.
 pub const PLAN_BRIDGE_PROTOCOL_VERSION: u32 = 3;
@@ -190,10 +190,7 @@ type Pending = Arc<Mutex<HashMap<u64, Waiter>>>;
 struct Forget<'a>(&'a Pending, u64);
 impl Drop for Forget<'_> {
     fn drop(&mut self) {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.1);
+        lock(self.0).remove(&self.1);
     }
 }
 
@@ -223,10 +220,7 @@ impl HostPlanProvider {
     ) -> Result<Forget<'_>, ProviderError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         // Registered first, so a fast reply finds its waiter.
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, waiter);
+        lock(&self.pending).insert(id, waiter);
         let guard = Forget(&self.pending, id);
         let frame =
             build(id).map_err(|error| bridge_error("bridge_unavailable", error.to_string()))?;
@@ -343,12 +337,7 @@ enum Flow {
 /// Deliver one host frame to its waiter. A reply for an unknown or finished request
 /// is ignored; a reply of the wrong shape or kind is a protocol error.
 fn deliver(frame: HostFrame, pending: &Pending) -> Result<Flow, String> {
-    let take = |id: u64| {
-        pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&id)
-    };
+    let take = |id: u64| lock(pending).remove(&id);
     let mismatch = |id: u64| format!("the reply to request {id} has the wrong type");
     match frame {
         HostFrame::Cancel => return Ok(Flow::Cancel),
@@ -449,7 +438,7 @@ async fn route<R: AsyncRead + Unpin>(
             Err(message) => break message,
         }
     };
-    *failure.lock().unwrap_or_else(PoisonError::into_inner) = Some(reason);
+    *lock(&failure) = Some(reason);
     cancellation.cancel();
 }
 
@@ -503,10 +492,7 @@ where
         Arc::clone(&failure),
     )
     .await;
-    let diagnostic = failure
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take();
+    let diagnostic = lock(&failure).take();
     let outcome = |outcome: Value| {
         encode(&BridgeFrame::Outcome {
             outcome,

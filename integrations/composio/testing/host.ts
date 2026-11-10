@@ -15,7 +15,7 @@
  * Without --offline it must run under `composio run`. Not installed.
  */
 import { resolve } from "node:path";
-import type { PlanReply } from "../../shared/bridge-client.ts";
+import { describeError, type PlanReply } from "../../shared/bridge-client.ts";
 import { type DecorateHost, finish, type HostProviders, listConnections, runHost } from "../composio-host.ts";
 import type { AccountExecute } from "../github-plan.ts";
 import { fakeConnections, fakeGithub } from "./fake-github.ts";
@@ -69,5 +69,5 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch (error) {
-  finish(process.stderr, `composio host: ${error instanceof Error ? error.message : String(error)}`, 2);
+  finish(process.stderr, `composio host: ${describeError(error)}`, 2);
 }

@@ -4,8 +4,8 @@ use std::future::Future;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -39,6 +39,11 @@ const MIN_HEAP_MB: u64 = 16;
 const DATA_MARGIN_MB: u64 = 256;
 /// How long a stopped worker's remaining output is read for a `memory_limit` frame.
 const STOPPED_OUTPUT_GRACE: Duration = Duration::from_millis(200);
+
+/// Lock `mutex`, taking the data even if a panicking holder poisoned it.
+pub(crate) fn lock<T: ?Sized>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Passive limits and executable selection for one run.
 #[derive(Debug, Clone)]

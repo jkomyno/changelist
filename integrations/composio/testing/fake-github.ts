@@ -27,6 +27,7 @@
  */
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import type { ComposioResult } from "../composio-provider.ts";
+import { ADD_LABELS, CREATE_COMMENT, REMOVE_LABEL, UPDATE_ISSUE, WRITE_TOOLS } from "../github-plan.ts";
 
 const SECRET = "MARK-SECRET";
 /** A connected-account id as the CLI prints it in errors; it must never be kept. */
@@ -130,7 +131,7 @@ export function fakeGithub(path: string) {
       number: Number(number), title: item.title, state: item.state, state_reason: item.state_reason ?? null,
       labels: item.labels.map((label) => ({ name: label, description: SECRET })), body: SECRET,
     });
-    const isRead = !["GITHUB_ADD_LABELS_TO_AN_ISSUE", "GITHUB_REMOVE_A_LABEL_FROM_AN_ISSUE", "GITHUB_UPDATE_AN_ISSUE", "GITHUB_CREATE_AN_ISSUE_COMMENT"].includes(slug);
+    const isRead = !(WRITE_TOOLS as readonly string[]).includes(slug);
     if (isRead && fault) {
       if (fault === "slow") {
         process.stderr.write(`started ${slug}\n`);
@@ -205,13 +206,13 @@ export function fakeGithub(path: string) {
     }
     let value: unknown;
     switch (slug) {
-      case "GITHUB_ADD_LABELS_TO_AN_ISSUE":
+      case ADD_LABELS:
         for (const label of data.labels as string[]) {
           if (!issue.labels.some((item) => same(item, label))) issue.labels.push(label);
         }
         value = { labels: issue.labels.map((label) => ({ name: label, description: SECRET })) };
         break;
-      case "GITHUB_REMOVE_A_LABEL_FROM_AN_ISSUE": {
+      case REMOVE_LABEL: {
         const index = issue.labels.findIndex((item) => same(item, String(data.name)));
         if (index < 0) {
           record("label_not_on_issue");
@@ -221,12 +222,12 @@ export function fakeGithub(path: string) {
         value = { labels: issue.labels.map((label) => ({ name: label })) };
         break;
       }
-      case "GITHUB_UPDATE_AN_ISSUE":
+      case UPDATE_ISSUE:
         issue.state = data.state as Issue["state"];
         issue.state_reason = (data.state_reason as string | undefined) ?? null;
         value = { number: data.issue_number, state: issue.state, state_reason: issue.state_reason, body: SECRET };
         break;
-      case "GITHUB_CREATE_AN_ISSUE_COMMENT": {
+      case CREATE_COMMENT: {
         const id = 1000 + Object.values(repository.issues).reduce((count, item) => count + item.comments.length, 0);
         issue.comments.push({ id, user: login, body: String(data.body) });
         value = { id, body: data.body, user: { login }, html_url: SECRET };

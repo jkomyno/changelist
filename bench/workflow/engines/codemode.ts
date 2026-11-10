@@ -4,7 +4,7 @@
 // First attempt: investigate with the triage program through `codemode bridge` (reads only),
 // write its proposal as a plan (a marker line appended to each comment), `plan check`, approve
 // the printed digest, then `plan run --bridge`. Later attempts `plan resume --bridge` the same
-// journal. The plan host implements the KTD9 contracts against the offline provider:
+// journal. The plan host implements these provider contracts against the offline provider:
 //   add labels, remove a label, set issue state: repeat unsafe, reconcile by state
 //     (desired state holds -> satisfied; otherwise unknown, never not_applied);
 //   create comment: repeat unsafe, reconcile by receipt (the marker, authored by the login the
@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
+  describeError,
   type PlanCall,
   type PlanReply,
   type PlanScope,
@@ -26,7 +27,7 @@ import {
   runBridge,
   runPlanBridge,
 } from "../../../integrations/shared/bridge-client.ts";
-import { adapterOptions, type Claim, EXIT, program, ROOT, WIDEN_OP, writeClaims } from "../lib/adapter.ts";
+import { adapterOptions, type Claim, EXIT, program, ROOT, say, WIDEN_OP, writeClaims } from "../lib/adapter.ts";
 import { type Execute, providerClient } from "../lib/client.ts";
 import { ACCOUNT, OWNER, READ_SLUGS, READS, REPO, REPO_ID, WRITES } from "../lib/github-state.ts";
 
@@ -38,7 +39,6 @@ const dir = join(options.runDir, "codemode");
 mkdirSync(dir, { recursive: true });
 const journal = join(dir, "journal.db");
 const execute: Execute = providerClient(options.provider);
-const say = (tag: string, value: unknown) => process.stdout.write(`@@${tag} ${JSON.stringify(value)}\n`);
 
 const declaration: ProviderDeclaration = {
   provider: PROVIDER,
@@ -57,7 +57,6 @@ function codemode(args: string[]): { status: number; stdout: string; stderr: str
   return { status: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
 }
 
-/** Run a read and unwrap it; a failure throws. */
 async function read(slug: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<any> {
   const envelope = await execute(slug, args, { account: ACCOUNT, signal });
   if (!envelope.successful) throw new Error(envelope.error ?? `${slug} failed`);
@@ -82,7 +81,7 @@ async function investigate(): Promise<{ ops: Array<{ id: string; tool: string; a
       try {
         return { ok: true, value: await read(call.tool, call.arguments as Record<string, unknown>, signal) };
       } catch (error) {
-        return { ok: false, error: { code: "provider_error", message: error instanceof Error ? error.message : String(error) } };
+        return { ok: false, error: { code: "provider_error", message: describeError(error) } };
       }
     },
   });
@@ -90,7 +89,7 @@ async function investigate(): Promise<{ ops: Array<{ id: string; tool: string; a
   return { ops: Array.isArray(report.output) ? (report.output as never) : [], status: report.status };
 }
 
-/** The proposal-to-plan step (KTD11): a random plan id lives only in each comment's marker line. */
+/** Turn the proposal into a plan: a random plan id lives only in each comment's marker line. */
 function writePlan(ops: Array<{ id: string; tool: string; arguments: Record<string, unknown> }>): void {
   const planId = Math.random().toString(36).slice(2, 10);
   const scope = { provider: PROVIDER, account: ACCOUNT, destination: DESTINATION };
@@ -119,7 +118,7 @@ function checkAndApprove(): { digest: string } {
     "--digest", digest, "--approver", "bench", ...(options.concurrency ? ["--concurrency", String(options.concurrency)] : []),
   ]);
   if (approve.status !== 0) throw new Error(`plan approve failed: ${approve.stderr}`);
-  // The host's own binding, fixed at approval like KTD9's declaration: the login and repository id.
+  // The host's own binding, fixed at approval like the provider declaration: the login and repository id.
   writeFileSync(join(dir, "host.json"), `${JSON.stringify({ login: hostLogin, repository_id: REPO_ID, digest })}\n`);
   return { digest };
 }

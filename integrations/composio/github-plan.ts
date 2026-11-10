@@ -164,7 +164,8 @@ interface Checked {
 
 type Scope = PlanCall["scope"];
 
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+/** A plain object: not null and not an array. */
+export const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const sameName = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /** Check scope: provider, the exact account and login, and `--repo` with an id. */

@@ -61,7 +61,7 @@ export interface BridgeCall {
   arguments: unknown;
 }
 
-/** The process and limits of a bridge; fixed when it starts. */
+/** How to start a bridge: the executable, its working directory, and the limits passed as its options. */
 export interface BridgeLimits {
   /** Absolute path of the `codemode` executable. */
   bin: string;
@@ -112,6 +112,11 @@ export function positive(name: string, value: string | number): number {
   const text = String(value);
   if (!/^[1-9][0-9]*$/.test(text)) throw new Error(`${name} must be a positive integer`);
   return Number(text);
+}
+
+/** An error's message, or the thrown value as a string when it is not an `Error`. */
+export function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** Model-facing summary: status, call count, and output or diagnostic. */
@@ -273,7 +278,7 @@ export async function runBridge(run: BridgeRun): Promise<RunReport> {
           if (outstanding.delete(frame.id)) reply(frame.id, result);
         },
         (error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = describeError(error);
           if (outstanding.delete(frame.id)) reply(frame.id, { ok: false, error: { code: "tool_error", message } });
         },
       ).catch(() => {
@@ -435,8 +440,6 @@ export interface PlanBridgeResult {
 /** Bound on bridge frames in plan mode: call arguments are at most 64 KiB; outcomes list at most 256 operations. */
 const PLAN_FRAME_BYTES = 4 * HOST_FRAME_BYTES;
 const MESSAGE_CHARS = 4_096;
-
-const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /** Fit a result frame into one host frame without misreporting what was observed. */
 function resultFrame(id: number, reply: PlanReply): string {

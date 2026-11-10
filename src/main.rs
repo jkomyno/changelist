@@ -176,21 +176,17 @@ fn parse_arguments() -> Result<Command, CliError> {
             .to_str()
             .and_then(|value| value.parse::<u64>().ok())
             .ok_or_else(|| CliError(format!("{flag} requires a nonnegative integer")))?;
+        let size = || {
+            usize::try_from(number)
+                .map_err(|_| CliError(format!("{flag} is too large on this platform")))
+        };
         match flag {
             "--timeout-ms" => config.timeout_ms = number,
             "--heap-mb" => config.heap_mb = number,
             "--process-memory-mb" => config.process_memory_mb = Some(number),
-            _ => {}
-        }
-        if matches!(flag, "--timeout-ms" | "--heap-mb" | "--process-memory-mb") {
-            continue;
-        }
-        let number = usize::try_from(number)
-            .map_err(|_| CliError(format!("{flag} is too large on this platform")))?;
-        match flag {
-            "--max-calls" => config.max_calls = number,
-            "--concurrency" => config.max_concurrency = number,
-            "--max-output-bytes" => config.max_output_bytes = number,
+            "--max-calls" => config.max_calls = size()?,
+            "--concurrency" => config.max_concurrency = size()?,
+            "--max-output-bytes" => config.max_output_bytes = size()?,
             _ => unreachable!("numeric flags were checked above"),
         }
     }

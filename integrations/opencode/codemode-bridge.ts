@@ -30,6 +30,7 @@ import { resolve } from "node:path";
 import type { ToolContext as OpenCodeToolContext, ToolDefinition } from "@opencode-ai/plugin";
 import {
   type BridgeCall,
+  describeError,
   findExecutable,
   type HostFact,
   type HostReply,
@@ -72,10 +73,6 @@ export interface CodemodeOptions {
 
 function isArguments(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** OpenCode's error for a user (or non-interactive client) rejecting an approval. */
@@ -154,11 +151,11 @@ export function codemode(options: CodemodeOptions) {
               if (!signal.aborted) report("permission_denied");
               if (isUserRejection(error) && !signal.aborted) {
                 rejection ??= error;
-                return { ok: false, error: { code: "permission_rejected", message: message(error) } };
+                return { ok: false, error: { code: "permission_rejected", message: describeError(error) } };
               }
               // Denied by a rule or corrected with feedback. After an abort the bridge
               // ignores this reply and records the call as unknown; it never runs.
-              return { ok: false, error: { code: "permission_denied", message: message(error) } };
+              return { ok: false, error: { code: "permission_denied", message: describeError(error) } };
             }
             if (signal.aborted) {
               return { ok: false, error: { code: "cancelled", message: "host cancelled before execution" } };

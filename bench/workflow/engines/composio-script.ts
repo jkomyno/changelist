@@ -1,4 +1,4 @@
-// The competent Composio-native script baseline (R28), published with the results.
+// The competent Composio-native script baseline, published with the results.
 //
 // It is written the way a careful developer would write the triage workflow against the
 // `execute(slug, arguments, { account })` helper of `composio run`, with no codemode, no engine,

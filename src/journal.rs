@@ -394,6 +394,10 @@ impl fmt::Debug for JournalReader {
 
 /// Which fact a write records; only test hooks look at it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "only test builds classify committed records")
+)]
 pub(crate) enum WriteKind<'a> {
     /// A dispatch intent for this attempt key.
     Intent(&'a str),
@@ -456,8 +460,8 @@ impl Record {
         observed: Observed,
         retention: Retention,
     ) -> Result<Self, JournalError> {
-        let record = serde_json::to_string(&retained_observation(observed, retention))
-            .map_err(|error| JournalError::Storage(error.to_string()))?;
+        let record =
+            serde_json::to_string(&retained_observation(observed, retention)).map_err(storage)?;
         Ok(Self::Observation {
             key: key.to_string(),
             record,
@@ -469,8 +473,7 @@ impl Record {
         session: u64,
         keys: &[String],
     ) -> Result<Self, JournalError> {
-        let keys = serde_json::to_string(keys)
-            .map_err(|error| JournalError::Storage(error.to_string()))?;
+        let keys = serde_json::to_string(keys).map_err(storage)?;
         Ok(Self::ProbeStart {
             operation: operation.to_string(),
             session,
@@ -508,6 +511,7 @@ impl Record {
         }
     }
 
+    #[cfg(test)]
     fn kind(&self) -> WriteKind<'_> {
         match self {
             Self::Intent { key, .. } => WriteKind::Intent(key),
@@ -687,7 +691,7 @@ fn journal_id(plan: &FrozenPlan) -> String {
         .to_string()
 }
 
-fn storage(error: rusqlite::Error) -> JournalError {
+pub(crate) fn storage(error: impl ToString) -> JournalError {
     JournalError::Storage(error.to_string())
 }
 
@@ -900,7 +904,11 @@ impl Journal {
     /// Commit `records` in one transaction, in order, and return each one's fact
     /// ordinal. Either every record commits or none does.
     pub(crate) fn commit(&mut self, records: &[Record]) -> Result<Vec<u64>, JournalError> {
+        // Only the test hook reads the kinds, so other builds pass none.
+        #[cfg(test)]
         let kinds: Vec<WriteKind<'_>> = records.iter().map(Record::kind).collect();
+        #[cfg(not(test))]
+        let kinds: Vec<WriteKind<'_>> = Vec::new();
         self.write(&kinds, |transaction| {
             records
                 .iter()
@@ -932,8 +940,7 @@ impl Journal {
             note: approval.note.as_deref().map(bounded),
             ..approval.clone()
         };
-        let record = serde_json::to_string(&bounded_approval)
-            .map_err(|error| JournalError::Storage(error.to_string()))?;
+        let record = serde_json::to_string(&bounded_approval).map_err(storage)?;
         self.write(&[WriteKind::Other], |transaction| {
             let ordinal = next_ordinal(transaction)?;
             transaction.execute(
@@ -973,7 +980,7 @@ impl Journal {
         let trace = trace
             .map(serde_json::to_string)
             .transpose()
-            .map_err(|error| JournalError::Storage(error.to_string()))?;
+            .map_err(storage)?;
         let detail = detail.map(bounded);
         self.write(&[WriteKind::Other], |transaction| {
             let ordinal = next_ordinal(transaction)?;
@@ -1032,7 +1039,7 @@ impl Journal {
         let record = serde_json::to_string(&Observed::Unobserved {
             reason: bounded(reason),
         })
-        .map_err(|error| JournalError::Storage(error.to_string()))?;
+        .map_err(storage)?;
         let transaction = self.connection.transaction().map_err(storage)?;
         let keys: Vec<String> = {
             let mut statement = transaction

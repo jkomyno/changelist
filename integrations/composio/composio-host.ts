@@ -10,7 +10,7 @@ import { closeSync, mkdtempSync, openSync, readFileSync, readSync, renameSync, r
 import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { promisify } from "node:util";
-import { findExecutable, type PlanCall, positive, type RunReport, runPlanBridge, summarize } from "../shared/bridge-client.ts";
+import { describeError, findExecutable, type PlanCall, positive, type RunReport, runPlanBridge, summarize } from "../shared/bridge-client.ts";
 import { investigationExecutor, READ_TOOLS, runComposio, runHelperExecutor } from "./composio-provider.ts";
 import {
   type AccountExecute,
@@ -22,6 +22,7 @@ import {
   githubPlanHost,
   type Identity,
   identityFromDeclaration,
+  isRecord,
   type ListConnections,
   type Connection,
   marker,
@@ -126,7 +127,7 @@ async function planCheck(bin: string, path: string): Promise<string> {
     return (JSON.parse(stdout) as { digest: string }).digest;
   } catch (error) {
     const stderr = (error as { stderr?: string }).stderr?.trim();
-    throw new Error(`codemode plan check refused the plan: ${stderr || (error instanceof Error ? error.message : String(error))}`);
+    throw new Error(`codemode plan check refused the plan: ${stderr || describeError(error)}`);
   }
 }
 
@@ -147,8 +148,6 @@ interface Proposed {
   arguments: Record<string, unknown>;
   preconditions?: unknown[];
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** The program's proposal: `{operations: [{id, tool, arguments, preconditions?}]}` and nothing else. */
 function proposal(output: unknown): Proposed[] {
@@ -352,7 +351,7 @@ async function session(kind: "run" | "resume", providers: HostProviders, target:
     reconcile: (request, signal) => host.reconcile(request, signal),
     execute: (call, signal) => host.execute(call, signal),
   }).catch((error: unknown) => {
-    finish(process.stderr, `composio host: ${error instanceof Error ? error.message : String(error)}`, 1);
+    finish(process.stderr, `composio host: ${describeError(error)}`, 1);
     return new Promise<never>(() => {});
   });
   const { outcome, diagnostic } = result;

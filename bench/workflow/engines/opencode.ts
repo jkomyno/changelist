@@ -10,7 +10,7 @@
 // and has no memory limit). The equal-limits row sets `timeoutMs` and `maxToolCalls`; the memory
 // bound is the driver's `node --max-old-space-size` on this process, because the interpreter
 // shares the host's heap.
-import { adapterOptions, EXIT, outcomeClaims, parseOutcomes, PKGS, program, WIDEN_OP, writeClaims } from "../lib/adapter.ts";
+import { adapterOptions, EXIT, outcomeClaims, parseOutcomes, PKGS, program, say, WIDEN_OP, writeClaims } from "../lib/adapter.ts";
 import { call, providerClient } from "../lib/client.ts";
 import { ACCOUNT, READ_SLUGS, WRITE_SLUGS } from "../lib/github-state.ts";
 import { pkgImport } from "../lib/pkg-import.ts";
@@ -19,7 +19,6 @@ import { join } from "node:path";
 const options = adapterOptions();
 const root = join(PKGS, "opencode");
 const execute = providerClient(options.provider);
-const say = (tag: string, value: unknown) => process.stdout.write(`@@${tag} ${JSON.stringify(value)}\n`);
 
 const { CodeMode, Tool } = await pkgImport(root, "@opencode/codemode");
 const { Effect } = await pkgImport(root, "effect");

@@ -6,7 +6,7 @@
  */
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { PlanCall, ReconcileRequest } from "../../shared/bridge-client.ts";
+import { describeError, type PlanCall, type ReconcileRequest } from "../../shared/bridge-client.ts";
 import {
   ADD_LABELS,
   CREATE_COMMENT,
@@ -90,7 +90,7 @@ async function check(name: string, body: () => Promise<string | true>) {
     const verdict = await body();
     results[name] = verdict === true ? "ok" : verdict;
   } catch (error) {
-    results[name] = `threw: ${error instanceof Error ? error.message : String(error)}`;
+    results[name] = `threw: ${describeError(error)}`;
   }
 }
 const expect = (actual: unknown, expected: unknown): string | true => {

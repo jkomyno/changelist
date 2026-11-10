@@ -42,7 +42,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -50,7 +50,7 @@ use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::runtime::{REPLY_FRAME_BYTES, frame};
+use crate::runtime::{REPLY_FRAME_BYTES, frame, lock};
 use crate::{
     BridgeTotals, CallContext, CallOutcome, FactSink, ProviderError, ProviderFactKind,
     RunCancellation, RunConfig, RunError, RunReport, RunStatus, ToolCall, ToolProvider, run,
@@ -238,20 +238,14 @@ struct HostProvider {
 struct Forget<'a>(&'a Pending, u64);
 impl Drop for Forget<'_> {
     fn drop(&mut self) {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.1);
+        lock(self.0).remove(&self.1);
     }
 }
 
 impl ToolProvider for HostProvider {
     async fn execute(&self, call: ToolCall, context: CallContext) -> Result<Value, ProviderError> {
         let (sender, receiver) = oneshot::channel();
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(call.id, (sender, context.facts));
+        lock(&self.pending).insert(call.id, (sender, context.facts));
         let _forget = Forget(&self.pending, call.id);
         let frame = encode(&BridgeFrame::Call {
             id: call.id,
@@ -360,28 +354,17 @@ async fn route<R: AsyncRead + Unpin>(
                         "host result needs ok with value or too_large, or not ok with error".into(),
                     );
                 };
-                let entry = pending
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .remove(&id);
+                let entry = lock(&pending).remove(&id);
                 if let Some((sender, _)) = entry {
                     if too_large {
-                        counters
-                            .too_large
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .insert(id, bytes);
+                        lock(&counters.too_large).insert(id, bytes);
                     }
                     let _ = sender.send(reply);
                 }
             }
             Ok(HostFrame::Fact { id, kind, host_ms }) => {
                 // Sent before the result is, so the run loop sees the fact first.
-                match pending
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .get(&id)
-                {
+                match lock(&pending).get(&id) {
                     Some((_, facts)) => facts.report(id, kind, host_ms),
                     None => {
                         counters.facts_ignored.fetch_add(1, Ordering::Relaxed);
@@ -399,7 +382,7 @@ async fn route<R: AsyncRead + Unpin>(
             }
         }
     };
-    *failure.lock().unwrap_or_else(PoisonError::into_inner) = Some(reason);
+    *lock(&failure) = Some(reason);
     cancellation.cancel();
 }
 
@@ -533,12 +516,7 @@ where
     report.provider_facts_dropped += counters.facts_ignored.load(Ordering::Relaxed);
     // A `too_large` reply reached the runtime as a placeholder; report the host's
     // size instead, or none when the host did not give one.
-    for (id, bytes) in counters
-        .too_large
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .drain()
-    {
+    for (id, bytes) in lock(&counters.too_large).drain() {
         let record = usize::try_from(id)
             .ok()
             .and_then(|id| id.checked_sub(1))
@@ -553,10 +531,7 @@ where
     }
     // A cancellation caused by the bridge input explains itself in the report.
     if report.status == RunStatus::Cancelled
-        && let Some((status, message)) = failure
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
+        && let Some((status, message)) = lock(&failure).take()
     {
         report.status = status;
         report.diagnostic = Some(message);

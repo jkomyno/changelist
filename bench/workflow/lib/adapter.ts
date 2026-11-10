@@ -97,6 +97,11 @@ export function adapterOptions(): AdapterOptions {
   };
 }
 
+/** Write one `@@<tag> <json>` line on stdout, the form the driver scans engine output for. */
+export function say(tag: string, value: unknown): void {
+  process.stdout.write(`@@${tag} ${JSON.stringify(value)}\n`);
+}
+
 export function writeClaims(options: AdapterOptions, claims: Omit<Claims, "attempt">): void {
   writeFileSync(join(options.runDir, `claims-${options.attempt}.json`), `${JSON.stringify({ ...claims, attempt: options.attempt }, null, 2)}\n`);
 }

@@ -26,6 +26,7 @@
  * `composio run` wraps everything after the imports in a function, so this file
  * has no exports and ends with a statement.
  */
+import { describeError } from "../shared/bridge-client.ts";
 import { finish, listConnections, runHost } from "./composio-host.ts";
 import type { AccountExecute } from "./github-plan.ts";
 
@@ -33,5 +34,5 @@ const execute = (globalThis as { execute?: AccountExecute }).execute;
 try {
   await runHost(process.argv.slice(2), execute ? { execute, connections: listConnections } : undefined);
 } catch (error) {
-  finish(process.stderr, `composio host: ${error instanceof Error ? error.message : String(error)}`, 2);
+  finish(process.stderr, `composio host: ${describeError(error)}`, 2);
 }

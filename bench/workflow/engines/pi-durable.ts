@@ -17,7 +17,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { adapterOptions, EXIT, outcomeClaims, parseOutcomes, PKGS, program, WIDEN_OP, writeClaims } from "../lib/adapter.ts";
+import { adapterOptions, EXIT, outcomeClaims, parseOutcomes, PKGS, program, say, WIDEN_OP, writeClaims } from "../lib/adapter.ts";
 import { call, providerClient } from "../lib/client.ts";
 import { ACCOUNT, operationId, READ_SLUGS, WRITE_SLUGS } from "../lib/github-state.ts";
 import { pkgImport } from "../lib/pkg-import.ts";
@@ -27,7 +27,6 @@ const root = join(PKGS, "pi-durable");
 const dir = join(options.runDir, "pi");
 mkdirSync(dir, { recursive: true });
 const execute = providerClient(options.provider);
-const say = (tag: string, value: unknown) => process.stdout.write(`@@${tag} ${JSON.stringify(value)}\n`);
 
 const extra = options.widen ? JSON.stringify([WIDEN_OP]) : "[]";
 const prelude = "async function gh(slug, args) { const r = await tools[slug](args); return typeof r === 'string' ? JSON.parse(r) : r; }";

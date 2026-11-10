@@ -23,7 +23,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 use tokio::time::{self, Instant};
 
-use crate::journal::{History, Journal, JournalError, Record, SessionKind};
+use crate::journal::{History, Journal, JournalError, Record, SessionKind, storage};
 use crate::plan::{FrozenPlan, Operation};
 use crate::recovery::{
     Approval, Assessment, Attempt, Fact, NextStep, Observed, ProbeContext, ReconcileMethod,
@@ -32,7 +32,7 @@ use crate::recovery::{
 };
 use crate::runtime::{
     CallContext, NativeCall, ProviderError, RunCancellation, RunConfig, RunError, RunReport,
-    RunStatus, ToolCall, ToolProvider, millis, run_calls,
+    RunStatus, ToolCall, ToolProvider, lock, millis, run_calls,
 };
 
 /// Process settings for a session that are not part of the approval.
@@ -247,7 +247,7 @@ struct QueuedWrite(Arc<(Mutex<usize>, Condvar)>);
 impl Drop for QueuedWrite {
     fn drop(&mut self) {
         let (count, finished) = &*self.0;
-        *count.lock().unwrap_or_else(PoisonError::into_inner) -= 1;
+        *lock(count) -= 1;
         finished.notify_all();
     }
 }
@@ -263,16 +263,12 @@ impl Shared {
 
     /// Count one write as queued until the returned guard is dropped.
     fn queue_write(&self) -> QueuedWrite {
-        *self.writes.0.lock().unwrap_or_else(PoisonError::into_inner) += 1;
+        *lock(&self.writes.0) += 1;
         QueuedWrite(Arc::clone(&self.writes))
     }
 
     fn id(&self) -> String {
-        self.journal
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .id()
-            .to_string()
+        lock(&self.journal).id().to_string()
     }
 }
 
@@ -291,14 +287,23 @@ async fn journaled_as<T: Send + 'static>(
     queued: QueuedWrite,
     body: impl FnOnce(&mut Journal) -> Result<T, JournalError> + Send + 'static,
 ) -> Result<T, JournalError> {
-    let journal = Arc::clone(&shared.journal);
+    on_journal(Arc::clone(&shared.journal), move || queued, body).await
+}
+
+/// On a blocking thread, run `before`, then `body` against the locked journal.
+/// What `before` returns is dropped once the journal is unlocked again.
+async fn on_journal<G, T: Send + 'static>(
+    journal: Arc<Mutex<Journal>>,
+    before: impl FnOnce() -> G + Send + 'static,
+    body: impl FnOnce(&mut Journal) -> Result<T, JournalError> + Send + 'static,
+) -> Result<T, JournalError> {
     tokio::task::spawn_blocking(move || {
-        let _queued = queued;
-        let mut guard = journal.lock().unwrap_or_else(PoisonError::into_inner);
+        let _held = before();
+        let mut guard = lock(&journal);
         body(&mut guard)
     })
     .await
-    .map_err(|error| JournalError::Storage(error.to_string()))?
+    .map_err(storage)?
 }
 
 /// Commit `record` and return its fact ordinal once the transaction holding it
@@ -314,16 +319,12 @@ async fn journaled_as<T: Send + 'static>(
 async fn committed(shared: &Shared, record: Record) -> Result<u64, JournalError> {
     let queued = shared.queue_write();
     let (sender, receiver) = oneshot::channel();
-    shared
-        .waiting
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .push((record, sender));
+    lock(&shared.waiting).push((record, sender));
     let waiting = Arc::clone(&shared.waiting);
     journaled_as(shared, queued, move |journal| {
         // Taken while holding the journal, so a record is either still waiting
         // here or an earlier holder has already answered it.
-        let group = std::mem::take(&mut *waiting.lock().unwrap_or_else(PoisonError::into_inner));
+        let group = std::mem::take(&mut *lock(&waiting));
         if group.is_empty() {
             return Ok(());
         }
@@ -350,24 +351,17 @@ async fn after_queued_writes<T: Send + 'static>(
     shared: &Shared,
     body: impl FnOnce(&mut Journal) -> Result<T, JournalError> + Send + 'static,
 ) -> Result<T, JournalError> {
-    let shared = shared.clone();
-    tokio::task::spawn_blocking(move || {
-        let (count, finished) = &*shared.writes;
-        let mut queued = count.lock().unwrap_or_else(PoisonError::into_inner);
+    let writes = Arc::clone(&shared.writes);
+    let wait = move || {
+        let (count, finished) = &*writes;
+        let mut queued = lock(count);
         while *queued > 0 {
             queued = finished
                 .wait(queued)
                 .unwrap_or_else(PoisonError::into_inner);
         }
-        drop(queued);
-        let mut guard = shared
-            .journal
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        body(&mut guard)
-    })
-    .await
-    .map_err(|error| JournalError::Storage(error.to_string()))?
+    };
+    on_journal(Arc::clone(&shared.journal), wait, body).await
 }
 
 /// Run one session against `journal` with `provider`.
@@ -748,9 +742,7 @@ async fn probe<P: RecoverableProvider>(
             result = running.join_next() => result,
         };
         let Some(result) = result else { break };
-        let Some((probe, elapsed, outcome)) =
-            result.map_err(|error| JournalError::Storage(error.to_string()))?
-        else {
+        let Some((probe, elapsed, outcome)) = result.map_err(storage)? else {
             continue;
         };
         committed(
@@ -800,7 +792,14 @@ async fn dispatch_run<P: RecoverableProvider>(
         .into_iter()
         .map(|(operation, number)| {
             let key = format!("{journal_id}-{}-{number}", operation.id);
-            (operation.id.clone(), (operation, number, key))
+            (
+                operation.id.clone(),
+                Entry {
+                    operation,
+                    number,
+                    key,
+                },
+            )
         })
         .collect();
     let journaling = JournalingProvider {
@@ -815,13 +814,23 @@ async fn dispatch_run<P: RecoverableProvider>(
     run_calls(&calls, config, journaling, cancellation.clone()).await
 }
 
+/// One operation approved for dispatch in this run.
+#[derive(Clone)]
+struct Entry {
+    operation: Operation,
+    /// The attempt number this dispatch records.
+    number: u32,
+    /// The attempt key.
+    key: String,
+}
+
 /// The runtime's provider for a dispatch run: it journals each attempt around the
 /// trusted provider's call.
 struct JournalingProvider<P> {
     journal: Shared,
     provider: Arc<P>,
-    /// Operation identity -> (operation, attempt number, attempt key).
-    entries: HashMap<String, (Operation, u32, String)>,
+    /// Operation identity -> its entry.
+    entries: HashMap<String, Entry>,
     dispatched: Mutex<HashSet<String>>,
     session: u64,
     /// What the journal keeps of the provider's replies, from the approval.
@@ -838,7 +847,7 @@ fn refusal(code: &str, message: &str) -> ProviderError {
 
 impl<P: RecoverableProvider> JournalingProvider<P> {
     /// The approved entry the guest named, dispatched at most once per session.
-    fn claim(&self, call: &ToolCall) -> Result<(Operation, u32, String), ProviderError> {
+    fn claim(&self, call: &ToolCall) -> Result<Entry, ProviderError> {
         let id = call
             .arguments
             .as_object()
@@ -849,18 +858,14 @@ impl<P: RecoverableProvider> JournalingProvider<P> {
         let entry = self
             .entries
             .get(id)
-            .filter(|(operation, _, _)| operation.tool == call.tool)
+            .filter(|entry| entry.operation.tool == call.tool)
             .ok_or_else(|| {
                 refusal(
                     "plan_violation",
                     "the operation is not approved for dispatch now",
                 )
             })?;
-        let fresh = self
-            .dispatched
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(id.to_string());
+        let fresh = lock(&self.dispatched).insert(id.to_string());
         if !fresh {
             return Err(refusal(
                 "plan_violation",
@@ -882,7 +887,11 @@ impl<P: RecoverableProvider> JournalingProvider<P> {
 
 impl<P: RecoverableProvider> ToolProvider for JournalingProvider<P> {
     async fn execute(&self, call: ToolCall, context: CallContext) -> Result<Value, ProviderError> {
-        let (operation, number, key) = self.claim(&call)?;
+        let Entry {
+            operation,
+            number,
+            key,
+        } = self.claim(&call)?;
         let id = operation.id.clone();
         let session = self.session;
         let call_id = call.id;
@@ -974,7 +983,7 @@ mod tests {
     type Events = Arc<Mutex<Vec<Event>>>;
 
     fn events(log: &Events) -> Vec<Event> {
-        log.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        lock(log).clone()
     }
 
     /// A provider that records when it is entered and succeeds.
@@ -990,10 +999,7 @@ mod tests {
         }
 
         async fn execute(&self, attempt: Attempt, _: CallContext) -> Result<Value, AttemptError> {
-            self.0
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(Event::ProviderEntered(attempt.key));
+            lock(&self.0).push(Event::ProviderEntered(attempt.key));
             Ok(json!({"ok": true}))
         }
 
@@ -1066,18 +1072,14 @@ mod tests {
         let release_receiver = Mutex::new(release_receiver);
         let wait = move |key: &str| {
             let _ = held_sender.send(key.to_string());
-            release_receiver
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
+            lock(&release_receiver)
                 .recv_timeout(BOUND)
                 .unwrap_or_else(|_| Err("the test never released the write".into()))
         };
         let log = Arc::clone(&events);
         let hook: CommitHook = Arc::new(move |point, kind| {
             let push = |event| {
-                log.lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .push(event);
+                lock(&log).push(event);
             };
             match (point, kind, hold) {
                 (Point::BeforeCommit, WriteKind::Intent(key), _) => {
@@ -1109,7 +1111,12 @@ mod tests {
             .iter()
             .map(|id| {
                 let operation = plan.operation(id).expect("planned").clone();
-                (id.to_string(), (operation, 1, format!("key-{id}-1")))
+                let entry = Entry {
+                    operation,
+                    number: 1,
+                    key: format!("key-{id}-1"),
+                };
+                (id.to_string(), entry)
             })
             .collect();
         let provider = JournalingProvider {
@@ -1181,13 +1188,7 @@ mod tests {
     }
 
     fn queued_writes(harness: &Harness) -> usize {
-        *harness
-            .provider
-            .journal
-            .writes
-            .0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        *lock(&harness.provider.journal.writes.0)
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1385,11 +1386,7 @@ mod tests {
     fn wait_until_queued(shared: &Shared, count: usize) {
         let deadline = std::time::Instant::now() + BOUND;
         loop {
-            let queued = *shared
-                .writes
-                .0
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let queued = *lock(&shared.writes.0);
             if queued >= count {
                 break;
             }
@@ -1582,10 +1579,7 @@ mod tests {
         let log = Arc::new(Mutex::new(Vec::new()));
         let hooked = Arc::clone(&log);
         journal.set_commit_hook(Arc::new(move |point, _| {
-            hooked
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(point);
+            lock(&hooked).push(point);
             Ok(())
         }));
         let shared = Shared::new(journal);

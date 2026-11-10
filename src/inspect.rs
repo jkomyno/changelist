@@ -47,7 +47,7 @@ impl Default for InspectOptions {
 pub struct Inspection {
     /// The report's schema version.
     pub schema_version: u32,
-    /// Execution source.
+    /// Whether the run made native calls or ran a program in the V8 worker.
     pub backend: ExecutionBackend,
     /// Terminal run status.
     pub status: RunStatus,

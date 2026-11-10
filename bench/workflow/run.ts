@@ -13,6 +13,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, 
 import { cpus, totalmem } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { setTimeout as sleep } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import type { Claims } from "./lib/adapter.ts";
 import { ROOT, WORKFLOW_DIR } from "./lib/adapter.ts";
@@ -122,7 +123,6 @@ const cacheRuns = join(WORKFLOW_DIR, ".cache", "runs", out.split("/").filter(Boo
 const BIN = process.env.CODEMODE_BIN ?? join(ROOT, "target", "release", "codemode");
 const selectedScenarios = cli.scenarios?.split(",");
 const selectedEngines = cli.engines?.split(",") ?? config.engines;
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const log = (line: string) => process.stderr.write(`${new Date().toISOString().slice(11, 19)} ${line}\n`);
 
 // ---- environment ------------------------------------------------------------------------------------
@@ -376,7 +376,6 @@ function scriptProgress(dir: string): { decided: number; status: Record<string, 
   return { decided: decided?.ops.length ?? 0, status };
 }
 
-/** Can another process see progress while the engine runs? */
 function inspectMidRun(engine: string, dir: string): Record<string, unknown> {
   switch (engine) {
     case "codemode": {

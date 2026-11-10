@@ -36,7 +36,9 @@
 // Each fault that strands a caller prints `@@ARMED {...}` so the driver can kill at that point.
 import { closeSync, fsyncSync, openSync, writeSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { setTimeout as sleep } from "node:timers/promises";
 import { parseArgs } from "node:util";
+import { say } from "./lib/adapter.ts";
 import {
   ACCOUNT,
   applyWrite,
@@ -86,8 +88,7 @@ function append(record: Omit<LedgerRecord, "seq" | "ts">): void {
   fsyncSync(fd);
 }
 
-const armed = (detail: Record<string, unknown>) => process.stdout.write(`@@ARMED ${JSON.stringify(detail)}\n`);
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const armed = (detail: Record<string, unknown>) => say("ARMED", detail);
 
 function faultFor(slug: string): Fault | undefined {
   const cls = WRITE_SLUGS.includes(slug) ? "write" : "read";
