@@ -63,10 +63,8 @@ fn recovery_evaluation_checks_every_strategy_and_mode() {
     assert!(persisted["environment"].get("deno_version").is_none());
     for kind in ["recovery_runs", "overhead_runs", "recovery", "overhead"] {
         for run in persisted[kind].as_array().expect("evaluation cells") {
-            assert!(run["guest_startup_ms"].is_null(), "{run}");
-            if kind.ends_with("_runs") && run["strategy"] != "stop" {
-                assert_eq!(run["backend"], "native", "{run}");
-                assert_eq!(run["guest_transport_bytes"], 0, "{run}");
+            for removed in ["guest_startup_ms", "guest_transport_bytes", "backend"] {
+                assert!(run.get(removed).is_none(), "{removed} in {run}");
             }
         }
     }

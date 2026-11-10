@@ -88,6 +88,22 @@ export function finish(stream: NodeJS.WriteStream, line: string, code: number): 
 export interface HostProviders {
   execute: AccountExecute;
   connections: ListConnections;
+  /** Bound on each step of reads outside a session (identity, preflight); 60 s by default. */
+  readTimeoutMs?: number;
+}
+
+const READ_TIMEOUT_MS = 60_000;
+
+/**
+ * `work`, or an error naming `step` once `ms` pass. The helper call it waits on
+ * cannot be cancelled; the command exits, which ends it.
+ */
+function within<T>(step: string, ms: number, work: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${step} did not finish within ${ms} ms`)), ms);
+  });
+  return Promise.race([work, expired]).finally(() => clearTimeout(timer));
 }
 
 /** Wraps the plan host's handlers, for example to observe them; the identity by default. */
@@ -97,15 +113,16 @@ export type DecorateHost = (host: GithubPlanHost) => GithubPlanHost;
 export async function listConnections(): Promise<Connection[]> {
   // `composio run` sets BUN_BE_BUN, which makes a nested `composio` act as its embedded Bun.
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "BUN_BE_BUN"));
-  const { stdout } = await promisify(execFile)("composio", ["connections", "list"], { maxBuffer: 1024 * 1024, env });
+  const { stdout } = await promisify(execFile)("composio", ["connections", "list"], { maxBuffer: 1024 * 1024, env, timeout: 30_000 });
   const github = (JSON.parse(stdout) as { github?: unknown }).github;
   if (!Array.isArray(github)) throw new Error("unexpected connections list");
   return github as Connection[];
 }
 
 /** Resolve the login and repository id `target` acts on, or exit refused. */
-async function identify(execute: AccountExecute, target: Target): Promise<Identity & { repoId: number }> {
-  const found = await resolve(execute, target);
+async function identify(providers: HostProviders, target: Target): Promise<Identity & { repoId: number }> {
+  const step = "resolving the account's GitHub login and the repository";
+  const found = await within(step, providers.readTimeoutMs ?? READ_TIMEOUT_MS, resolve(providers.execute, target));
   if ("error" in found) {
     finish(process.stdout, JSON.stringify({ status: "refused", detail: found.error }), 4);
     return new Promise<never>(() => {});
@@ -198,7 +215,7 @@ async function investigate(providers: HostProviders, target: Target, args: Map<s
     concurrency: positive("--concurrency", args.get("concurrency") ?? 4),
     maxCalls: positive("--max-calls", args.get("max-calls") ?? 32),
   };
-  const identity = await identify(providers.execute, target);
+  const identity = await identify(providers, target);
 
   const controller = new AbortController();
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => controller.abort());
@@ -282,52 +299,66 @@ async function checkedPlan(bin: string, path: string): Promise<{ digest: string;
 async function preflight(providers: HostProviders, target: Target, args: Map<string, string>): Promise<void> {
   const bin = findExecutable(args.get("bin") ?? "codemode", process.cwd());
   const plan = await checkedPlan(bin, required(args, "plan"));
-  const identity = await identify(providers.execute, target);
+  const identity = await identify(providers, target);
   const host = githubPlanHost(providers.execute, identity, providers.connections, () => {});
   const [owner, repo] = target.repo.split("/");
+  const bound = providers.readTimeoutMs ?? READ_TIMEOUT_MS;
   const authorized = new Map<string, true | string>();
   const report = [];
   let ready = true;
   for (const operation of plan.operations) {
     const row: Record<string, unknown> = { operation: operation.id };
+    report.push(row);
+    let checked: ReturnType<typeof check>;
     try {
-      const { write, issueState } = check(operation.id, operation.tool, operation.arguments, operation.scope, operation.preconditions ?? [], identity);
-      const key = JSON.stringify(operation.scope);
-      if (!authorized.has(key)) {
-        const verdict = await host.authorize(operation.scope);
-        authorized.set(key, verdict.ok ? true : verdict.error.code);
-      }
-      row.authorized = authorized.get(key);
-      ready &&= row.authorized === true;
-      if (write.kind === "add" || write.kind === "remove") {
-        const label = await observe(providers.execute, GET_LABEL, { owner, repo, name: write.label }, target.account);
-        row.label_exists = "result" in label && label.result.successful && label.result.dryRun !== true;
-        ready &&= row.label_exists === true;
-      }
-      if (issueState) {
-        const issue = await observe(providers.execute, "GITHUB_GET_AN_ISSUE", { owner, repo, issue_number: write.issue }, target.account);
-        const state = "result" in issue && issue.result.successful && isRecord(issue.result.data) ? issue.result.data.state : undefined;
-        row.precondition_holds = state === issueState;
-        ready &&= row.precondition_holds === true;
-      }
-      const now = await host.reconcile(
-        { id: 0, operation: operation.id, tool: operation.tool, arguments: operation.arguments, keys: [], scope: operation.scope },
-        new AbortController().signal,
-      );
-      if ("error" in now) {
-        row.already_done = now.error.code === "marker_absent" ? false : now.error.code;
-        ready &&= now.error.code === "marker_absent";
-      } else {
-        row.already_done = now.verdict === "satisfied" || now.verdict === "applied";
-      }
+      checked = check(operation.id, operation.tool, operation.arguments, operation.scope, operation.preconditions ?? [], identity);
     } catch (error) {
       row.refused = refusalCode(error);
       ready = false;
+      continue;
     }
-    report.push(row);
+    const key = JSON.stringify(operation.scope);
+    if (!authorized.has(key)) {
+      const verdict = await within("authorizing the plan's scope", bound, host.authorize(operation.scope));
+      authorized.set(key, verdict.ok ? true : verdict.error.code);
+    }
+    row.authorized = authorized.get(key);
+    if (row.authorized !== true) {
+      // A refused scope may select another account: read nothing more through it.
+      ready = false;
+      continue;
+    }
+    ready = (await within(`checking operation ${operation.id}`, bound, probe(operation, checked, row))) && ready;
   }
   const line = { preflight: ready ? "ready" : "not_ready", digest: plan.digest, checked_operations: plan.operations.length, operations: report };
   finish(process.stdout, JSON.stringify(line), ready ? 0 : 3);
+
+  /** Read what `operation` depends on now into `row`; whether it is ready. */
+  async function probe(operation: CheckedOperation, { write, issueState }: ReturnType<typeof check>, row: Record<string, unknown>): Promise<boolean> {
+    let ready = true;
+    if (write.kind === "add" || write.kind === "remove") {
+      const label = await observe(providers.execute, GET_LABEL, { owner, repo, name: write.label }, target.account);
+      row.label_exists = "result" in label && label.result.successful && label.result.dryRun !== true;
+      ready &&= row.label_exists === true;
+    }
+    if (issueState) {
+      const issue = await observe(providers.execute, "GITHUB_GET_AN_ISSUE", { owner, repo, issue_number: write.issue }, target.account);
+      const state = "result" in issue && issue.result.successful && isRecord(issue.result.data) ? issue.result.data.state : undefined;
+      row.precondition_holds = state === issueState;
+      ready &&= row.precondition_holds === true;
+    }
+    const now = await host.reconcile(
+      { id: 0, operation: operation.id, tool: operation.tool, arguments: operation.arguments, keys: [], scope: operation.scope },
+      new AbortController().signal,
+    );
+    if ("error" in now) {
+      row.already_done = now.error.code === "marker_absent" ? false : now.error.code;
+      ready &&= now.error.code === "marker_absent";
+    } else {
+      row.already_done = now.verdict === "satisfied" || now.verdict === "applied";
+    }
+    return ready;
+  }
 }
 
 async function session(kind: "run" | "resume", providers: HostProviders, target: Target, args: Map<string, string>, decorate: DecorateHost): Promise<void> {
@@ -375,7 +406,7 @@ export async function runHost(argv: string[], providers: HostProviders | undefin
     case "investigate":
       return investigate(providers, target, values);
     case "declare": {
-      const identity = await identify(providers.execute, target);
+      const identity = await identify(providers, target);
       finish(process.stdout, JSON.stringify(declaration(identity)), 0);
       return;
     }

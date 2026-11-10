@@ -12,7 +12,7 @@ credential in that process; codemode runs with an empty environment.
 
 ```text
 codemode-composio investigate|declare|preflight|run|resume --account <ca_...> --repo <owner/repo> ...
-  = composio run --file host.ts -- ... --bin <bundle>/bin/codemode   (private TMPDIR, removed on exit)
+  = composio run --file host.ts -- ... --bin <bundle>/bin/codemode   (private TMPDIR, removed on exit; HUP/INT/TERM forwarded)
       investigate ─► codemode bridge ─► V8 worker (program: GitHub reads of --repo only)
                      proposal ─► plan.json ─► codemode plan check
       run|resume  ─► codemode plan run|resume --bridge (journal) ─► the four writes, probes
@@ -22,7 +22,7 @@ codemode-composio investigate|declare|preflight|run|resume --account <ca_...> --
 | --- | --- | --- |
 | `investigate` | `--program`, `--out`, `--trace`, `--timeout-ms` (60000), `--concurrency` (4), `--max-calls` (32) | Runs the program once with read tools, writes its proposal as a plan with comment markers, and checks it. |
 | `declare` | | Prints the provider declaration to check and approve with. |
-| `preflight` | `--plan` | Read-only: contract, authorization, labels, preconditions, and whether each change already holds. |
+| `preflight` | `--plan` | Read-only: contract, authorization (nothing more is read for a refused scope), labels, preconditions, and whether each change already holds. |
 | `run`, `resume` | `--declaration`, `--journal`, `--deadline-ms` | Serves one session of the approved plan. |
 
 Every command requires `--account` (a connected-account id, never an alias or
@@ -38,7 +38,7 @@ not ready, 4 refused.
 | `GITHUB_ADD_LABELS_TO_AN_ISSUE` | state | One label, which must already exist. |
 | `GITHUB_REMOVE_A_LABEL_FROM_AN_ISSUE` | state | A 404 after dispatch stays unknown until probed. |
 | `GITHUB_UPDATE_AN_ISSUE` | state | Only `state` and `state_reason`. |
-| `GITHUB_CREATE_AN_ISSUE_COMMENT` | receipt | The body ends with `<!-- codemode:<plan id>:<operation id> -->`; only a marked comment by the approved login counts. |
+| `GITHUB_CREATE_AN_ISSUE_COMMENT` | receipt | The body ends with `<!-- codemode:<plan id>:<operation id> -->`; only a comment ending with the approved marker, by the approved login, counts. |
 
 All are `repeat: unsafe`, retention `summary/1`. Any operation may require
 `{"issue_state": "open"|"closed"}`, checked by a read before each attempt (not

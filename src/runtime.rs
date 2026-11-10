@@ -28,7 +28,7 @@ pub const REPORT_SCHEMA_VERSION: u32 = 5;
 const MAX_FACTS_PER_CALL: usize = 8;
 /// Provider facts buffered between the provider and the run loop.
 const FACT_CHANNEL_CAPACITY: usize = 1024;
-const MAX_GUEST_ID: u64 = 9_007_199_254_740_991;
+pub(crate) const MAX_GUEST_ID: u64 = 9_007_199_254_740_991;
 const MIB: u64 = 1024 * 1024;
 /// Smallest heap budget; V8 aborts below about 8 MiB while the worker starts,
 /// before exhaustion can be reported.

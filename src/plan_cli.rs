@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use codemode::{
     Approval, Durability, Journal, JournalError, JournalInspectOptions, JournalReader, Plan,
     PlanBridgeError, ProviderDeclaration, RecoveryPolicy, Resolution, RunCancellation,
-    SessionError, SessionKind, SessionOptions, SessionOutcome, approval_binding, inspect_journal,
+    SessionError, SessionKind, SessionOptions, approval_binding, inspect_journal,
     serve_plan_bridge,
 };
 
@@ -371,17 +371,6 @@ fn approve(flags: Flags) -> Result<u8, Box<dyn Error>> {
     Ok(0)
 }
 
-/// 124 for a deadline and 130 for cancellation, whether or not dispatch began.
-fn exit_code(outcome: &SessionOutcome) -> u8 {
-    match outcome.status.as_str() {
-        "completed" => 0,
-        "interrupted" => outcome
-            .interruption
-            .map_or(1, |status| status.exit_code().max(1)),
-        _ => 3,
-    }
-}
-
 async fn session(flags: Flags, kind: SessionKind) -> Result<u8, Box<dyn Error>> {
     if !flags.has("--bridge") {
         return Err(CliError(
@@ -423,7 +412,7 @@ async fn bridge_session(journal: &str, options: SessionOptions) -> Result<u8, Bo
     .await;
     signal_task.abort();
     match result {
-        Ok(outcome) => Ok(exit_code(&outcome)),
+        Ok(outcome) => Ok(outcome.exit_code()),
         Err(PlanBridgeError::Session(SessionError::Refused { session, reason })) => {
             eprintln!("codemode: session {session} refused: {reason}");
             Ok(4)

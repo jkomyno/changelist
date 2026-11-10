@@ -15,6 +15,10 @@ run = [
     "npm run typecheck",
 ]
 
+[tasks.oracle-check]
+description = "Check that the workflow comparison oracle detects duplicate and missing effects"
+run = "node --test bench/workflow/oracle.test.ts"
+
 [tasks.check]
 description = "Check formatting, lints, tests, and documentation"
 env = { RUSTDOCFLAGS = "-D warnings" }

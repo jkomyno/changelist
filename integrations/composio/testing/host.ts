@@ -8,6 +8,8 @@
  *   --drop-reply <operation> Fault injection: after the helper reports a successful
  *                            write for that operation, never reply, so the
  *                            session cannot record it.
+ *   --read-timeout-ms <n>    Bound on reads outside a session (identity and
+ *                            preflight), instead of the production 60 s.
  *
  *     deno run --allow-run --allow-read --allow-write --allow-env \
  *       integrations/composio/testing/host.ts run --offline state.json ...
@@ -15,7 +17,7 @@
  * Without --offline it must run under `composio run`. Not installed.
  */
 import { resolve } from "node:path";
-import { describeError, type PlanReply } from "../../shared/bridge-client.ts";
+import { describeError, type PlanReply, positive } from "../../shared/bridge-client.ts";
 import { type DecorateHost, finish, type HostProviders, listConnections, runHost } from "../composio-host.ts";
 import type { AccountExecute } from "../github-plan.ts";
 import { fakeConnections, fakeGithub } from "./fake-github.ts";
@@ -40,7 +42,7 @@ function extract(argv: string[], names: string[]): { rest: string[]; values: Map
 }
 
 async function main(): Promise<void> {
-  const { rest, values } = extract(process.argv.slice(2), ["offline", "drop-reply"]);
+  const { rest, values } = extract(process.argv.slice(2), ["offline", "drop-reply", "read-timeout-ms"]);
   const offline = values.get("offline");
   const execute = (globalThis as { execute?: AccountExecute }).execute;
   let providers: HostProviders | undefined;
@@ -50,6 +52,8 @@ async function main(): Promise<void> {
   } else if (execute) {
     providers = { execute, connections: listConnections };
   }
+  const bound = values.get("read-timeout-ms");
+  if (providers && bound !== undefined) providers.readTimeoutMs = positive("--read-timeout-ms", bound);
   const drop = values.get("drop-reply");
   const decorate: DecorateHost = (host) => ({
     ...host,

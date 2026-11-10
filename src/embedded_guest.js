@@ -1,25 +1,39 @@
-// Only the captured protocol operations reach Rust. The parent validates all output.
+// Only the captured protocol operations reach Rust. Rust builds every stdout frame
+// from the payloads passed here, so guest overrides of built-ins cannot forge one.
 (() => {
   const core = Deno.core;
-  const { op_guest_write: write, op_guest_receive: receive, op_guest_finish: finish,
-    op_guest_log: log } = core.ops;
+  const { op_guest_calls: writeCalls, op_guest_receive: receive, op_guest_output: output,
+    op_guest_error: raise, op_guest_log: log } = core.ops;
   const clone = core.structuredClone;
   const stringify = JSON.stringify;
   const parse = JSON.parse;
+  const text = String;
   const enqueue = queueMicrotask;
   let nextId = 0;
   let outgoing = [];
   const pending = new Map();
 
+  // A value without a JSON encoding fails like a value Rust cannot parse.
+  const encode = value => {
+    const json = stringify(value);
+    if (typeof json !== "string") throw new TypeError("Value is not JSON-encodable");
+    return json;
+  };
   const flush = () => {
-    if (outgoing.length === 0) return;
     const calls = outgoing;
+    if (calls.length === 0) return;
     outgoing = [];
-    write(calls.map(call => stringify(call) + "\n").join(""));
+    const batch = [];
+    for (let index = 0; index < calls.length; index++) {
+      const call = calls[index];
+      batch[index] = { id: call.id, tool: call.tool, arguments: encode(call.arguments) };
+    }
+    writeCalls(batch);
   };
   const fail = error => {
     flush();
-    finish(stringify({ type: "error", message: error instanceof Error ? error.message : String(error) }), true);
+    const message = error instanceof Error ? error.message : error;
+    raise(typeof message === "string" ? message : text(message));
   };
 
   Object.defineProperty(globalThis, "structuredClone", { value: clone, writable: true, configurable: true });
@@ -30,7 +44,7 @@
       const id = nextId++;
       return new Promise((resolve, reject) => {
         let call;
-        try { call = clone({ type: "call", id, tool, arguments: args }); }
+        try { call = { id, tool, arguments: clone(args) }; }
         catch (error) { reject(error); return; }
         pending.set(id, { resolve, reject });
         outgoing.push(call);
@@ -69,7 +83,7 @@
     replies().catch(fail);
     Promise.resolve().then(program).then(value => {
       flush();
-      finish(stringify({ type: "output", value: value ?? null }), false);
+      output(encode(value ?? null));
     }, fail).catch(fail);
   };
   delete globalThis.Deno;

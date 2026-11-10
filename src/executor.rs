@@ -109,6 +109,47 @@ pub struct SessionOutcome {
     pub trace: Option<RunReport>,
 }
 
+impl SessionOutcome {
+    /// Process exit status for `codemode plan run|resume`: 0 when `completed`;
+    /// for `interrupted`, the [`RunStatus::exit_code`] of [`Self::interruption`]
+    /// (124 for a deadline and 130 for cancellation, whether or not dispatch
+    /// began), never below 1, and 1 when the interruption is unknown; 3 for
+    /// every other status, such as `needs_review` or `incomplete`.
+    ///
+    /// ```
+    /// use codemode::{RunStatus, SessionOutcome, SessionTiming};
+    ///
+    /// let mut outcome = SessionOutcome {
+    ///     session: 1,
+    ///     status: "interrupted".into(),
+    ///     detail: None,
+    ///     interruption: Some(RunStatus::Deadline),
+    ///     probed: 0,
+    ///     dispatched: 0,
+    ///     operations: Vec::new(),
+    ///     timing: SessionTiming::default(),
+    ///     trace: None,
+    /// };
+    /// assert_eq!(outcome.exit_code(), 124);
+    /// outcome.interruption = Some(RunStatus::Cancelled);
+    /// assert_eq!(outcome.exit_code(), 130);
+    /// outcome.status = "needs_review".into();
+    /// assert_eq!(outcome.exit_code(), 3);
+    /// outcome.status = "completed".into();
+    /// assert_eq!(outcome.exit_code(), 0);
+    /// ```
+    #[must_use]
+    pub fn exit_code(&self) -> u8 {
+        match self.status.as_str() {
+            "completed" => 0,
+            "interrupted" => self
+                .interruption
+                .map_or(1, |status| status.exit_code().max(1)),
+            _ => 3,
+        }
+    }
+}
+
 /// Why a session could not run.
 #[derive(Debug)]
 pub enum SessionError {

@@ -1,15 +1,13 @@
 # Code-mode engine benchmark
 
-> The committed results under `results/` were measured at `8cb7a63`, `3f7e5ab`, and `6d26458`, as each `environment.json` records; codemode has changed since, and options or binaries named alongside them may no longer exist. Rerunning the harness measures the current code.
+> The committed results under `results/` were measured at `8cb7a63`, `3f7e5ab`, and `6d26458`, as each `environment.json` records; codemode has changed since, and options or binaries named alongside them may no longer exist. Rerunning the harness measures the current code. See [Historical results](#historical-results) for the engine configurations they cover.
 
-One set of host tools, datasets, and guest programs, run through matching code-mode engines:
+One set of host tools, datasets, and guest programs, run through matching code-mode engines
+(`ENGINES` in `harness.ts`):
 
 | Name | Engine | How it runs a program |
 | --- | --- | --- |
-| `codemode` | this repository, `target/release/codemode bridge` | Rust scheduler and trace; the guest runs in a restricted Deno 2.9.8 subprocess; host tools are called back over the bridge protocol through `integrations/shared/bridge-client.ts` |
-| `codemode-prewarm` | same Deno backend | one fresh bridge and Deno guest prepared before each measured run |
-| `codemode-embedded` | this repository, built with `embedded-v8` | same Rust scheduler, bridge protocol 2, and host client; V8 runs in a separate codemode worker process, without Deno |
-| `codemode-embedded-prewarm` | same embedded backend | one fresh bridge and embedded worker prepared before each measured run |
+| `codemode` | this repository, `target/release/codemode bridge` | Rust scheduler and trace; each run starts one bridge, which runs the program in a fresh embedded V8 worker process; host tools are called back over bridge protocol 2 through `integrations/shared/bridge-client.ts` |
 | `codemode-c4` | same, concurrency 4 | secondary configuration at the bridge's usual cap |
 | `pi` | `@earendil-works/pi-codemode` 1.4.0 | QuickJS-wasm VM in a fresh `node:worker_threads` worker per execute, in the driver process |
 | `opencode` | `@opencode-ai/codemode` 1.19.5 | in-process tree-walking interpreter over a restricted JS subset (TS stripped, acorn parse) |
@@ -21,61 +19,41 @@ before comparing columns.
 
 ## Reproduce
 
-Prerequisites: mise (Rust, Mr Boxington, Deno 2.9.8 from the repository's `mise.toml`), Bun
-1.4.4, Node 26 (only for the Node spot-check), Python 3, curl, openssl, git.
+Prerequisites: mise (Rust and Mr Boxington from the repository's `mise.toml`), Bun 1.4.4,
+Node 26 (only for the Node spot-check), Python 3, curl, openssl, git. The default release
+build includes the embedded V8 worker; no feature flag or separate guest runtime is needed.
 
 ```sh
-bench/setup.sh            # fetch + verify pinned engines into bench/.cache; build target/release/codemode
-bench/verify-expected.sh  # oracle.ts and check_expected.py must both agree with bench/expected.json
+mise run bench-setup   # bench/setup.sh: fetch + verify pinned engines into bench/.cache; build target/release/codemode
+mise run bench-verify  # bench/verify-expected.sh: oracle.ts and check_expected.py must both agree with bench/expected.json
 
-# Timing baseline (about 15 minutes on an M1 Pro)
-bun bench/run.ts --engines codemode,codemode-c4,pi,opencode \
+# Timing pass (about 15 minutes on an M1 Pro); `mise run bench` runs exactly this
+mise exec bun@1.4.4 -- bun bench/run.ts --engines codemode,codemode-c4,pi,opencode \
   --scenarios triage,triage-large,denied,deadline,guest-exception,lost-response \
-  --profiles zero,equal,mixed --reps 20 --warmup 3 --cold 8 --out bench/results/baseline
+  --profiles zero,equal,mixed --reps 20 --warmup 3 --cold 8 --out bench/results/local
 
 # Memory pass (separate; fresh process per sample)
-bun bench/run.ts --engines codemode,codemode-c4,pi,opencode \
+mise exec bun@1.4.4 -- bun bench/run.ts --engines codemode,codemode-c4,pi,opencode \
   --scenarios triage,triage-large,denied,deadline,guest-exception,lost-response \
-  --memory --memory-samples 5 --out bench/results/baseline
+  --memory --memory-samples 5 --out bench/results/local
 
 # Holdout correctness check (one untimed run per engine and profile)
-bun bench/run.ts --engines codemode,codemode-c4,pi,opencode --scenarios release-audit \
-  --include-holdout --reps 1 --warmup 0 --cold 0 --out bench/results/holdout-check
+mise exec bun@1.4.4 -- bun bench/run.ts --engines codemode,codemode-c4,pi,opencode \
+  --scenarios release-audit --include-holdout --reps 1 --warmup 0 --cold 0 \
+  --out bench/results/holdout-local
 
 # Node 26 spot-check (codemode and Pi adapters only; OpenCode needs Bun)
 node bench/run.ts --engines codemode,pi --scenarios triage --profiles zero,mixed \
-  --reps 20 --warmup 3 --cold 8 --out bench/results/node-spot-check
+  --reps 20 --warmup 3 --cold 8 --out bench/results/node-local
 ```
 
-For the four codemode configurations, build the opt-in feature with the current compiler
-(the default build still supports Rust 1.85). No upstream engine installation is needed.
-Use new output directories to preserve historical results:
-
-```sh
-mise exec -- cargo build --release --locked --features embedded-v8 --bin codemode
-bench/verify-expected.sh
-
-CODEMODE_BUILD_RUSTC="$(mise exec -- rustc --version)" CODEMODE_BUILD_FEATURES=embedded-v8 \
-  mise exec bun@1.4.4 -- bun bench/run.ts \
-  --engines codemode,codemode-prewarm,codemode-embedded,codemode-embedded-prewarm \
-  --scenarios noop,triage,triage-large --profiles zero,equal,mixed \
-  --reps 20 --warmup 3 --cold 8 --out bench/results/embedded-local
-
-CODEMODE_BUILD_RUSTC="$(mise exec -- rustc --version)" CODEMODE_BUILD_FEATURES=embedded-v8 \
-  mise exec bun@1.4.4 -- bun bench/run.ts \
-  --engines codemode,codemode-prewarm,codemode-embedded,codemode-embedded-prewarm \
-  --scenarios noop,triage,triage-large --profiles zero,equal,mixed \
-  --memory --memory-samples 5 --out bench/results/embedded-local
-```
+Use new output directories; the committed directories under `results/` are historical.
 
 `CODEMODE_BIN` selects the actual executable for all configurations and is fingerprinted
 by absolute path, SHA-256, and bytes. `CODEMODE_BUILD_RUSTC` and `CODEMODE_BUILD_FEATURES`
 are optional operator declarations about that artifact; absent declarations remain null.
 `toolchainRustc` records the currently selected compiler separately and does not prove which
-compiler built an existing binary. `CODEMODE_DENO` overrides the Deno path for Deno runs;
-embedded-only selections do not resolve Deno. Selecting embedded support in a default-feature
-binary fails explicitly. See [embedded evaluation](../docs/embedded-evaluation.md) for compiler,
-build-cost, and supported-global details.
+compiler built an existing binary.
 
 Other options: `--failure-reps N` (repetitions for failure scenarios; defaults to `--reps`).
 The driver refuses OpenCode under Node. Holdout scenarios are skipped unless
@@ -88,7 +66,7 @@ The driver refuses OpenCode under Node. Holdout scenarios are skipped unless
 | `setup.sh` | fetch, verify, and install pinned upstream code into `.cache/`; build our release binary |
 | `engines/pins.json` | every pin: versions, git tags and commits, npm tarball URLs and sha512 integrity |
 | `engines/opencode-deps/` | `package.json` and `bun.lock` for OpenCode's three runtime dependencies |
-| `engines/*.ts` | adapters and codemode backend/prewarming configurations, same contract (`engines/types.ts`) |
+| `engines/*.ts` | adapters, same contract (`engines/types.ts`) |
 | `fixtures/datasets.ts` | seeded datasets A (issues) and B (pull requests, holdout) |
 | `fixtures/tools.ts` | host tools, latency profiles, permission policy, simulated side effects |
 | `fixtures/ledger.ts` | independent per-run ledger of tool operations |
@@ -100,11 +78,8 @@ The driver refuses OpenCode under Node. Holdout scenarios are skipped unless
 | `run.ts`, `child.ts` | driver; fresh-process samples for cold and memory passes |
 | `results/<label>/` | `runs.jsonl`, `cold.jsonl`, `summary.json`, `summary.md`, `environment.json`, and from `--memory` `memory.{jsonl,json,md}` |
 
-Committed results: `baseline` (commit `8cb7a63`, before any optimization), `variants`
-(three codemode builds interleaved; see its README), `after` and `holdout` (commit
-`3f7e5ab`, with `codemode-prewarm`), and `holdout-check` and `node-spot-check` (at
-`8cb7a63`). [docs/benchmark.md](../docs/benchmark.md) summarizes them. The largest raw
-files are gzip-compressed (`runs.jsonl.gz`); `gunzip -k` restores them.
+Committed results are historical; see [Historical results](#historical-results). The
+largest raw files are gzip-compressed (`runs.jsonl.gz`); `gunzip -k` restores them.
 
 `.cache/` holds downloaded third-party code and must not be committed.
 
@@ -123,8 +98,8 @@ From `engines/pins.json`, verified by `setup.sh`:
 - **codemode**: this checkout, `mise exec -- cargo build --release --locked --bin codemode`.
   `environment.json` records the commit, a dirty flag (separately for paths outside `bench/`),
   and the selected binary's path, sha256, bytes, and declared build metadata.
-- **Runtimes**: Bun 1.4.4 drives all engines; Node 26.12.1 for the spot-check; Deno 2.9.8 for
-  our guest. Each result directory records the versions it actually ran with.
+- **Runtimes**: Bun 1.4.4 drives all engines; Node 26.12.1 for the spot-check. Each result
+  directory records the versions it actually ran with.
 
 ## Adapter contract and shims
 
@@ -143,15 +118,8 @@ runEngine({ code, tools, limits: { timeoutMs, maxCalls, concurrency, maxOutputBy
   rejection `{ok: false, error: {code: error.code ?? "tool_error", message}}`. runBridge's third
   `report` argument is forwarded as `ctx.report`, so the fixtures' permission and executor facts
   reach codemode's trace (bridge protocol 2); other engines get no `report`. `setupMs` is near
-  zero because process spawn and Deno startup happen inside `runBridge`; the report's
-  `elapsed_ms` (Rust clock) is shown separately.
-- **codemode-prewarm**: the same adapter, holding one started bridge and Deno guest for the next
-  run with the same limits (`startBridge`). The next bridge starts just after a run returns, so
-  its startup is outside the measured task; the first run in a process, and every cold sample,
-  starts its own. Each bridge serves one run. The cost is one idle bridge and guest between runs.
-- **codemode-embedded / codemode-embedded-prewarm**: the same host shim and Rust limits,
-  selecting `embedded-v8` through `BridgeLimits.backend`. A separate codemode child hosts
-  one fresh V8 isolate per run. Prewarming follows the same lifecycle as the Deno variant.
+  zero because process spawn and worker startup happen inside `runBridge`; the report's
+  `elapsed_ms` (Rust clock) is shown separately. Each run starts its own bridge and worker.
 - **pi**: Pi exposes `tools.<jsName>(args)` (dots become `_`) and has no `tools.call`. The
   program is wrapped on its first line so line numbers match:
   `const __piTools = tools, __piNames = {...}; return await (async (tools) => {<program>\n})({ call: async (name, args) => __piTools[__piNames[name]](args) });`.
@@ -170,17 +138,13 @@ Limits requested for success scenarios: `timeoutMs` 10000, `maxCalls` 64, `concu
 
 | | codemode | pi | opencode |
 | --- | --- | --- | --- |
-| Deadline | Rust, absolute; includes bridge spawn and Deno startup (~35-40 ms) | `timeoutMs`, armed before the worker starts | `limits.timeoutMs`, cooperative (`Effect.timeoutOrElse`) from `execute()` |
+| Deadline | Rust, absolute; includes bridge spawn and worker startup | `timeoutMs`, armed before the worker starts | `limits.timeoutMs`, cooperative (`Effect.timeoutOrElse`) from `execute()` |
 | Call allowance | enforced (64) | **none** | enforced (`maxToolCalls` 64) |
 | Concurrency | rolling cap, 8 (`codemode-c4`: 4) | **unbounded**: every submitted call runs at once | **fixed at 8**, not configurable |
 | Byte limits | shared reply/output budget (1 MiB here), a 1 MiB cap on each reply to the guest (64 KiB before `results/after`), and 64 KiB on each call frame from it | none for tool replies | `maxOutputBytes` truncates final output only; not passed |
-| Process model | subprocesses (bridge + Deno) per run | worker thread + wasm VM per run, in process | in process |
-| Boundary encoding | JSON frames over stdio (host <-> Rust <-> Deno) | JSON strings across the VM boundary | `copyIn`/`copyOut` plain-data copies |
-| Language | full TS/JS in Deno | plain JS (TS annotations are syntax errors) | restricted subset (no classes, `new Promise`, `.then`, generators, timers) |
-
-The codemode column above describes Deno. Embedded uses the same limits and JSON transport
-in a separate worker, with TypeScript transpilation and a smaller global API; see the
-[supported globals](../docs/embedded-evaluation.md). Deno remains the default.
+| Process model | subprocesses (bridge + embedded V8 worker) per run | worker thread + wasm VM per run, in process | in process |
+| Boundary encoding | JSON frames over stdio (host <-> Rust <-> V8 worker) | JSON strings across the VM boundary | `copyIn`/`copyOut` plain-data copies |
+| Language | TS (transpiled) and JS on V8's language globals; no Deno or Node APIs | plain JS (TS annotations are syntax errors) | restricted subset (no classes, `new Promise`, `.then`, generators, timers) |
 
 Behaviour verified in this benchmark's runs (see `results/baseline/summary.md`):
 
@@ -188,7 +152,7 @@ Behaviour verified in this benchmark's runs (see `results/baseline/summary.md`):
   copy and leaves the receiver unchanged. A program that sorts in place and then reads the array
   returns a wrong answer under OpenCode without any error. The programs therefore use sort's
   return value.
-- **Property of undefined**: Deno reports `Cannot read properties of undefined (reading 'name')`,
+- **Property of undefined**: V8 (codemode) reports `Cannot read properties of undefined (reading 'name')`,
   Pi `TypeError: cannot read property 'name' of undefined`, OpenCode `Cannot access a property
   on a non-object value.` The guest-exception check accepts any of these.
 - **Calls in flight at a deadline**: codemode records them `unknown`; Pi records them
@@ -247,11 +211,6 @@ unless both match the committed `expected.json`.
   `--reps` measured rounds; within a round engines run round-robin and the starting engine
   rotates every round. *Task* is the driver clock around `runEngine` (setup + run). *Setup* and
   *Run* are the adapter's split. *Rust elapsed* is codemode's report `elapsed_ms`.
-- **Prewarming**: after each run, a timer starts one bridge and guest for the next run.
-  The harness waits 100 ms after return to observe the independent ledger, outside the task
-  clock; guest initialization and idle cost during this interval are excluded from warm
-  task latency. Each run uses a fresh isolate; there is no snapshot or isolate reuse.
-  The first run in a fresh host process has no prepared bridge, including cold samples.
 - **Cold**: `--cold N` fresh processes per engine and cell. *Cold total*: from just before the
   engine module's dynamic import to `runEngine`'s return (import + setup + run), measured inside
   the child after fixtures are loaded. *Cold process wall*: parent-observed spawn-to-exit,
@@ -269,15 +228,13 @@ unless both match the committed `expected.json`.
   the slowest selected profile per scenario. Driver peak = `process.resourceUsage().maxRSS` minus
   a fixture-only baseline process, plus the same process's RSS as sampled by `ps` from the parent
   (Bun's `maxRSS` reads lower than `ps` on macOS). For codemode, `ps` samples distinguish the
-  controller directly under the driver, the embedded worker directly under a controller,
-  and Deno by ancestry. Raw samples expose `psPeakWorkerKiB` and `psPeakTreeKiB`; summaries
-  expose `workerPeakKiB` and `treePeakKiB`. Whole-tree peak is the largest simultaneous sum
-  of driver plus all descendants in one snapshot, not a sum of independent process peaks.
-  `psPeakBridgeKiB` still means the bridge controller, including for older Deno configurations.
-  Sampling starts about every 10 ms; short-lived children and intervening peaks can be missed.
-  RSS counts shared pages in full, so the total is not unique memory. The observation window
-  can include prewarming the next guest. Pi's worker threads and OpenCode's interpreter are
-  inside the driver figure.
+  bridge controller directly under the driver and the embedded worker directly under a
+  controller. Raw samples expose `psPeakBridgeKiB`, `psPeakWorkerKiB`, and `psPeakTreeKiB`;
+  summaries expose `bridgePeakKiB`, `workerPeakKiB`, and `treePeakKiB`. Whole-tree peak is the
+  largest simultaneous sum of driver plus all descendants in one snapshot, not a sum of
+  independent process peaks. Sampling starts about every 10 ms; short-lived children and
+  intervening peaks can be missed. RSS counts shared pages in full, so the total is not unique
+  memory. Pi's worker threads and OpenCode's interpreter are inside the driver figure.
 - **Correctness per run**: success scenarios deep-equal `expected.json` (canonical JSON);
   failure scenarios match the expected error kind (and message, for guest-exception) and any
   ledger expectation. A tool started more than 50 ms after the run returned also fails the run.
@@ -298,8 +255,8 @@ unless both match the committed `expected.json`.
 
 ## Caveats
 
-- In-process engines (Pi's worker, OpenCode's interpreter) and subprocess engines (codemode's
-  bridge plus Deno or embedded V8 worker) pay different fixed costs; no-op and zero-latency
+- In-process engines (Pi's worker, OpenCode's interpreter) and the subprocess engine (codemode's
+  bridge plus embedded V8 worker) pay different fixed costs; no-op and zero-latency
   cells mostly measure those costs.
 - Pi runs every submitted call at once, so at `mixed` it can finish fan-outs faster than any
   capped engine; that reflects its lack of a concurrency limit, not a faster runtime. Compare
@@ -313,13 +270,35 @@ unless both match the committed `expected.json`.
   calls for.
 - The `report` callback (`permission_*`, `executor_started`) reaches codemode's protocol 2
   trace. The independent fixture ledger and permission policy apply to every engine.
-- Runtime: under Node 26.12.1 instead of Bun 1.4.4 (`results/node-spot-check`), warm triage
+- Runtime (historical, Deno guest at `8cb7a63`): under Node 26.12.1 instead of Bun 1.4.4 (`results/node-spot-check`), warm triage
   p50 moved by +2.4 ms for codemode at `zero` (44.4 to 46.8) and +4.9 ms for Pi (25.1 to 30.0);
   at `mixed` both moved by under 1%. Fresh Node processes cost about 55-60 ms more wall time.
-- Memory for scenarios that fail early (codemode on `triage-large`, the deadline and exception
-  scenarios) covers less work than a successful run and is not comparable across engines.
+- Memory for scenarios that fail early (the deadline and exception scenarios, and codemode on
+  `triage-large` in `results/baseline`) covers less work than a successful run and is not comparable across engines.
 - One machine (Apple M1 Pro, macOS), synthetic tools, fixed latencies. Timer overshoot is about
   1 ms per wait. Real providers add variance, rate limits, and their own startup.
 - Downloaded engine code runs in the driver process (Pi, OpenCode) with the driver's
   privileges; it is fetched from pinned, verified sources and installed without scripts, but it
   is not sandboxed.
+
+## Historical results
+
+Every directory under `results/` is a historical record, kept unchanged. Each
+`environment.json` names its commit and binary. Several measure codemode engine
+configurations that no longer exist: before `d9442b6`, `codemode` ran programs in a Deno
+2.9.8 subprocess, and the harness also offered `codemode-prewarm` (one bridge and Deno guest
+prepared before each run), `codemode-embedded` (an opt-in `embedded-v8` build, now the only
+runtime), and `codemode-embedded-prewarm`. Their raw memory samples carry `psPeakDenoKiB` and
+their summaries `denoPeakKiB`. Rerunning those engine names fails; the current harness has
+only the engines listed at the top.
+
+| Directory | Commit | Historical codemode configurations |
+| --- | --- | --- |
+| `baseline` | `8cb7a63`, before any optimization | `codemode`, `codemode-c4` on the Deno guest |
+| `holdout-check`, `node-spot-check` | `8cb7a63` | `codemode` (and `codemode-c4` for holdout) on the Deno guest |
+| `variants` | three builds interleaved; see its README | Deno guest |
+| `after`, `holdout` | `3f7e5ab` | Deno guest, with `codemode-prewarm` |
+| `embedded`, `embedded-memory`, `embedded-failures` | `6d26458` | `codemode`, `codemode-prewarm`, `codemode-embedded`, `codemode-embedded-prewarm` |
+
+[docs/benchmark.md](../docs/benchmark.md) and
+[docs/embedded-evaluation.md](../docs/embedded-evaluation.md) summarize them.

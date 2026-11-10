@@ -9,10 +9,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use deno_ast::{EmitOptions, MediaType, ParseParams, TranspileModuleOptions, TranspileOptions};
 use deno_core::{JsRuntime, ModuleSpecifier, OpState, RuntimeOptions, op2, v8};
 use deno_error::JsErrorBox;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
 
-use crate::runtime::{FRAME_BYTES, REPLY_FRAME_BYTES};
+use crate::runtime::{FRAME_BYTES, MAX_GUEST_ID, REPLY_FRAME_BYTES};
 
 const MIB: usize = 1024 * 1024;
 /// Exit code of a worker that exhausted its memory, after its `memory_limit` frame.
@@ -45,10 +46,78 @@ impl From<io::Error> for EmbeddedWorkerError {
     }
 }
 
-#[op2(fast)]
-fn op_guest_write(#[string] text: &str) -> Result<(), JsErrorBox> {
+/// One call the guest submitted. Its arguments arrive as JSON text that the
+/// worker parses, so the guest supplies only the payload, never the frame.
+#[derive(Deserialize)]
+struct GuestCall {
+    id: f64,
+    tool: String,
+    arguments: String,
+}
+
+/// Every stdout frame the guest can cause. The worker serializes each one, so
+/// no guest value can choose a frame's `type`; `memory_limit` has no variant
+/// here because only the watchdog writes it.
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Frame<'a> {
+    Call {
+        id: u64,
+        tool: &'a str,
+        arguments: Value,
+    },
+    Output {
+        value: Value,
+    },
+    Error {
+        message: &'a str,
+    },
+}
+
+fn frame_line(frame: &Frame<'_>) -> Result<String, JsErrorBox> {
+    let mut line = serde_json::to_string(frame).map_err(JsErrorBox::from_err)?;
+    if line.len() > FRAME_BYTES {
+        return Err(frame_too_large());
+    }
+    line.push('\n');
+    Ok(line)
+}
+
+fn frame_too_large() -> JsErrorBox {
+    JsErrorBox::generic("Guest frame exceeds 64 KiB")
+}
+
+/// Parse a guest payload, bounded like the frame that carries it.
+fn payload(text: &str) -> Result<Value, JsErrorBox> {
+    if text.len() > FRAME_BYTES {
+        return Err(frame_too_large());
+    }
+    crate::json::parse_json(text)
+        .map_err(|error| JsErrorBox::type_error(format!("Value is not JSON-encodable: {error}")))
+}
+
+fn guest_id(id: f64) -> Result<u64, JsErrorBox> {
+    // Exact for every value in range: the bound is below 2^53.
+    if id.fract() == 0.0 && (0.0..=MAX_GUEST_ID as f64).contains(&id) {
+        Ok(id as u64)
+    } else {
+        Err(JsErrorBox::type_error("Call ID must be a safe integer"))
+    }
+}
+
+/// Write one turn's calls together; a batch with any invalid call writes nothing.
+#[op2]
+fn op_guest_calls(#[serde] calls: Vec<GuestCall>) -> Result<(), JsErrorBox> {
     halt_if_exhausted();
-    write_frames(text)
+    let mut text = String::new();
+    for call in &calls {
+        text.push_str(&frame_line(&Frame::Call {
+            id: guest_id(call.id)?,
+            tool: &call.tool,
+            arguments: payload(&call.arguments)?,
+        })?);
+    }
+    write_stdout(&text)
 }
 
 /// After memory exhaustion only the watchdog writes and exits; a guest still
@@ -61,12 +130,7 @@ fn halt_if_exhausted() {
     }
 }
 
-fn write_frames(text: &str) -> Result<(), JsErrorBox> {
-    for line in text.split_terminator('\n') {
-        if line.len() > FRAME_BYTES {
-            return Err(JsErrorBox::generic("Guest frame exceeds 64 KiB"));
-        }
-    }
+fn write_stdout(text: &str) -> Result<(), JsErrorBox> {
     io::stdout()
         .lock()
         .write_all(text.as_bytes())
@@ -97,19 +161,29 @@ async fn op_guest_receive(state: Rc<RefCell<OpState>>) -> Result<String, JsError
 }
 
 #[op2(fast)]
-fn op_guest_finish(#[string] frame: &str, failed: bool) -> Result<(), JsErrorBox> {
+fn op_guest_output(#[string] value: &str) -> Result<(), JsErrorBox> {
     halt_if_exhausted();
-    write_frames(&format!("{frame}\n"))?;
-    std::process::exit(i32::from(failed));
+    write_stdout(&frame_line(&Frame::Output {
+        value: payload(value)?,
+    })?)?;
+    std::process::exit(0);
+}
+
+#[op2(fast)]
+fn op_guest_error(#[string] message: &str) -> Result<(), JsErrorBox> {
+    halt_if_exhausted();
+    write_stdout(&frame_line(&Frame::Error { message })?)?;
+    std::process::exit(1);
 }
 
 deno_core::extension!(
     guest_protocol,
     ops = [
-        op_guest_write,
+        op_guest_calls,
         op_guest_log,
         op_guest_receive,
-        op_guest_finish
+        op_guest_output,
+        op_guest_error
     ]
 );
 
@@ -321,6 +395,8 @@ async fn execute_worker() -> Result<(), EmbeddedWorkerError> {
 /// The process must be dedicated to the worker; its stdin and stdout carry the
 /// guest protocol and stdin closure terminates it independently of JavaScript.
 /// Normal completion writes a final frame and exits this dedicated process.
+/// The worker serializes every stdout frame itself; guest code supplies only call
+/// payloads, output values, and error messages, never a frame's `type`.
 ///
 /// The first input frame names the V8 heap budget and, on Linux, a data-segment
 /// limit (`RLIMIT_DATA`) that the worker applies to itself before V8 starts. On

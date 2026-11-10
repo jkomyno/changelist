@@ -30,6 +30,8 @@ jobs:
           mise exec -- node --version
       - name: Typecheck delivered adapters against pinned host APIs
         run: mise run typecheck
+      - name: Check the workflow comparison oracle
+        run: mise run oracle-check
       - run: mise run check
       - name: Install this committed revision with its matching adapters
         run: scripts/install.sh --revision "$GITHUB_SHA" --prefix "$RUNNER_TEMP/codemode-install"

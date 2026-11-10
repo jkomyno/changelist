@@ -283,7 +283,6 @@ interface Tree {
   selfKiB: number;
   bridgeKiB: number;
   workerKiB: number;
-  denoKiB: number;
   otherKiB: number;
   descendantsKiB: number;
   treeKiB: number;
@@ -300,12 +299,12 @@ async function sampleTree(root: number, otherNames: Set<string>): Promise<Tree |
     .split("\n")
     .map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/))
     .filter((m): m is RegExpMatchArray => m !== null)
-    .map((m) => ({ pid: +m[1], ppid: +m[2], rss: +m[3], comm: m[4].trim().replace(/^\((.*)\)$/, "$1") })); // "(deno)": exiting
+    .map((m) => ({ pid: +m[1], ppid: +m[2], rss: +m[3], comm: m[4].trim().replace(/^\((.*)\)$/, "$1") })); // ps shows an exiting process as "(name)"
   const self = rows.find((row) => row.pid === root);
   if (!self) return null;
   const isCodemode = (comm: string) => ["codemode", basename(process.env.CODEMODE_BIN!)].includes(basename(comm));
   const bridges = new Set(rows.filter((row) => row.ppid === root && isCodemode(row.comm)).map((row) => row.pid));
-  const tree: Tree = { selfKiB: self.rss, bridgeKiB: 0, workerKiB: 0, denoKiB: 0, otherKiB: 0, descendantsKiB: 0, treeKiB: 0 };
+  const tree: Tree = { selfKiB: self.rss, bridgeKiB: 0, workerKiB: 0, otherKiB: 0, descendantsKiB: 0, treeKiB: 0 };
   const frontier = [root];
   while (frontier.length > 0) {
     const parent = frontier.pop()!;
@@ -315,7 +314,6 @@ async function sampleTree(root: number, otherNames: Set<string>): Promise<Tree |
       tree.descendantsKiB += row.rss;
       if (bridges.has(row.pid)) tree.bridgeKiB += row.rss;
       else if (bridges.has(row.ppid) && isCodemode(row.comm)) tree.workerKiB += row.rss;
-      else if (/(^|\/)deno$/.test(row.comm)) tree.denoKiB += row.rss;
       else {
         tree.otherKiB += row.rss;
         otherNames.add(row.comm);
@@ -333,7 +331,7 @@ async function sampleTree(root: number, otherNames: Set<string>): Promise<Tree |
  */
 async function sampledChild(args: string[]) {
   let pid = -1;
-  const peaks: Tree = { selfKiB: 0, bridgeKiB: 0, workerKiB: 0, denoKiB: 0, otherKiB: 0, descendantsKiB: 0, treeKiB: 0 };
+  const peaks: Tree = { selfKiB: 0, bridgeKiB: 0, workerKiB: 0, otherKiB: 0, descendantsKiB: 0, treeKiB: 0 };
   const otherNames = new Set<string>();
   const pending = new Set<Promise<void>>();
   const launches: number[] = [];
@@ -399,7 +397,6 @@ async function memoryPass() {
           psPeakSelfOverBaselineKiB: psBaseline ? peaks.selfKiB - psBaseline.p50 : null,
           psPeakBridgeKiB: peaks.bridgeKiB,
           psPeakWorkerKiB: peaks.workerKiB,
-          psPeakDenoKiB: peaks.denoKiB,
           psPeakOtherChildrenKiB: peaks.otherKiB,
           psPeakDescendantsKiB: peaks.descendantsKiB,
           psPeakTreeKiB: peaks.treeKiB,
@@ -421,13 +418,13 @@ async function memoryPass() {
     "",
     `- **Driver peak RSS over baseline**: \`process.resourceUsage().maxRSS\` of the sample process minus the median of ${memorySamples} fixture-only processes (${baseline ? (baseline.p50 / 1024).toFixed(1) : "?"} MiB). Includes everything in that process: the engine, Pi's worker threads and QuickJS heaps, OpenCode's interpreter, and for codemode only the host client.`,
     `- **Driver ps peak over baseline**: the same process's RSS as sampled by \`ps\` from the parent, minus the median ps peak of the fixture-only processes (${psBaseline ? (psBaseline.p50 / 1024).toFixed(1) : "?"} MiB). Under Bun on macOS, \`maxRSS\` reads 8-23 MiB lower than \`ps\` RSS for the same process (checked by hand; Node agrees with ps), so both are shown.`,
-    "- **Bridge / worker / Deno peak**: codemode controller directly under the driver, embedded codemode worker directly under a controller, and Deno guest RSS, distinguished by process ancestry. Pi and OpenCode spawn no processes.",
+    "- **Bridge / worker peak**: codemode controller directly under the driver and the embedded codemode worker directly under a controller, distinguished by process ancestry. Pi and OpenCode spawn no processes.",
     "- **Whole tree peak**: maximum simultaneous driver plus all descendant RSS in one ps snapshot. Children total peak likewise sums descendants in each snapshot; neither is a sum of independent process peaks.",
     "- ps sampling starts every 10 ms; short-lived processes and peaks between snapshots can be missed (see observed interval). Fresh-process memory samples include the 100 ms post-run observation.",
-    "- RSS counts shared pages (e.g. the Deno and Bun binaries) in full; it is not a measure of unique memory.",
+    "- RSS counts shared pages (e.g. the codemode and Bun binaries) in full; it is not a measure of unique memory.",
     "",
-    "| Scenario | Engine | Succeeded/N | Driver maxRSS over baseline | Driver ps peak over baseline | Bridge peak | Worker peak | Deno peak | Children total peak | Whole tree peak | ps interval p50 | ps samples p50 |",
-    "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| Scenario | Engine | Succeeded/N | Driver maxRSS over baseline | Driver ps peak over baseline | Bridge peak | Worker peak | Children total peak | Whole tree peak | ps interval p50 | ps samples p50 |",
+    "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
   ];
   const mib = (s: ReturnType<typeof stats>) => (s ? `${(s.p50 / 1024).toFixed(1)} (${(s.min / 1024).toFixed(1)}-${(s.max / 1024).toFixed(1)})` : "-");
   for (const cell of memoryCells) {
@@ -438,7 +435,6 @@ async function memoryPass() {
       const sampleCount = stats(rows.map((r) => r.psSamples));
       const bridge = stats(rows.map((r) => r.psPeakBridgeKiB));
       const worker = stats(rows.map((r) => r.psPeakWorkerKiB));
-      const deno = stats(rows.map((r) => r.psPeakDenoKiB));
       const children = stats(rows.map((r) => r.psPeakDescendantsKiB));
       const tree = stats(rows.map((r) => r.psPeakTreeKiB));
       const interval = stats(rows.map((r) => r.psIntervalMs?.p50));
@@ -449,7 +445,6 @@ async function memoryPass() {
         psSamples: sampleCount,
         bridgePeakKiB: codemode ? bridge : null,
         workerPeakKiB: codemode ? worker : null,
-        denoPeakKiB: codemode ? deno : null,
         descendantsPeakKiB: children,
         treePeakKiB: tree,
         psIntervalMs: interval,
@@ -457,7 +452,7 @@ async function memoryPass() {
         n: rows.length,
       };
       lines.push(
-        `| ${cell.scenario.name}/${cell.profile} | ${engine} | ${rows.filter((r) => r.ok).length}/${rows.length} | ${mib(over)} | ${mib(psOver)} | ${codemode ? mib(bridge) : "n/a"} | ${codemode ? mib(worker) : "n/a"} | ${codemode ? mib(deno) : "n/a"} | ${mib(children)} | ${mib(tree)} | ${interval ? interval.p50.toFixed(0) : "-"} ms | ${sampleCount?.p50 ?? "-"} |`,
+        `| ${cell.scenario.name}/${cell.profile} | ${engine} | ${rows.filter((r) => r.ok).length}/${rows.length} | ${mib(over)} | ${mib(psOver)} | ${codemode ? mib(bridge) : "n/a"} | ${codemode ? mib(worker) : "n/a"} | ${mib(children)} | ${mib(tree)} | ${interval ? interval.p50.toFixed(0) : "-"} ms | ${sampleCount?.p50 ?? "-"} |`,
       );
     }
   }
@@ -584,7 +579,7 @@ function markdown(summary: any): string {
   lines.push(`# Code-mode engine benchmark: ${summary.label.split("/").pop()}`);
   lines.push("");
   lines.push(
-    `Driver ${env.driver.runtime} ${env.driver.version}; bun ${env.runtimes.bun}, node ${env.runtimes.node}, ${env.runtimes.deno}. ` +
+    `Driver ${env.driver.runtime} ${env.driver.version}; bun ${env.runtimes.bun}, node ${env.runtimes.node}. ` +
       `${env.cpu.model} (${env.cpu.logical} logical CPUs), ${env.os.platform} ${env.os.product ?? env.os.release} ${env.os.arch}, ${env.os.totalMemGiB} GiB. ` +
       `Commit ${env.git.commit?.slice(0, 12)}${env.git.dirtyOutsideBench ? " (dirty outside bench/)" : env.git.dirty ? " (bench/ uncommitted)" : ""}. Load average at start ${env.loadavg.join(", ")}.`,
   );

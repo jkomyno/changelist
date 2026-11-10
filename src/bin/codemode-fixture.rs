@@ -15,7 +15,7 @@ use codemode::fixture::{
 };
 use codemode::{
     Attempt, Durability, Journal, Operation, ProbeContext, RecoverableProvider, RunCancellation,
-    Scope, SessionError, SessionKind, SessionOptions, SessionOutcome, run_session,
+    Scope, SessionError, SessionKind, SessionOptions, run_session,
 };
 use serde_json::{Value, json};
 use tokio::time::Instant;
@@ -446,7 +446,7 @@ async fn session(args: &[String]) -> Result<u8, Failure> {
     match result {
         Ok(outcome) => {
             print_json(&outcome);
-            Ok(exit_code(&outcome))
+            Ok(outcome.exit_code())
         }
         Err(SessionError::Refused { session, reason }) => {
             print_json(&json!({"session": session, "status": "refused", "detail": reason}));
@@ -454,17 +454,6 @@ async fn session(args: &[String]) -> Result<u8, Failure> {
             Ok(4)
         }
         Err(error) => Err(Failure::Session(error.to_string())),
-    }
-}
-
-/// The exit status of `codemode plan run|resume` for the same outcome.
-fn exit_code(outcome: &SessionOutcome) -> u8 {
-    match outcome.status.as_str() {
-        "completed" => 0,
-        "interrupted" => outcome
-            .interruption
-            .map_or(1, |status| status.exit_code().max(1)),
-        _ => 3,
     }
 }
 

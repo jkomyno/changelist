@@ -740,3 +740,100 @@ fn preflight_reports_the_exact_plan_and_refuses_what_the_contract_does_not_allow
         );
     }
 }
+
+#[test]
+fn preflight_stops_probing_a_scope_once_authorization_refuses_it() {
+    let cases: [(&str, LedgerChange); 2] = [
+        ("account_ambiguous", |ledger| {
+            ledger["connections"] = json!([
+                {"id": "ca_fake_bot", "status": "ACTIVE"},
+                {"id": "ca_other", "status": "ACTIVE", "alias": "ca_fake_bot"},
+            ]);
+        }),
+        ("repository_changed", |ledger| {
+            ledger["repositories"]["acme/widgets"]["id"] = json!(3003);
+        }),
+    ];
+    for (code, change) in cases {
+        let scratch = Scratch::new();
+        let mut close = operation("close-1", UPDATE, 1, json!({"state": "closed"}));
+        close["preconditions"] = json!([{"issue_state": "open"}]);
+        setup(
+            &scratch,
+            &[
+                operation("label-1", ADD, 1, json!({"labels": ["triage"]})),
+                comment("comment-1", 1),
+                close,
+            ],
+            json!({}),
+            1,
+        );
+        scratch.change(|ledger| ledger["calls"] = json!([]));
+        scratch.change(change);
+        let output = host(
+            &scratch,
+            "preflight",
+            &["--plan", path(&scratch.file("plan.json"))],
+        )
+        .output()
+        .expect("preflight");
+        assert_eq!(output.status.code(), Some(3), "{code}: {output:?}");
+        let report: Value = serde_json::from_slice(&output.stdout).expect("preflight JSON");
+        assert_eq!(
+            report["operations"],
+            json!([
+                {"operation": "label-1", "authorized": code},
+                {"operation": "comment-1", "authorized": code},
+                {"operation": "close-1", "authorized": code},
+            ]),
+            "{code}"
+        );
+        // Only the identity reads: no label, issue, or reconcile read through the refused selector.
+        let slugs: Vec<String> = scratch.ledger()["calls"]
+            .as_array()
+            .expect("calls")
+            .iter()
+            .map(|call| call["slug"].as_str().unwrap_or("").to_string())
+            .collect();
+        assert!(
+            slugs.iter().all(|slug| [
+                "GITHUB_GET_THE_AUTHENTICATED_USER",
+                "GITHUB_GET_A_REPOSITORY"
+            ]
+            .contains(&slug.as_str())),
+            "{code}: {slugs:?}"
+        );
+    }
+}
+
+#[test]
+fn an_identity_read_that_never_answers_ends_declare_with_an_error_naming_the_step() {
+    let scratch = Scratch::new();
+    github(
+        &scratch,
+        json!({"GITHUB_GET_A_REPOSITORY acme/widgets": "hang"}),
+    );
+    let mut declare = host(&scratch, "declare", &["--read-timeout-ms", "300"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("host starts");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while declare.try_wait().expect("host status").is_none() {
+        if Instant::now() >= deadline {
+            let _ = declare.kill();
+            panic!("declare hung on a read that never answers");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let output = declare.wait_with_output().expect("host exits");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(output.stdout.is_empty(), "no declaration: {output:?}");
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("resolving the account's GitHub login and the repository")
+            && error.contains("did not finish within 300 ms"),
+        "{error}"
+    );
+    clean(&error, "host stderr");
+}

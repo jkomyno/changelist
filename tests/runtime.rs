@@ -647,6 +647,27 @@ async fn typed_composition_runs_without_host_capabilities_or_imports() {
 }
 
 #[tokio::test]
+async fn a_guest_override_of_to_json_cannot_report_memory_limit() {
+    let report = run(
+        r#"Object.prototype.toJSON = function () { return { type: "memory_limit", heap_limit_bytes: 1 }; };
+           await tools.call("mock.echo", {});"#,
+        config(),
+        MockProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("run completes");
+    assert_eq!(report.status, RunStatus::Success, "{report:?}");
+    assert_eq!(report.output, Some(Value::Null));
+    assert_eq!(report.calls.len(), 1, "{report:?}");
+    assert_eq!(report.calls[0].call.tool, "mock.echo");
+    assert!(matches!(
+        report.calls[0].outcome,
+        CallOutcome::Succeeded { .. }
+    ));
+}
+
+#[tokio::test]
 async fn guest_error_is_a_report_and_not_an_io_failure() {
     let report = run(
         "throw new Error('broken guest');",

@@ -22,7 +22,8 @@
  * `unobserved_after_apply` (apply, then end without a result), `dry_run` (answer
  * as `composio run --dry-run` does, sending nothing), `fail` (an unsuccessful
  * read), `malformed` (a read of the wrong shape), `unobserved` (a read without a
- * result), `slow` (a read that takes 10 s and says so on stderr).
+ * result), `slow` (a read that takes 10 s and says so on stderr), `hang` (a
+ * read that records the request and never answers).
  * No network, account, or credential is used.
  */
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -133,7 +134,11 @@ export function fakeGithub(path: string) {
     });
     const isRead = !(WRITE_TOOLS as readonly string[]).includes(slug);
     if (isRead && fault) {
-      if (fault === "slow") {
+      if (fault === "hang") {
+        record("read_held");
+        // The timer stands in for the hung CLI child, which keeps the host process alive.
+        return new Promise<never>(() => setInterval(() => {}, 1_000));
+      } else if (fault === "slow") {
         process.stderr.write(`started ${slug}\n`);
         await sleep(10_000);
       } else if (fault === "unobserved") {

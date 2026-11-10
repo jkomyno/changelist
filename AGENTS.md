@@ -30,7 +30,8 @@ Use `mise run check` after code or build changes, matching CI. It runs:
 ```sh
 cargo fmt --all --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo test --locked
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps
 ```
 

@@ -16,8 +16,9 @@
  *   is the marker `<!-- codemode:<plan id>:<operation id> -->`; a comment whose
  *   final line is that marker and whose author is the approved account's GitHub
  *   login is `applied`. No such comment is a probe error, never `not_applied`:
- *   the request may still land. A marked comment by another author is recorded
- *   as review evidence and settles nothing.
+ *   the request may still land. A comment with the approved marker by another
+ *   author, or with this operation id under another plan id, is recorded as
+ *   review evidence and settles nothing.
  *
  * State verdicts never attribute the effect. A failed, malformed, or incomplete
  * read is a probe error. Only checks made before a write is handed to the CLI
@@ -369,9 +370,13 @@ export function githubPlanHost(execute: AccountExecute, identity: Identity, conn
     return { state: found.state, reason: found.state_reason ?? null };
   }
 
-  /** Comments whose final line is `marker`, as their authors' logins, or a probe error code. */
-  async function markedBy(issue: number, wanted: string): Promise<string[] | string> {
-    const authors: string[] = [];
+  /**
+   * Comments whose final line is a marker for `operation`, as their authors'
+   * logins and whether the marker is exactly `wanted` (the approved one), or a
+   * probe error code.
+   */
+  async function markedBy(issue: number, operation: string, wanted: string): Promise<Array<{ login: string; exact: boolean }> | string> {
+    const found: Array<{ login: string; exact: boolean }> = [];
     for (let page = 1; page <= MAX_PAGES; page++) {
       const comments = data(await read(LIST_COMMENTS, { issue_number: issue, per_page: PAGE_SIZE, page }))?.comments;
       if (comments === undefined) return "comments_read_failed";
@@ -380,9 +385,10 @@ export function githubPlanHost(execute: AccountExecute, identity: Identity, conn
       }
       for (const comment of comments as Array<{ body: string; user: { login: string } }>) {
         const lines = comment.body.replace(/\s+$/, "").split("\n");
-        if (lines[lines.length - 1] === wanted) authors.push(comment.user.login);
+        const last = lines[lines.length - 1];
+        if (MARKER.exec(last)?.[2] === operation) found.push({ login: comment.user.login, exact: last === wanted });
       }
-      if (comments.length < PAGE_SIZE) return authors;
+      if (comments.length < PAGE_SIZE) return found;
     }
     return "comments_incomplete";
   }
@@ -498,14 +504,18 @@ export function githubPlanHost(execute: AccountExecute, identity: Identity, conn
             : { verdict: "unknown", evidence: "the issue's state differs; an earlier request may still apply" };
         }
         case "comment": {
-          const authors = await markedBy(write.issue, write.marker);
-          if (typeof authors === "string") return failed(authors, "the issue's comments could not be read completely");
-          const ours = authors.filter((login) => sameName(login, identity.login)).length;
+          const marked = await markedBy(write.issue, request.operation, write.marker);
+          if (typeof marked === "string") return failed(marked, "the issue's comments could not be read completely");
+          // Only the approved marker (plan id and operation id) by the approved login is a receipt.
+          const ours = marked.filter((item) => item.exact && sameName(item.login, identity.login)).length;
           if (ours > 0) {
             return { verdict: "applied", evidence: `${ours} comment${ours === 1 ? " by the approved login carries" : "s by the approved login carry"} this operation's marker` };
           }
-          if (authors.length > 0) {
+          if (marked.some((item) => item.exact)) {
             return { verdict: "unknown", evidence: "a comment by another GitHub user carries this operation's marker; it settles nothing" };
+          }
+          if (marked.length > 0) {
+            return { verdict: "unknown", evidence: "a comment carries this operation's id under another plan's marker; it settles nothing" };
           }
           return failed("marker_absent", "no comment carries this operation's marker yet; the request may still land");
         }

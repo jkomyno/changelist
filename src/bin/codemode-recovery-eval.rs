@@ -375,10 +375,6 @@ async fn runtime_run(
     Ok(run_calls(&calls, config, provider, RunCancellation::default()).await?)
 }
 
-fn dispatch_timing(report: &RunReport) -> (Option<u64>, Option<u64>) {
-    (None, Some(report.elapsed_ms))
-}
-
 fn micros(duration: Duration) -> i64 {
     i64::try_from(duration.as_micros()).unwrap_or(i64::MAX)
 }
@@ -500,9 +496,6 @@ struct RecoveryRun {
     repetition: usize,
     /// Position of this strategy within its repetition's rotation.
     order: usize,
-    /// Observed dispatch backend; absent for stop, which dispatches no work.
-    backend: Option<ExecutionBackend>,
-    guest_transport_bytes: Option<u64>,
     /// Strategy start to done, wall clock.
     recovery_us: i64,
     /// Journal open and read (all strategies), µs.
@@ -533,8 +526,7 @@ struct RecoveryRun {
     reconcile_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     dispatch_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    guest_startup_ms: Option<u64>,
+    /// The dispatch run's own elapsed time from its execution record.
     #[serde(skip_serializing_if = "Option::is_none")]
     execution_ms: Option<u64>,
     /// Checks that should hold and failed.
@@ -548,8 +540,6 @@ impl RecoveryRun {
             strategy,
             repetition,
             order,
-            backend: None,
-            guest_transport_bytes: None,
             recovery_us: 0,
             journal_us: 0,
             unresolved: 0,
@@ -565,7 +555,6 @@ impl RecoveryRun {
             checks_ms: None,
             reconcile_ms: None,
             dispatch_ms: None,
-            guest_startup_ms: None,
             execution_ms: None,
             failures: Vec::new(),
         }
@@ -635,9 +624,7 @@ async fn recover(
             record.claims_complete = report.status.is_success() && succeeded.len() == targets.len();
             record.dispatched = Some(targets.len());
             record.dispatch_ms = Some(report.elapsed_ms);
-            record.backend = Some(report.backend);
-            record.guest_transport_bytes = Some(report.bytes.from_guest + report.bytes.to_guest);
-            (record.guest_startup_ms, record.execution_ms) = dispatch_timing(&report);
+            record.execution_ms = Some(report.elapsed_ms);
         }
         Strategy::CodemodeResume => {
             let journal = Journal::open(dir.join("j.db"), Durability::Storage)?;
@@ -663,11 +650,7 @@ async fn recover(
             record.checks_ms = Some(outcome.timing.checks_ms);
             record.reconcile_ms = Some(outcome.timing.reconcile_ms);
             record.dispatch_ms = Some(outcome.timing.dispatch_ms);
-            if let Some(trace) = &outcome.trace {
-                record.backend = Some(trace.backend);
-                record.guest_transport_bytes = Some(trace.bytes.from_guest + trace.bytes.to_guest);
-                (record.guest_startup_ms, record.execution_ms) = dispatch_timing(trace);
-            }
+            record.execution_ms = outcome.trace.as_ref().map(|trace| trace.elapsed_ms);
             if outcome.status != "needs_review" || open != [REVIEW_OPERATION] {
                 record.failures.push(format!(
                     "codemode ended {} with {open:?} open, expected needs_review with [{REVIEW_OPERATION}]",
@@ -707,8 +690,6 @@ struct OverheadRun {
     mode: Mode,
     repetition: usize,
     order: usize,
-    backend: Option<ExecutionBackend>,
-    guest_transport_bytes: Option<u64>,
     /// Journal open (when journaled) plus the session or run, wall clock.
     total_us: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -719,7 +700,7 @@ struct OverheadRun {
     reconcile_ms: Option<u64>,
     /// The dispatch run: the session's dispatch phase, or the runtime run's elapsed time.
     dispatch_ms: u64,
-    guest_startup_ms: Option<u64>,
+    /// The dispatch run's own elapsed time from its execution record.
     execution_ms: Option<u64>,
     /// Facts the session recorded: begin, intents, observations, probes, end.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -748,14 +729,11 @@ async fn overhead_run(
         mode,
         repetition,
         order,
-        backend: None,
-        guest_transport_bytes: None,
         total_us: 0,
         journal_open_us: None,
         checks_ms: None,
         reconcile_ms: None,
         dispatch_ms: 0,
-        guest_startup_ms: None,
         execution_ms: None,
         facts: None,
         commits: None,
@@ -769,9 +747,7 @@ async fn overhead_run(
             let report = runtime_run(operations, &dir.join("fx.db"), "runtime".into(), 1).await?;
             record.total_us = micros(started.elapsed());
             record.dispatch_ms = report.elapsed_ms;
-            record.backend = Some(report.backend);
-            record.guest_transport_bytes = Some(report.bytes.from_guest + report.bytes.to_guest);
-            (record.guest_startup_ms, record.execution_ms) = dispatch_timing(&report);
+            record.execution_ms = Some(report.elapsed_ms);
             if !report.status.is_success() {
                 record
                     .failures
@@ -794,11 +770,7 @@ async fn overhead_run(
             record.checks_ms = Some(outcome.timing.checks_ms);
             record.reconcile_ms = Some(outcome.timing.reconcile_ms);
             record.dispatch_ms = outcome.timing.dispatch_ms;
-            if let Some(trace) = &outcome.trace {
-                record.backend = Some(trace.backend);
-                record.guest_transport_bytes = Some(trace.bytes.from_guest + trace.bytes.to_guest);
-                (record.guest_startup_ms, record.execution_ms) = dispatch_timing(trace);
-            }
+            record.execution_ms = outcome.trace.as_ref().map(|trace| trace.elapsed_ms);
             if outcome.status != "completed" {
                 record
                     .failures
@@ -884,7 +856,6 @@ struct RecoveryAggregate {
     checks_ms: Option<Stats>,
     reconcile_ms: Option<Stats>,
     dispatch_ms: Option<Stats>,
-    guest_startup_ms: Option<Stats>,
     execution_ms: Option<Stats>,
 }
 
@@ -916,7 +887,6 @@ fn recovery_aggregate(
         checks_ms: opt_stats(runs.iter().map(|r| r.checks_ms)),
         reconcile_ms: opt_stats(runs.iter().map(|r| r.reconcile_ms)),
         dispatch_ms: opt_stats(runs.iter().map(|r| r.dispatch_ms)),
-        guest_startup_ms: opt_stats(runs.iter().map(|r| r.guest_startup_ms)),
         execution_ms: opt_stats(runs.iter().map(|r| r.execution_ms)),
     }
 }
@@ -933,7 +903,6 @@ struct OverheadAggregate {
     journal_open_us: Option<Stats>,
     checks_ms: Option<Stats>,
     dispatch_ms: Option<Stats>,
-    guest_startup_ms: Option<Stats>,
     execution_ms: Option<Stats>,
     facts: Option<(usize, usize)>,
     commits: Option<(u64, u64)>,
@@ -996,7 +965,6 @@ fn overhead_aggregate(
         journal_open_us: stats(runs.iter().filter_map(|r| r.journal_open_us)),
         checks_ms: opt_stats(runs.iter().map(|r| r.checks_ms)),
         dispatch_ms: stats(runs.iter().map(|r| to_i64(r.dispatch_ms))),
-        guest_startup_ms: opt_stats(runs.iter().map(|r| r.guest_startup_ms)),
         execution_ms: opt_stats(runs.iter().map(|r| r.execution_ms)),
         per_operation_ms: per(operations as u64),
         per_fact_ms: facts.and_then(|(low, _)| per(low as u64)),
@@ -1068,7 +1036,7 @@ fn render_markdown(
     );
     let _ = writeln!(
         out,
-        "- Backend: native for every dispatch. Guest startup is absent (—); execution is the full native dispatch run. No program worker is started."
+        "- Backend: native for every dispatch; execution is the full native dispatch run. No program worker is started."
     );
     let _ = writeln!(
         out,
@@ -1135,19 +1103,18 @@ fn render_markdown(
     let _ = writeln!(out, "\n### Where the time goes (p50, ms)\n");
     let _ = writeln!(
         out,
-        "| latency | strategy | journal open/read | checks | reconcile | guest startup | dispatch execution | dispatch phase | total |"
+        "| latency | strategy | journal open/read | checks | reconcile | dispatch execution | dispatch phase | total |"
     );
-    let _ = writeln!(out, "|---:|---|---:|---:|---:|---:|---:|---:|---:|");
+    let _ = writeln!(out, "|---:|---|---:|---:|---:|---:|---:|---:|");
     for a in recovery {
         let _ = writeln!(
             out,
-            "| {} ms | {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {} ms | {} | {} | {} | {} | {} | {} | {} |",
             a.latency_ms,
             a.strategy.name(),
             p50_us(a.journal_us.as_ref()),
             p50_ms(a.checks_ms.as_ref()),
             p50_ms(a.reconcile_ms.as_ref()),
-            p50_ms(a.guest_startup_ms.as_ref()),
             p50_ms(a.execution_ms.as_ref()),
             p50_ms(a.dispatch_ms.as_ref()),
             p50_us(a.recovery_us.as_ref()),
@@ -1158,11 +1125,11 @@ fn render_markdown(
         let _ = writeln!(out, "\n## B. Persistence overhead without faults\n");
         let _ = writeln!(
             out,
-            "| workload | ops | latency | mode | correct | total p50 / p95 | dispatch p50 / p95 | journal open p50 | checks p50 | guest startup p50 | execution p50 / p95 | facts | commits |"
+            "| workload | ops | latency | mode | correct | total p50 / p95 | dispatch p50 / p95 | journal open p50 | checks p50 | execution p50 / p95 | facts | commits |"
         );
         let _ = writeln!(
             out,
-            "|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+            "|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|"
         );
         for a in overhead {
             let total = a.total_us.as_ref().map_or("—".into(), |s| {
@@ -1170,7 +1137,7 @@ fn render_markdown(
             });
             let _ = writeln!(
                 out,
-                "| {} | {} | {} ms | {} | {}/{} | {total} | {} | {} | {} | {} | {} | {} | {} |",
+                "| {} | {} | {} ms | {} | {}/{} | {total} | {} | {} | {} | {} | {} | {} |",
                 a.workload,
                 a.operations,
                 a.latency_ms,
@@ -1180,7 +1147,6 @@ fn render_markdown(
                 p50_p95_ms(a.dispatch_ms.as_ref()),
                 p50_us(a.journal_open_us.as_ref()),
                 p50_ms(a.checks_ms.as_ref()),
-                p50_ms(a.guest_startup_ms.as_ref()),
                 p50_p95_ms(a.execution_ms.as_ref()),
                 a.facts.map_or("—".into(), range_text),
                 a.commits.map_or("—".into(), range_text),

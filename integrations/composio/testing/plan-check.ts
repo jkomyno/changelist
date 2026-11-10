@@ -24,6 +24,8 @@ const ACCOUNT = "ca_fake_bot";
 const identity: Identity = { account: ACCOUNT, repo: "acme/widgets", login: "widget-bot" };
 const scope = { provider: "composio.github", account: `${ACCOUNT}:widget-bot`, destination: "acme/widgets:1001" };
 const MARK = "<!-- codemode:0123456789abcdef:comment-1 -->";
+/** The same operation id under another plan's marker. */
+const OTHER_PLAN_MARK = "<!-- codemode:fedcba9876543210:comment-1 -->";
 const many = Array.from({ length: 150 }, (_, index) => `area-${index}`);
 const issue = (labels: string[] = [], extra: Partial<Issue> = {}): Issue => ({ title: "t", state: "open", labels, comments: [], ...extra });
 
@@ -46,6 +48,7 @@ function setup(faults: Record<string, string> = {}, change: (state: GithubState)
           "6": issue([], { comments: [{ id: 1, user: "widget-bot", body: `found it\n\n${MARK}` }] }),
           "7": issue([], { comments: [{ id: 2, user: "mallory", body: `copied\n\n${MARK}` }] }),
           "8": issue([], { comments: Array.from({ length: 120 }, (_, id) => ({ id, user: "widget-bot", body: id === 110 ? MARK : "noise" })) }),
+          "9": issue([], { comments: [{ id: 3, user: "widget-bot", body: `older\n\n${OTHER_PLAN_MARK}` }] }),
         },
       },
       "acme/private": { id: 2002, labels: ["triage"], permissions: { push: false, triage: false }, issues: { "1": issue() } },
@@ -144,7 +147,7 @@ for (const [name, tool, extra, issueNumber, value, after] of [
   ["add a label", ADD_LABELS, { labels: ["triage"] }, 1, { label_added: true }, (state: GithubState) => state.repositories["acme/widgets"].issues["1"].labels.join() === "triage"],
   ["remove a label", REMOVE_LABEL, { name: "triage" }, 2, { label_removed: true }, (state: GithubState) => state.repositories["acme/widgets"].issues["2"].labels.length === 0],
   ["close an issue", UPDATE_ISSUE, { state: "closed", state_reason: "completed" }, 1, { state: "closed" }, (state: GithubState) => state.repositories["acme/widgets"].issues["1"].state === "closed"],
-  ["comment", CREATE_COMMENT, { body: `hi\n\n${MARK}` }, 1, { comment_id: 1122 }, (state: GithubState) => state.repositories["acme/widgets"].issues["1"].comments[0]?.user === "widget-bot"],
+  ["comment", CREATE_COMMENT, { body: `hi\n\n${MARK}` }, 1, { comment_id: 1123 }, (state: GithubState) => state.repositories["acme/widgets"].issues["1"].comments[0]?.user === "widget-bot"],
 ] as const) {
   await check(`${name}: one write, as the approved account, with the approved arguments`, async () => {
     const { host, ledger } = setup();
@@ -209,6 +212,7 @@ for (const [name, request, expected] of [
   ["our marked comment: applied", probe(CREATE_COMMENT, 6, { body: `x\n\n${MARK}` }), { verdict: "applied", evidence: "1 comment by the approved login carries this operation's marker" }],
   ["our marked comment on page 2: applied", probe(CREATE_COMMENT, 8, { body: MARK }), { verdict: "applied", evidence: "1 comment by the approved login carries this operation's marker" }],
   ["a marked comment by another user settles nothing", probe(CREATE_COMMENT, 7, { body: MARK }), unknown("a comment by another GitHub user carries this operation's marker; it settles nothing")],
+  ["our login with another plan's marker settles nothing", probe(CREATE_COMMENT, 9, { body: MARK }), unknown("a comment carries this operation's id under another plan's marker; it settles nothing")],
   ["no marked comment: a probe error, never not_applied", probe(CREATE_COMMENT, 1, { body: MARK }), { error: { code: "marker_absent", message: "no comment carries this operation's marker yet; the request may still land" } }],
 ] as const) {
   await check(`reconcile: ${name}`, async () => {

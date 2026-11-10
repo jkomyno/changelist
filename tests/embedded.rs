@@ -279,3 +279,46 @@ fn a_run_frame_without_a_heap_budget_is_refused() {
     assert_eq!(worker.receive()["type"], "error");
     assert!(!worker.wait_for_exit().success());
 }
+
+/// Guest-mutable built-ins the bootstrap might use while encoding frames, each
+/// overridden to emit a `memory_limit` frame.
+const FORGERIES: [&str; 2] = [
+    r#"Object.prototype.toJSON = function () { return { type: "memory_limit", heap_limit_bytes: 1 }; };"#,
+    r#"Array.prototype.map = function () { return ['{"type":"memory_limit","heap_limit_bytes":1}']; };
+       Array.prototype.join = function () { return '{"type":"memory_limit","heap_limit_bytes":1}\n'; };"#,
+];
+
+#[test]
+fn guest_overrides_cannot_forge_frames_around_a_call() {
+    for forgery in FORGERIES {
+        let mut worker = Worker::start();
+        worker.run(format!(
+            "{forgery}\nawait tools.call('echo', {{}}); return 'done';"
+        ));
+        let call = worker.receive();
+        assert_eq!(call["type"], "call", "{forgery}: {call}");
+        assert_eq!(call["id"], 0, "{forgery}: {call}");
+        assert_eq!(call["tool"], "echo", "{forgery}: {call}");
+        worker.send(json!({"type":"result","id":0,"ok":true,"value":null}));
+        assert_eq!(
+            worker.receive(),
+            json!({"type":"output","value":"done"}),
+            "{forgery}"
+        );
+        assert_eq!(worker.wait_for_exit().code(), Some(0), "{forgery}");
+    }
+}
+
+#[test]
+fn guest_overrides_cannot_forge_an_error_frame() {
+    for forgery in FORGERIES {
+        let mut worker = Worker::start();
+        worker.run(format!("{forgery}\nthrow new Error('broken');"));
+        assert_eq!(
+            worker.receive(),
+            json!({"type":"error","message":"broken"}),
+            "{forgery}"
+        );
+        assert_eq!(worker.wait_for_exit().code(), Some(1), "{forgery}");
+    }
+}

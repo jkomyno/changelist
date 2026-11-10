@@ -99,7 +99,10 @@ Optionally confirm against GitHub now, read-only:
 It reports, per operation, a contract refusal (for example a comment without its
 marker, an issue update with a `labels` field, or a destination outside `--repo`),
 whether the session would be authorized, whether each label exists, whether each
-precondition holds, and whether the change already holds.
+precondition holds, and whether the change already holds. When authorization is
+refused (for example `account_ambiguous` or `repository_changed`), it reports
+only that code for the operations in that scope and reads nothing more as that
+account.
 
 Approve with the digest you reviewed:
 
@@ -136,7 +139,9 @@ Inspection reads only committed evidence and writes nothing. An open session
 means "no end recorded", not proof that an executor is alive. A second `run` or
 `resume` on the same journal is refused while one holds it.
 
-Interrupt with Ctrl-C. A write already handed to the CLI cannot be aborted: its
+Interrupt with Ctrl-C, or send SIGTERM to `codemode-composio`: the launcher
+forwards it to the CLI, waits for the host to end the session, and exits with
+its status. A write already handed to the CLI cannot be aborted: its
 effect may still land, so it is recorded as unknown, never as failed. Exit
 status: 0 every operation is done, 3 work remains, 4 the session was refused,
 1 the session ended without an outcome, 2 a usage or startup error.
@@ -184,7 +189,7 @@ host's own fixed messages and evidence, never Composio's or GitHub's text.
 | `GITHUB_ADD_LABELS_TO_AN_ISSUE` | `owner`, `repo`, `issue_number`, `labels` with one existing label | Label on the issue: `satisfied`. Absent: unknown. |
 | `GITHUB_REMOVE_A_LABEL_FROM_AN_ISSUE` | `owner`, `repo`, `issue_number`, `name` | Label absent: `satisfied`. Present: unknown. |
 | `GITHUB_UPDATE_AN_ISSUE` | `owner`, `repo`, `issue_number`, `state`, optional `state_reason` | State (and reason) match: `satisfied`. Otherwise unknown. |
-| `GITHUB_CREATE_AN_ISSUE_COMMENT` | `owner`, `repo`, `issue_number`, `body` ending with its marker | A comment ending with the marker, by the approved login: `applied`. By another user: recorded as evidence, still unknown. None: a probe error, still unknown. |
+| `GITHUB_CREATE_AN_ISSUE_COMMENT` | `owner`, `repo`, `issue_number`, `body` ending with its marker | A comment ending with the approved marker (plan id and operation id), by the approved login: `applied`. By another user, or ending with this operation id under another plan id: recorded as evidence, still unknown. None: a probe error, still unknown. |
 
 `satisfied` says the state holds, not who caused it. Absence never proves that
 a write did not happen: an earlier request may still land. A probe that cannot
@@ -225,7 +230,10 @@ points it at a private directory that it removes when the command ends. Running
   reconciled by their marker; GitHub renders the marker as nothing, but it stays
   in the comment's source.
 - The CLI helper cannot cancel a running call, and it sends no tool version: the
-  version shown by `--get-schema` is evidence, not a pin.
+  version shown by `--get-schema` is evidence, not a pin. Outside a session,
+  `composio connections list` is given 30 s, and resolving the login and
+  repository, preflight authorization, and each preflight operation's reads are
+  given 60 s each; past that the command exits 2 with an error naming the step.
 - When an organization enables Composio's permission controls, the CLI asks
   inside the call, within the session deadline. This was not exercised.
 - Verified with Composio CLI 0.6.0 on macOS. See the

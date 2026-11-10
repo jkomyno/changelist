@@ -101,6 +101,8 @@ validate_bundle() {
 # The Composio host launcher: `composio run` on the bundled host with the bundled
 # binary. The CLI writes each call's arguments to plaintext files under TMPDIR,
 # so TMPDIR points at a private directory that is removed when the run ends.
+# HUP, INT, and TERM are forwarded to the CLI as TERM, so the host can end its
+# session; the launcher then exits with the CLI's status.
 write_launcher() {
   cat > "$1" <<'LAUNCHER'
 #!/bin/sh
@@ -110,12 +112,30 @@ bundle=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
 command -v composio >/dev/null || { echo 'codemode-composio needs the Composio CLI (composio) on PATH' >&2; exit 2; }
 private=$(mktemp -d "${TMPDIR:-/tmp}/codemode-composio.XXXXXX")
 chmod 700 "$private"
+child=
+signalled=
 trap 'rm -rf -- "$private"' EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+forward() {
+  signalled=1
+  [ -z "$child" ] || kill -TERM "$child" 2>/dev/null || :
+}
+trap forward HUP INT TERM
+# A background command gets /dev/null as stdin; keep the caller's.
+exec 3<&0
+TMPDIR=$private composio run --file "$bundle/integrations/composio/host.ts" -- "$@" --bin "$bundle/bin/codemode" <&3 3<&- &
+child=$!
+exec 3<&-
+[ -z "$signalled" ] || kill -TERM "$child" 2>/dev/null || :
 status=0
-TMPDIR=$private composio run --file "$bundle/integrations/composio/host.ts" -- "$@" --bin "$bundle/bin/codemode" || status=$?
+wait "$child" || status=$?
+# A trapped signal interrupts wait; wait again for the CLI's own status. 127
+# means the earlier wait had already returned it.
+while [ -n "$signalled" ]; do
+  signalled=
+  again=0
+  wait "$child" || again=$?
+  [ "$again" -eq 127 ] || status=$again
+done
 exit "$status"
 LAUNCHER
   chmod 755 "$1"
