@@ -348,6 +348,8 @@ export function githubPlanHost(execute: AccountExecute, identity: Identity, conn
   const read = (slug: string, args: Record<string, unknown>) => observe(execute, slug, { owner, repo, ...args }, account);
   const refused = (code: string, message: string): PlanReply => ({ ok: false, error: { code, message }, effect: "refused" });
   const notSent = (code: string, message: string): PlanReply => ({ ok: false, error: { code, message }, effect: "not_applied" });
+  // Set once a write comes back as a preview, so no later write in this session is sent.
+  let previewed = false;
 
   /** The names of an issue's labels across pages, or a probe error code. */
   async function issueLabels(issue: number): Promise<string[] | string> {
@@ -449,6 +451,7 @@ export function githubPlanHost(execute: AccountExecute, identity: Identity, conn
         }
       }
       if (signal.aborted) return notSent("cancelled", "cancelled before the write was sent");
+      if (previewed) return notSent("composio_dry_run", "an earlier write in this session was only previewed; nothing was sent");
       // From here the write may run; the helper cannot be aborted, and nothing is retried.
       const sent = await observe(execute, call.tool, call.arguments, account);
       if (!("result" in sent)) {
@@ -456,6 +459,7 @@ export function githubPlanHost(execute: AccountExecute, identity: Identity, conn
       }
       if (sent.result.dryRun === true) {
         // A preview, not an execution: end the session rather than report success.
+        previewed = true;
         setTimeout(endSession, 0);
         return notSent("composio_dry_run", "the CLI previewed the write without sending it; the session ends");
       }

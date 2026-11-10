@@ -534,13 +534,22 @@ fn a_dry_run_envelope_ends_the_session_not_applied_and_never_successful() {
     let (summary, output) = session(&scratch, "run");
     assert_eq!(output.status.code(), Some(3), "{summary}");
     assert_eq!(summary["status"], "interrupted", "{summary}");
+    // The host cancels the session after the dry-run reply. Whether the
+    // scheduler admits label-3 before that cancel arrives is a race: either it
+    // was never attempted, or its intent was journaled and it is unknown.
+    // Neither outcome may claim success or non-effect for label-3.
+    let rows = operations(&summary);
     assert_eq!(
-        operations(&summary),
-        [
-            row("label-1", "not_applied", "dispatch"),
-            row("label-3", "pending", "dispatch")
-        ]
+        rows[0],
+        row("label-1", "not_applied", "dispatch"),
+        "{summary}"
     );
+    assert!(
+        rows[1] == row("label-3", "pending", "dispatch")
+            || rows[1] == row("label-3", "unknown", "reconcile"),
+        "{summary}"
+    );
+    assert_eq!(rows.len(), 2, "{summary}");
     assert_eq!(scratch.writes(), [write(ADD, "acme/widgets#1", "dry_run")]);
     assert_eq!(scratch.issue(1)["labels"], json!([]));
 }
