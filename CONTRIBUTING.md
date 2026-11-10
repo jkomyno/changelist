@@ -2,8 +2,9 @@
 
 ## Set up development
 
-Follow the [setup instructions in the README](README.md#run-it), then
-run these commands from the repository root:
+Install Git, mise, and your platform's Rust compiler/linker prerequisites
+(including a C/C++ toolchain for bundled SQLite), then run these commands from
+the repository root:
 
 ```sh
 mise trust
@@ -58,9 +59,12 @@ mise run pi-check
 mise run opencode-check
 ```
 
-The offline Composio adapter tests run in `mise run check`. With `composio login`
-and GitHub and Slack connected, `mise run composio-live-check` executes read-only
-tools; report its result separately from offline checks.
+The offline Composio host tests run in `mise run check`; `mise run composio-plan-check`
+runs only them, and `mise run composio-demo` walks the workflow offline. With
+`composio login` and a GitHub connection,
+`COMPOSIO_GITHUB_ACCOUNT=ca_... mise run composio-live-check` runs a read-only
+investigation; report its result separately from offline checks. A live write
+needs explicit authorization naming the exact plan and issue.
 
 For compatibility changes, also test the declared MSRV:
 
@@ -71,10 +75,11 @@ mise exec -- cargo +1.91.0 test --locked --all-features
 
 The [CI workflow](.github/workflows/ci.yml) installs tools with mise and runs Cargo
 through Mr Boxington. It also installs the exact CI commit and exercises its
-binary, adapters, trace inspection, and native plan workflow from an empty
-directory. Pi and OpenCode checks run on bridge, integration, build, and test
+binary, adapters, trace inspection, native plan workflow, and Composio launcher
+from an empty directory. Pi and OpenCode checks run on bridge, integration, build, and test
 changes, and on manual workflow runs. These offline checks do not establish live
-model, interactive UI, or live-provider behavior.
+model, interactive UI, or live-provider behavior, or that a person can follow
+the workflow; the [operator trial](docs/operator-trial.md) is for that.
 
 For installation changes, commit the complete bundle before running the real
 source-install boundary check; the installer intentionally excludes uncommitted
@@ -86,7 +91,7 @@ mise exec -- scripts/install-check.sh /tmp/codemode-install/current
 ```
 
 See [installation and compatibility](docs/installation.md) for upgrade, rollback,
-engine selection, and compatibility (there is none to preserve before a release).
+and compatibility (there is none to preserve before a release).
 CI currently runs on Linux. Check platform-specific changes
 on the affected platform and report what you tested.
 

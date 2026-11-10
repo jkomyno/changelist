@@ -12,9 +12,10 @@ anything else. Where nothing can establish the outcome and repeating could
 duplicate the effect, it stops and asks a person.
 
 Approved operation identities submit natively to the existing Rust scheduler.
-Plans do not find or launch Deno and create no guest process. Provider
-accounts, permissions, retention, journal ordering, and recovery contracts are
-unchanged by this dispatch path.
+Plans start no worker process. Provider accounts, permissions, retention,
+journal ordering, and recovery contracts are unchanged by this dispatch path.
+The [GitHub triage guide](composio-github.md) runs this workflow through the
+Composio CLI; this document describes the general contract.
 
 ```mermaid
 flowchart LR
@@ -113,8 +114,8 @@ The journal is a SQLite database (format version 2) holding the frozen plan and
 append-only facts, each with an ordinal from one counter: approvals, sessions,
 dispatch intents (attempts), observations, reconciliation probes and their
 answers, reviews, and
-each session's end with its native dispatch run's execution record (schema version 3,
-readable by `codemode inspect`). Facts are never updated. An attempt key is
+each session's end with its native dispatch run's execution record (report
+schema version 5, readable by `codemode inspect`). Facts are never updated. An attempt key is
 `<journal id>-<operation id>-<attempt number>`, where the journal id is generated
 per journal, so two journals never share keys; the trace call identity is
 recorded with the attempt, so recovery evidence links to the existing trace
@@ -182,8 +183,17 @@ another format version, fails `quick_check`, or whose stored plan does not match
 its digest is refused with a diagnostic and left unchanged: these checks run under
 the executor lock, in a write transaction, before anything is written.
 
-**What is stored.** Plan arguments (needed to retry) and, from the provider,
-only what its approved **retention policy** keeps. The provider declares the
+**What is stored.** The journal keeps the approved plan for its whole
+lifetime, because recovery needs it to retry and to probe: every argument value
+(for the Composio host, full comment bodies, issue numbers, and labels), each
+operation's scope (account and destination), and its preconditions. It also
+keeps the approver's and reviewers' stated names and notes, each cut to 1 KiB.
+These approved inputs are the only sensitive values the journal must keep; they
+do not expire. Deleting the journal files (`<journal>`, `-wal`, `-shm`, and
+`.lock`) removes them; do that only when no command is using the journal.
+
+From the provider, the journal keeps only what its approved **retention
+policy** keeps. The provider declares the
 policy (`"retention"` in its declaration); the approval binds it, so a plan,
 guest code, or a result field cannot select or widen it, and a changed policy
 refuses the session until it is approved again.
@@ -204,6 +214,10 @@ by codemode itself; an authorization refusal names the scope and the code only.
 the offline fixture ("receipt for attempt 2 found"): the provider promises they
 are projections, not upstream text, and codemode does not check them. Neither
 policy makes plan arguments or other private data secret-free.
+
+`plan inspect` never prints argument values, and prints notes and error
+messages only with `--messages`. `plan check` prints arguments in full, because
+the reviewer must see what approval binds.
 
 Recovery decisions use only the facts every policy keeps, so the same history
 reaches the same conclusions under either policy (tested through the bridge).
@@ -368,6 +382,8 @@ support for any other adapter.
 
 ## Measured tradeoffs
 
+The first measurements below predate group commit and are kept as history.
+
 [The final native recovery evaluation](../eval/recovery-native-final/summary.md) recovers one identical crashed
 state (the demonstration's) three ways on one Apple M1 Pro, 15 runs each. Resume
 reached the intended state in every run with no duplicate effect and left the
@@ -377,5 +393,9 @@ Resume is the slowest: 89.2 ms at p50 against 17.0 ms for blind retry, without
 provider latency. Native execution has no guest startup; durable commits
 dominate. Each flushed commit costs about 6 ms here (`F_FULLFSYNC`), so the
 journal, not the provider, limits a large batch; a since-removed `process`
-durability mode, measured in the same evaluation, added under 1 ms per operation. The [evaluation document](recovery-evaluation.md)
-keeps the earlier Deno results, including their guest startup, clearly separate.
+durability mode, measured in the same evaluation, added under 1 ms per operation.
+[Group commit](recovery-evaluation.md#group-commit), measured later, cut the
+median journal cost of a 64-operation batch at zero provider latency by about
+30% by sharing transactions between overlapping calls. The
+[evaluation document](recovery-evaluation.md) keeps earlier results from a
+since-removed engine separate.

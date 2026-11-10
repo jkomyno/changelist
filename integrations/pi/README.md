@@ -1,15 +1,16 @@
 # Pi integration
 
 A Pi extension that runs agent-written TypeScript through `codemode bridge` and
-executes its tool calls as Pi nested tool calls. Verified with Pi 1.4.0.
+executes its tool calls as Pi nested tool calls. Verified with Pi 1.4.0, the
+adapter's integration pin; Pi is a secondary host, and the primary workflow is
+the [Composio GitHub host](../composio/README.md). Updating to newer Pi releases
+is deferred.
 
-Program execution defaults to Deno. Select `--codemode-backend embedded-v8` to
-use a binary built with `--features embedded-v8`; this selection does not look
-up or require Deno. `--codemode-deno` applies only to the default Deno backend.
-`rust_codemode_plan` uses native Rust execution and requires neither engine.
+Each program runs in a fresh V8 worker process started from the `codemode`
+binary. `rust_codemode_plan` runs approved plans natively and starts no worker.
 
 ```text
-Pi model ── rust_codemode {code} ──► extension ── start ──► codemode bridge ──► Deno guest
+Pi model ── rust_codemode {code} ──► extension ── start ──► codemode bridge ──► V8 worker
                                        ▲    │                  (Rust limits,       │
        ctx.executeTool(read, …) ◄──────┘    └── result ──►      scheduler, trace) ◄─┘ tools.call
        (Pi validation, tool_call gates, approvals, credentials)
@@ -30,7 +31,7 @@ A [scripted model](demo/offline-host.ts) calls `rust_codemode` once with
 blocks `bash` (and `issues_add_comment`, used by the plan check) because no UI is available. Expected output:
 
 ```text
-rust_codemode returned {"status":"success","calls":4,"output":{"entries":7,"environment":"denied","refused":["tool_error","tool_denied"],"title":"codemode Pi bridge fixture"}}
+rust_codemode returned {"status":"success","calls":4,"output":{"title":"codemode Pi bridge fixture","entries":7,"refused":["tool_error","tool_denied"],"environment":"denied"}}
 --- Pi approval gate audit
 {"event":"tool_call","tool":"rust_codemode","nested":false,"decision":"allowed"}
 {"event":"tool_call","tool":"read","nested":true,"decision":"allowed"}
@@ -61,13 +62,14 @@ pi --extension integrations/pi/codemode-bridge.ts \
 | --- | --- | --- |
 | `--codemode-tools` | none | Pi tools guest programs may call, if also callable in the session |
 | `--codemode-bin` | `codemode` on PATH | Rust executable |
-| `--codemode-deno` | `deno` on PATH | Deno executable for the guest |
 | `--codemode-timeout-ms` | 30000 | Run deadline, including time waiting for approvals |
 | `--codemode-concurrency` | 4 | Maximum concurrent Pi tool calls |
 | `--codemode-max-calls` | 32 | Maximum tool calls per run |
 | `--codemode-trace` | unset | Write each run's full JSON report to this file |
 
-Approval prompts that need a terminal UI count toward the deadline. Interactive
+The run uses the bridge's default output budget (256 KiB) and V8 heap budget
+(256 MiB); the extension has no flags for them. Approval prompts that need a
+terminal UI count toward the deadline. Interactive
 prompts were not exercised by the checks above. See
 [host integration contract](../../docs/integrations.md) for the protocol and status.
 
@@ -80,9 +82,8 @@ with an empty environment. Rust checks the approval, owns the journal, and
 records each attempt's intent before Pi sees it; Pi executes every attempt with
 `ctx.executeTool()`.
 
-Plan execution submits operation identities natively inside Rust, with no Deno
-lookup or guest process. `--codemode-deno` still selects the ordinary program
-guest and has no effect on plans. The plan check uses a nonexistent Deno path.
+Plan execution submits operation identities natively inside Rust, with no
+worker process.
 
 ```text
 Pi model ── rust_codemode_plan ──► extension ── start {declaration} ──► codemode plan run --bridge

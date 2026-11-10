@@ -2,15 +2,14 @@
 
 An OpenCode plugin that runs agent-written TypeScript through `codemode bridge`.
 Every guest tool call is gated by OpenCode's permission service, then runs a host
-tool inside the OpenCode process. Verified with OpenCode 1.19.5.
-
-Program execution defaults to Deno. Set `backend: "embedded-v8"` in
-`codemode({ tools, bin, backend })` to use a binary built with
-`--features embedded-v8`; the adapter then neither looks up nor requires Deno.
-The `deno` option applies only to the default Deno backend.
+tool inside the OpenCode process. Verified with OpenCode 1.19.5, the adapter's
+integration pin; OpenCode is a secondary host, and the primary workflow is the
+[Composio GitHub host](../composio/README.md). Updating to OpenCode's 2.x line
+is deferred. Each program runs in a fresh V8 worker process started from the
+`codemode` binary. Recoverable plans are not available through this adapter.
 
 ```text
-OpenCode model ── rust_codemode {code} ──► plugin ── start ──► codemode bridge ──► Deno guest
+OpenCode model ── rust_codemode {code} ──► plugin ── start ──► codemode bridge ──► V8 worker
                                             ▲   │                (Rust limits,       │
   context.ask("codemode_<tool>") ◄──────────┘   └── result ──►    scheduler, trace) ◄┘ tools.call
   then the host tool's execute()   (OpenCode rules, approvals, abort; credentials stay in OpenCode)
@@ -74,7 +73,7 @@ OpenCode's permission events. [`demo/opencode.json`](demo/opencode.json) allows
 Expected output:
 
 ```text
-rust_codemode returned {"status":"success","calls":4,"output":{"environment":"denied","refused":["permission_denied","tool_denied"],"stock":[3,0]}}
+rust_codemode returned {"status":"success","calls":4,"output":{"stock":[3,0],"refused":["permission_denied","tool_denied"],"environment":"denied"}}
 --- OpenCode permission events and model requests
 {"event":"model","reply":"tool"}
 {"event":"model","reply":"text"}
@@ -133,11 +132,13 @@ permission keys such as `read` or `bash`.
 | --- | --- | --- |
 | `tools` | required | Host tools guest programs may call, keyed by guest-visible name |
 | `bin` | `codemode` on PATH | Rust executable |
-| `deno` | `deno` on PATH | Deno executable for the guest |
 | `timeoutMs` | 30000 | Run deadline, including time waiting for approvals |
 | `concurrency` | 4 | Maximum concurrent host calls |
 | `maxCalls` | 32 | Maximum tool calls per run |
 | `trace` | unset | Write each run's full JSON report to this file |
+
+Runs use the bridge's default output budget (256 KiB) and V8 heap budget
+(256 MiB); the plugin has no options for them.
 
 OpenCode 1.19.5 does not resolve bare package imports from a plugin file outside
 a directory with its own `node_modules`, and failed plugin imports are silent: the

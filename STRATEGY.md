@@ -1,126 +1,125 @@
 ---
 name: codemode
-last_updated: 2026-11-09
+last_updated: 2026-11-10
 ---
 
 # codemode Strategy
 
-Based on [GOAL.md](GOAL.md). This document captures product direction; the
-implementation brief remains in GOAL.md. Success metrics below are proposals
-for review, with measurement still to be established.
+Based on [GOAL.md](GOAL.md), whose original brief is kept for history. The
+requirements and decisions behind the current direction are in the
+[workflow plan](docs/plans/2026-11-09-2345-refactor-composio-github-workflow-plan.md).
+Metrics below say what is measured and what is not yet.
 
 ## Purpose
 
-Developers building tool-using AI agents need to execute composed workflows while
-controlling access, resource use, and partial failures. They need to understand
-which actions ran and which outcomes remain unknown when generated code fails
-or stops, without exposing provider credentials to that code. When a batch of external
-changes is interrupted, they need to know which changes happened, which are
-uncertain, and what can safely happen next, without repeating effects blindly.
+A developer who lets an agent change several GitHub issues needs to review the
+exact changes before they happen and, after a crash or a lost reply, know which
+changes happened, which are uncertain, and what can safely happen next, without
+repeating effects blindly and without handing credentials to agent-written code.
 
 ## Positioning
 
-Build a small, provider-independent Rust execution core and CLI that Pi,
-OpenCode, Codex, and the Composio CLI can use through verified host integrations.
-Rust owns run-level control, rolling bounded dispatch, and typed execution
-evidence; a replaceable backend executes TypeScript/JavaScript and adapters own
-authentication and external tool calls.
+A small Rust execution tool for one workflow: investigate a GitHub problem
+through the existing Composio CLI connection, produce a finite change list,
+review and approve it exactly, execute it under host-owned limits, inspect it
+live, and recover it conservatively after interruption. Rust owns admission,
+limits, the journal, and recovery decisions; the Composio host owns the account,
+the credential, and GitHub calls. Pi and OpenCode are secondary hosts that reach
+the same executor.
 
 ## Users
 
-**Primary:** Developers building and evaluating tool-using AI agents — they use
-codemode to execute agent-written tool workflows locally, control their access,
-and inspect the resulting evidence from their existing agent or CLI.
+**Primary:** Composio developers who already use the Composio CLI with a
+connected GitHub account and want an agent to triage issues (labels, issue
+state, comments) with a reviewable, recoverable record.
+
+**Secondary:** Pi 1.4.0 and OpenCode 1.19.5 users who want agent-written
+programs to call host tools under Rust-enforced limits through those hosts'
+own permission gates.
 
 ## Boundaries
 
-- Keep v0 small and shippable: defer microVMs, persistent Jupyter-style state,
-  a web UI, and additional execution languages.
-- Prefer simple, reliable isolation for v0; describe its actual guarantees and
-  limitations without claiming perfect security.
-- Keep secrets and credentials outside the sandbox, including when using a real
-  tool provider.
-- Keep Composio optional; the core must run with a mock provider and support
-  other providers through the same contract.
-- Keep the design explainable in a 30-minute technical presentation around
-  run-level control, scheduling, execution evidence, and bounded recovery of
-  approved operation lists. Recovery never replays arbitrary programs; defer a
-  general workflow engine, persistent notebooks, general dependency planning,
-  catalog or billing infrastructure, and a UI.
-- Recovery semantics belong to the trusted provider. Do not claim exactly-once
-  execution across arbitrary APIs; distinguish confirmed effects, satisfied
-  state without attribution, confirmed non-effects, and unknown outcomes.
-- Treat shell invocation and native-tool integration as separate claims. Each
-  target host needs its own versioned validation before compatibility is asserted.
+- One workflow, GitHub issue triage through `composio run`, with four write
+  contracts: add a label, remove a label, set issue state, and create a marked
+  comment. No new authentication, tool catalog, session platform, policy
+  language, configuration framework, or general agent harness.
+- One program engine: a fresh embedded V8 worker per run, killable by Rust.
+  Its restrictions are not OS isolation; say what each limit bounds. The V8 heap
+  budget is not a process-memory limit; only Linux adds a data-segment limit.
+- Credentials stay in the host; guest code and the journal never see them.
+- Recovery never replays a program. A plan is a finite list of independent
+  operations; there is no workflow engine, dependency planner, UI, or
+  persistent notebook state.
+- Recovery semantics belong to the provider's declared contract. No
+  exactly-once claim; distinguish applied, satisfied without attribution,
+  not applied, refused, and unknown.
+- Unreleased formats get no compatibility. Every command, flag, and dependency
+  needs a named consumer.
+- Each host/version pair needs its own validation before it is called
+  compatible. Offline and live evidence are reported separately, and automated
+  installation checks are not usability validation.
 
 ## Key metrics
 
-Proposed measures; no baselines, targets, or measurement infrastructure are
-established yet. Compare workflows against a sequential-tool-call baseline to
-test the code-mode bet.
+- **Unjustified claims.** Per comparison scenario, runs that claimed success or
+  non-effect without evidence, scored against an independent provider ledger.
+- **Unsafe duplicate effects.** Per scenario, effects sent twice where the
+  contract did not allow it.
+- **Operations needing human review.** Per scenario, and whether each came with
+  its evidence.
+- **Approval binding.** Whether an edited or widened change list can run
+  without a new approval.
+- **Live inspectability.** Whether progress can be read from another process
+  during a run, and whether an interrupted batch yields an exportable diagnosis
+  naming each operation applied, not applied, or unknown.
+- **Latency.** p50 and p95 of the workflow and of recovery, and recovery
+  request counts.
+- **Operator completion.** Whether another Composio developer completes the
+  [operator trial](docs/operator-trial.md) from the guide alone. No one has run
+  it yet.
 
-- **Workflow success rate** — share of representative tasks that achieve their
-  expected outcome; measure from task assertions and run traces in repeatable
-  evaluations.
-- **Time to successful outcome** — elapsed time for successful runs on those
-  tasks, including tool execution; measure from traces for both approaches,
-  alongside success rate.
-- **Credential containment failures** — runs in boundary evaluations where
-  sandboxed code can access provider credentials; measure through controlled
-  access attempts, recording verdicts without credential values.
-- **Trace completeness rate** — share of evaluation runs whose JSON captures
-  executed code, every tool call's name, arguments, result summary, timing and
-  error, and the final outcome; validate traces against observed execution,
-  including failed runs.
-- **Recovery correctness** — after an interrupted batch, duplicate effects,
-  outcomes left unresolved, and time to a safe conclusion, compared with
-  stop-on-uncertainty and blind-retry baselines on an offline provider whose
-  own ledger is the oracle.
-- **Verified host compatibility** — target host/version pairs that pass launch,
-  tool-boundary, output, and cancellation checks; record in the integration guide,
-  distinguishing shell invocation from native-tool callbacks.
+The comparison against current Pi Durable, OpenCode Code Mode, and a competent
+Composio CLI script is in [docs/comparison.md](docs/comparison.md).
 
 ## Tracks
 
-### Run-level control and scheduling
+### Composio GitHub workflow
 
-Invest in one Rust-owned deadline, admission and concurrency contract around
-restricted TypeScript/JavaScript execution, including bounded output and cleanup.
+Keep the installed path from investigation to diagnosis working from one guide,
+with each write contract validated live before it is described as live.
 
-_Why it serves the approach:_ Generated loops and fan-out need limits enforced by
-the host, with scheduling and failure behavior that can be demonstrated and tested.
+_Why it serves the approach:_ It is the one path the project now serves; every
+other surface must justify itself against it.
 
-### Helper contract and provider integration
+### Execution limits and evidence
 
-Invest in a small, typed helper surface backed by interchangeable tool providers,
-with credentials handled outside the guest and host-specific registration kept
-in adapters.
+Keep deadline, call allowance, concurrency, output, and memory limits enforced
+outside the guest, with typed outcomes and an inspectable execution record.
 
-_Why it serves the approach:_ One core can serve Pi, OpenCode, Codex, and the
-Composio CLI while a mock provider keeps evaluation independent of accounts.
+_Why it serves the approach:_ Investigation programs are agent-written; their
+failures must end with a named status and evidence, not a guess.
 
-### Execution evidence and evaluation
+### Recoverable approved plans
 
-Invest in machine-readable traces that connect code, tool calls, errors, timing,
-and outcomes and remain useful to external evaluation and debugging tools.
+Keep approval bound to the exact reviewed plan and its scope, intent durable
+before provider entry, read-only inspection during a run, and reconciliation
+limited to the provider's contract.
 
-_Why it serves the approach:_ Traces provide the evidence needed to investigate
-failures and test whether code-mode workflows improve agent behavior.
+_Why it serves the approach:_ This is the answer to "what happened, and what is
+safe now?" after an interrupted batch.
 
-### Recoverable approved actions
+### Fair comparison
 
-Invest in a small path from a reviewed plan of external operations to a durable
-journal and provider-supported reconciliation after an interruption.
+Compare the same workflow against pinned alternatives with the same provider
+contracts, and report ties, losses, and unsupported cases.
 
-_Why it serves the approach:_ Agents that change external systems need an
-answer to "what happened, and what is safe now?" that does not depend on the
-agent's program surviving or on retrying blindly.
+_Why it serves the approach:_ Claims of advantage are only as good as the
+evidence that the alternatives were run competently.
 
-### Developer adoption and extensibility
+### Secondary hosts
 
-Invest in a small Rust library/CLI, minimal TypeScript types, a common subprocess
-contract, and one understandable example that demonstrates useful composition
-and a controlled failure.
+Keep the Pi and OpenCode adapters working at their pins with their offline
+checks; updating them to newer host versions is deferred.
 
-_Why it serves the approach:_ A compact, understandable prototype lets developers
-try the workflow and extend it without first adopting a larger platform.
+_Why it serves the approach:_ They show the executor is not Composio-specific,
+at a fixed and checked cost.

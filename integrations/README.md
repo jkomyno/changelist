@@ -1,5 +1,10 @@
 # Host adapter checks
 
+The [Composio GitHub host](composio/README.md) is the primary integration. The
+[Pi](pi/README.md) and [OpenCode](opencode/README.md) adapters are secondary
+hosts kept at their integration pins (Pi 1.4.0, OpenCode 1.19.5); all three
+reach the same `codemode` executor through [`shared/bridge-client.ts`](shared/bridge-client.ts).
+
 The private root npm package contains development dependencies only. Install its
 exact lockfile with `npm ci --ignore-scripts` and run `npm run typecheck` (Node
 24.22.1, as pinned by mise). No npm installation is required by the shared bridge client,

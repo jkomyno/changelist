@@ -1,8 +1,11 @@
 # Host integration contract
 
-The target hosts are **Pi, OpenCode, Codex, and the Composio CLI**. The Rust
-library and CLI share one execution contract. Host registration and tool access
-are adapter responsibilities.
+The primary host is the **Composio CLI**, which runs the
+[GitHub triage workflow](composio-github.md). **Pi 1.4.0** and **OpenCode 1.19.5**
+are secondary hosts that reach the same executor through their own adapters,
+pinned to the versions their offline checks use. Codex is not integrated. The
+Rust library and CLI share one execution contract; host registration and tool
+access are adapter responsibilities.
 
 ## Native tool callbacks
 
@@ -16,34 +19,28 @@ plan, `codemode plan run|resume --bridge`) plus a host-specific adapter.
 
 | Host | Verified | Remaining target |
 | --- | --- | --- |
-| Pi 1.4.0 | Native callbacks through [`integrations/pi`](../integrations/pi/README.md): nested calls, Pi permission gates, Rust-side authorization, cancellation, and environment containment. Checked offline with a scripted model. **Plan mode** (`rust_codemode_plan`, protocol 3): an approved plan runs with every attempt passing Pi's gates through `ctx.executeTool()`; after Pi is killed with SIGKILL following a lost response, resume reconciles through a host-registered reconciler with no duplicate effect; a gate-blocked operation stays `unknown` and needs review. Fixture tools and a scripted model only. | A live model session; interactive approval prompts (`ctx.ui.confirm`) were not exercised; other Pi versions. |
-| OpenCode 1.19.5 | Plugin tool through [`integrations/opencode`](../integrations/opencode/README.md): each guest call passes OpenCode's permission service (`allow`, `deny`, `ask`; approvals granted over OpenCode's HTTP API and refused by `opencode run`, handled as a native rejection), Rust-side authorization, session abort (including during an approval wait), and environment containment. Checked offline with a scripted model. | Plan mode (recoverable plans) not checked. **Blocker:** plugins cannot call OpenCode's registered tools (built-in, plugin, or MCP), and nested calls do not reach other plugins' `tool.execute` hooks; guest calls reach only host tools passed to the adapter. A live model session; the TUI approval dialog; other OpenCode versions. |
-| Codex | Not checked, for runs or plans. | Native callbacks need a demonstrated interface for calling Codex tools back; MCP exposes our tool to Codex, not Codex's tools to us. |
-| Composio CLI 0.6.0 | GitHub triage host through [`integrations/composio`](../integrations/composio/README.md): `composio run` hosts an investigation program over the bridge and serves approved plans over the plan bridge, with the CLI's authenticated `execute` helper and one pinned connected account. **Live, read-only:** investigation of `jkomyno/codemode` with the example program. **Offline:** read restrictions, signed-URL stripping, unobserved reads (`unknown`), the four write contracts, lost replies, killed executors, late effects, dry-run results, and identity drift, against a stand-in GitHub with its own ledger. **Plan mode, live:** one approved label addition with a lost reply, SIGKILL, and a resume to `satisfied`, with an earlier host; cleanup verified. See [live validation](composio-live-validation.md). | Live writes of the current four contracts are prepared but not run. The CLI's approval flow (off for the checked account); other CLI versions. A live SDK run needs a project API key. |
+| Composio CLI 0.6.0 (primary) | GitHub triage host through [`integrations/composio`](../integrations/composio/README.md): `composio run` hosts an investigation program over the bridge and serves approved plans over the plan bridge, with the CLI's authenticated `execute` helper and one pinned connected account. **Live, read-only (2026-11-10):** the installed launcher investigated `jkomyno/codemode` with the example program (the repository had no open issues, so it proposed nothing), and a placeholder four-operation proposal was written and checked as a plan; nothing was approved or run. **Offline:** read restrictions, signed-URL stripping, unobserved reads (`unknown`), the four write contracts, lost replies, killed executors, late effects, dry-run results, and identity drift, against a stand-in GitHub with its own ledger. **Earlier live write (2026-11-09):** one approved label addition with a lost reply, SIGKILL, and a resume to `satisfied`, with an earlier host. See [live validation](composio-live-validation.md). | Live writes through the current host are not yet validated: the four contracts are prepared but not run. The CLI's permission-control flow (off for the checked account); other CLI versions. A live SDK run needs a project API key. |
+| Pi 1.4.0 (secondary) | Native callbacks through [`integrations/pi`](../integrations/pi/README.md): nested calls, Pi permission gates, Rust-side authorization, cancellation, and environment containment. Checked offline with a scripted model. **Plan mode** (`rust_codemode_plan`, protocol 3): an approved plan runs with every attempt passing Pi's gates through `ctx.executeTool()`; after Pi is killed with SIGKILL following a lost response, resume reconciles through a host-registered reconciler with no duplicate effect; a gate-blocked operation stays `unknown` and needs review. Fixture tools and a scripted model only. | A live model session; interactive approval prompts (`ctx.ui.confirm`) were not exercised; other Pi versions. |
+| OpenCode 1.19.5 (secondary) | Plugin tool through [`integrations/opencode`](../integrations/opencode/README.md): each guest call passes OpenCode's permission service (`allow`, `deny`, `ask`; approvals granted over OpenCode's HTTP API and refused by `opencode run`, handled as a native rejection), Rust-side authorization, session abort (including during an approval wait), and environment containment. Checked offline with a scripted model. | Plan mode (recoverable plans) not checked. **Blocker:** plugins cannot call OpenCode's registered tools (built-in, plugin, or MCP), and nested calls do not reach other plugins' `tool.execute` hooks; guest calls reach only host tools passed to the adapter. A live model session; the TUI approval dialog; other OpenCode versions. |
+| Codex | Not integrated. | Deferred. Native callbacks need a demonstrated interface for calling Codex tools back; MCP exposes our tool to Codex, not Codex's tools to us. |
 
 Validate launch, framing, tool scope, failure states, approval behavior, and
 cancellation for each host/version before marking it compatible. Do not install
 configuration or expose additional tools implicitly.
 
-Approved plans submit operation identities natively and start no program
-engine. This does not change either host's tool access or permission gates.
-
-Arbitrary programs still default to Deno. `codemode bridge --backend embedded-v8`
-and the shared client's `BridgeLimits.backend = "embedded-v8"` select the
-optional engine when the binary includes that build feature. The generic bridge
-client resolves Deno on the trusted host's PATH when its path is omitted; an
-embedded selection never looks up Deno. Child environments remain empty.
-Library and generic bridge paths are verified; the named Pi/OpenCode/Composio arbitrary-program
-adapters have not separately been checked with embedding. Their existing
-verification continues to describe the Deno path. See [engine limits and
-measurements](embedded-evaluation.md).
+Programs run in a fresh V8 worker process started from the `codemode`
+executable, with an empty environment. Approved plans submit operation
+identities natively and start no worker. Neither changes a host's tool access or
+permission gates. The Pi and OpenCode checks run the same embedded worker as
+the Composio host; adapters do not choose an engine.
 
 ## Bridge protocol (version 2)
 
-`codemode bridge [limit options]` serves one run over stdin and stdout. It starts
-its guest at once and waits for the start frame until its input closes, so a host
-can start a bridge before it has a program; the run's deadline starts when the
-start frame arrives. Frames are
+`codemode bridge [limit options]` serves one run over stdin and stdout. The
+limit options are `--timeout-ms`, `--max-calls`, `--concurrency`,
+`--max-output-bytes`, `--heap-mb`, and, on Linux only, `--process-memory-mb`
+(see `codemode --help`). The worker starts after the start frame, and the run's
+deadline, which includes worker startup, starts with that frame. Frames are
 LF-terminated JSON objects. Host frames are at most 1 MiB; the report frame is
 bounded by the run limits (64 KiB source, 64 KiB arguments per call, and the
 output budget). The library entry point is `codemode::serve_bridge`, which
@@ -112,9 +109,10 @@ The Pi adapter's `rust_codemode_plan` dispatches each attempt through
 them; Pi errors are effect `unknown`, because Pi reports gate blocks and tool
 failures alike. Provider extensions register attempt-key, precondition, and scope
 arguments, an authorization check, and reconcilers on `codemode:plan-providers`;
-an attempt whose tool cannot receive its approved scope is refused. Only the Pi flow has
-been checked; see [`integrations/pi`](../integrations/pi/README.md) for exactly
-what its test establishes.
+an attempt whose tool cannot receive its approved scope is refused. The Pi and
+Composio plan flows have been checked; OpenCode's has not. See
+[`integrations/pi`](../integrations/pi/README.md) and the
+[Composio guide](composio-github.md) for exactly what each check establishes.
 
 ## Host adapters
 
@@ -122,9 +120,10 @@ The adapters use [`integrations/shared/bridge-client.ts`](../integrations/shared
 a host-neutral client built on Node built-ins. It spawns the bridge with an empty
 environment, frames calls and results, refuses calls that arrive after an abort,
 replaces oversized replies with `too_large`, sends `cancel` on abort, and kills the
-bridge two seconds later if it has not exited. `startBridge` starts a bridge with
-fixed limits before the program is known; passing it to `runBridge` as `started`
-takes bridge and guest startup off that run's critical path. An adapter supplies the authorized
+bridge two seconds later if it has not exited. `runBridge` takes the bridge's
+limits, including `heapMb` and the Linux-only `processMemoryMb`; the Pi and
+OpenCode adapters pass only the deadline, concurrency, and call allowance, so
+their runs use the default output and memory budgets. An adapter supplies the authorized
 tool names and one function that runs a call; host registration, permissions, and
 result conversion stay in the adapter.
 
@@ -228,7 +227,7 @@ earlier host. See the [live record](composio-live-validation.md).
 
 ## Guest protocol
 
-The selected guest worker is an implementation detail, not a host API. It receives one
+The worker is an implementation detail, not a host API. It receives one
 `{ "type": "run", "code": "..." }` object. Guest requests are `call` objects with
 an untrusted correlation `id`, a `tool` name, and JSON `arguments`. Rust supplies
 `result` replies; the guest can return an `output` value or an `error` message.

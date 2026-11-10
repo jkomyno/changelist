@@ -1,3 +1,22 @@
+# Goal
+
+## Current product direction (2026-11-10)
+
+The goal has narrowed to one workflow: a Composio developer uses the logged-in
+Composio CLI to investigate a GitHub problem with authorized reads, reviews and
+approves an exact change list, executes it under host-owned limits, watches it
+progress, and recovers an interrupted batch without guessing what happened.
+Pi and OpenCode remain secondary hosts that reach the same executor. Programs
+run in one embedded V8 worker; `codemode run`, the Deno backend, mock CLI tools,
+and other compatibility surfaces were removed. [STRATEGY.md](STRATEGY.md) holds
+the current direction, and the
+[workflow plan](docs/plans/2026-11-09-2345-refactor-composio-github-workflow-plan.md)
+holds the requirements and decisions behind it.
+
+The original brief follows unchanged except for notes on removed surfaces.
+
+## Original brief
+
 You are building a minimal Rust prototype called `codemode` — a local, sandboxed code-mode runtime for AI agents.
 
 The reusable execution core and CLI must be written in Rust and designed for use
@@ -64,7 +83,7 @@ Composio is a first-class integration, not built-in:
   avoid copying its product surface or treating its backend as lacking safeguards.
 - Design the helper surface and trace format so that Composio (or any other tool provider) can be plugged in cleanly.
 - Before implementing the Composio adapter, familiarize yourself with the relevant code in the relevant provider backend repositories, when source access is available. Look at how local sandbox / workbench sessions, helper contracts, and tool execution work so the integration matches the real surface.
-- The Composio adapter should be a separate module or feature flag. The core runtime must work without it (e.g. with a simple mock tool provider).
+- The Composio adapter should be a separate module or feature flag. The core runtime must work without it (e.g. with a simple mock tool provider). (The mock provider now exists only in the test-only `testkit` feature; the production binary has no built-in tools.)
 
 Inspiration to borrow tastefully (do not copy code or UI):
 - Gauge’s full session traces and evidence of real agent behavior.
@@ -86,7 +105,7 @@ Concrete deliverables:
 4. Minimal TypeScript types for the helper API.
 5. CLI interface: `codemode run --code path/to/file.ts` and a way to print/export the trace. (`codemode run` has since been removed; programs run through `codemode bridge`, and `codemode inspect` reads traces.)
 6. A short README explaining the architecture, how to add a tool provider (with Composio as the worked example), and how the traces are meant to be used for evals.
-7. At least one example: a small TypeScript snippet that calls tools (via the mock provider or Composio) and the resulting trace.
+7. At least one example: a small TypeScript snippet that calls tools (via the mock provider or Composio) and the resulting trace. (The current example is the Composio investigation program `integrations/composio/examples/triage.ts`.)
 8. AGENTS.md (and a minimal skills layout) so the repo is ready for further agent work.
 
 Constraints:
