@@ -697,6 +697,7 @@ impl RecoverableProvider for FixtureProvider {
             account: self.account.clone(),
             // The fixture writes its own short evidence and messages; no upstream text.
             retention: Retention::Summary,
+            definitions: std::collections::BTreeMap::new(),
             contracts: [
                 (
                     ADD_LABEL,

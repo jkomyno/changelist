@@ -122,6 +122,12 @@ pub struct ProviderDeclaration {
     /// What the journal keeps of this provider's replies; `metadata/1` when omitted.
     #[serde(default)]
     pub retention: Retention,
+    /// Digest of each tool's definition as the provider saw it when it declared,
+    /// for providers whose tools are defined elsewhere, such as an MCP server.
+    /// An approval binds them: a definition that changed since approval refuses
+    /// the session. Empty for a provider that defines its own tools.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub definitions: BTreeMap<String, Digest>,
 }
 
 impl ProviderDeclaration {
@@ -152,7 +158,7 @@ impl ProviderDeclaration {
         Ok(())
     }
 
-    /// The same declaration, keeping only the contracts of tools `plan` uses, so
+    /// The same declaration, keeping only the contracts and definitions of tools `plan` uses, so
     /// an approval does not depend on unrelated tools.
     #[must_use]
     pub fn for_plan(&self, plan: &FrozenPlan) -> Self {
@@ -171,6 +177,12 @@ impl ProviderDeclaration {
                 .iter()
                 .filter(|(tool, _)| used.contains(tool.as_str()))
                 .map(|(tool, contract)| (tool.clone(), *contract))
+                .collect(),
+            definitions: self
+                .definitions
+                .iter()
+                .filter(|(tool, _)| used.contains(tool.as_str()))
+                .map(|(tool, digest)| (tool.clone(), digest.clone()))
                 .collect(),
         }
     }
