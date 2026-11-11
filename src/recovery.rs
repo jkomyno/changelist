@@ -513,6 +513,8 @@ pub enum Conclusion {
     Refused,
     /// The outcome remains unknown: an attempt may have reached the provider.
     Unknown,
+    /// A person decided it is not applied and must never be sent. Final.
+    Skipped,
 }
 
 impl Conclusion {
@@ -526,6 +528,7 @@ impl Conclusion {
             Self::NotApplied => "not_applied",
             Self::Refused => "refused",
             Self::Unknown => "unknown",
+            Self::Skipped => "skipped",
         }
     }
 }
@@ -579,6 +582,9 @@ pub enum Resolution {
     Applied,
     /// The person confirmed it did not happen; it may be sent again within budget.
     NotApplied,
+    /// The person decided it is not applied and must never be sent. Final:
+    /// no later fact changes the conclusion.
+    Skipped,
 }
 
 /// What a journal observed about one attempt.
@@ -677,6 +683,8 @@ pub struct Assessment {
 /// `state` reconciliation can only show that the desired state holds, so its
 /// `applied` counts as `satisfied` and its `not_applied` as `unknown`.
 /// `probed_this_session` prevents probing the same operation twice in one session.
+/// A [`Resolution::Skipped`] review is final: no later fact changes the
+/// conclusion, so a skipped operation is never dispatched or probed again.
 #[must_use]
 pub(crate) fn assess(
     facts: &[Fact<'_>],
@@ -691,6 +699,13 @@ pub(crate) fn assess(
     // Attempts whose outcome is unknown and not yet settled.
     let mut open = std::collections::BTreeSet::new();
     for fact in facts {
+        if conclusion == Conclusion::Skipped {
+            // Final: only the attempt count still follows the facts.
+            if let Fact::Intent { number } = *fact {
+                attempts = attempts.max(number);
+            }
+            continue;
+        }
         match *fact {
             Fact::Intent { number } => {
                 attempts = attempts.max(number);
@@ -741,6 +756,7 @@ pub(crate) fn assess(
                 conclusion = match resolution {
                     Resolution::Applied => Conclusion::Applied,
                     Resolution::NotApplied => Conclusion::NotApplied,
+                    Resolution::Skipped => Conclusion::Skipped,
                 };
             }
         }
@@ -778,6 +794,10 @@ fn next_step(
         Conclusion::Satisfied => (
             NextStep::Done,
             "the desired state holds; whether our attempt caused it is unknown".into(),
+        ),
+        Conclusion::Skipped => (
+            NextStep::Done,
+            "a person skipped it; it is never sent".into(),
         ),
         Conclusion::Refused => (
             NextStep::Review,
@@ -887,13 +907,14 @@ impl Resolution {
         match self {
             Self::Applied => "applied",
             Self::NotApplied => "not_applied",
+            Self::Skipped => "skipped",
         }
     }
 
     /// The resolution with serialized name `name`.
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
-        [Self::Applied, Self::NotApplied]
+        [Self::Applied, Self::NotApplied, Self::Skipped]
             .into_iter()
             .find(|resolution| resolution.as_str() == name)
     }
@@ -1059,6 +1080,46 @@ mod tests {
             step(&facts, repeat),
             (Conclusion::Unknown, NextStep::Review)
         );
+    }
+
+    #[test]
+    fn a_skipped_operation_stays_skipped_and_is_never_dispatched() {
+        let failed = Observed::Failed {
+            error: ProviderError {
+                code: "tool_error".into(),
+                message: "gone".into(),
+            },
+            effect: FailureEffect::Unknown,
+        };
+        let repeat = RecoveryContract {
+            repeat: RepeatSafety::Safe,
+            reconcile: ReconcileMethod::Receipt,
+        };
+        for contract in [NONE, repeat] {
+            // Before any attempt, and after a failed one.
+            assert_eq!(
+                step(&[Fact::Review(Resolution::Skipped)], contract),
+                (Conclusion::Skipped, NextStep::Done)
+            );
+            let facts = [
+                Fact::Intent { number: 1 },
+                Fact::Observation {
+                    number: 1,
+                    observed: &failed,
+                },
+                Fact::Review(Resolution::Skipped),
+                // A later finding cannot bring it back.
+                Fact::Review(Resolution::NotApplied),
+                Fact::Probe(Some(Verdict::NotApplied)),
+            ];
+            let assessment = assess(&facts, contract, &RecoveryPolicy::default(), false);
+            assert_eq!(
+                (assessment.conclusion, assessment.basis, assessment.next),
+                (Conclusion::Skipped, Basis::Review, NextStep::Done)
+            );
+            assert_eq!(assessment.attempts, 1);
+        }
+        assert_eq!(Resolution::parse("skipped"), Some(Resolution::Skipped));
     }
 
     #[test]

@@ -15,6 +15,7 @@ use crate::mcp::ToolClass;
 use crate::plan_file::{
     PlanFile, PlannedTool, PlannedWrite, ServerFacts, class_words, printable_json,
 };
+use crate::recovery::Resolution;
 use crate::status::{
     NextAction, PlanState, ServerFileState, StatusReport, WriteState, WriteStatus, grouped, plural,
 };
@@ -25,6 +26,8 @@ const SHOWN: usize = 20;
 const CELL: usize = 60;
 /// Characters of an error text before it is shortened.
 const ERROR_TEXT: usize = 240;
+/// The hint under a section of writes a person can settle.
+const SKIP_HINT: &str = "Use --as skipped for a write that must not be sent.";
 /// Longest example value of an argument that differs between writes.
 const EXAMPLE: usize = 24;
 /// Longest line of a wrapped list of identities.
@@ -320,18 +323,10 @@ pub fn review(report: &StatusReport, plan: &PlanFile, options: ReviewOptions) ->
         let _ = writeln!(out, "{title}");
         if total <= 2 {
             for write in writes {
-                write_in_full(&mut out, write);
+                one_write(&mut out, write, false);
             }
         } else if let [write] = writes.as_slice() {
-            if options.full {
-                block(&mut out, write);
-            } else {
-                let _ = write!(out, "  {}", escape(&write.id));
-                for (key, value) in sorted(&write.arguments) {
-                    let _ = write!(out, "  {}={}", escape(key), shortened(value, CELL));
-                }
-                out.push('\n');
-            }
+            one_write(&mut out, write, !options.full);
         } else {
             group(&mut out, writes, options.full);
         }
@@ -381,8 +376,9 @@ fn block(out: &mut String, write: &PlannedWrite) {
     );
 }
 
-/// One write with every argument on its own line, never cut.
-fn write_in_full(out: &mut String, write: &PlannedWrite) {
+/// One write with every argument on its own line. With `cut`, a long value
+/// is cut and shows its whole size, as in a table.
+fn one_write(out: &mut String, write: &PlannedWrite, cut: bool) {
     let _ = writeln!(out, "  {}", escape(&write.id));
     let entries = sorted(&write.arguments);
     if entries.is_empty() {
@@ -395,7 +391,12 @@ fn write_in_full(out: &mut String, write: &PlannedWrite) {
         .max()
         .unwrap_or(0);
     for (key, (_, value)) in keys.iter().zip(&entries) {
-        let _ = writeln!(out, "    {}  {}", pad(key, width), printable_json(value));
+        let value = if cut {
+            shortened(value, CELL)
+        } else {
+            printable_json(value)
+        };
+        let _ = writeln!(out, "    {}  {value}", pad(key, width));
     }
 }
 
@@ -691,7 +692,8 @@ pub fn question(plan: &PlanFile) -> String {
 /// what happened to each write and the exact command to run next.
 ///
 /// Sections appear only when they have writes, in this order: failed, no
-/// reply, refused, resolved by a person, not sent, applied. Lists of
+/// reply, refused, resolved by a person, skipped by a person, not sent,
+/// applied. Lists of
 /// identities stop at 20 unless `options.full` is set, and say how many they
 /// leave out.
 #[must_use]
@@ -719,6 +721,9 @@ pub fn status(report: &StatusReport, plan: &PlanFile, options: ReviewOptions) ->
     }
     if counts.resolved > 0 {
         let _ = write!(out, " · resolved {}", grouped(counts.resolved));
+    }
+    if counts.skipped > 0 {
+        let _ = write!(out, " · skipped {}", grouped(counts.skipped));
     }
     out.push('\n');
     let of = |state: WriteState| -> Vec<&WriteStatus> {
@@ -806,6 +811,7 @@ pub fn status(report: &StatusReport, plan: &PlanFile, options: ReviewOptions) ->
                 if spent.len() == 1 { "it" } else { "them" }
             );
         }
+        let _ = writeln!(out, "{indent}{SKIP_HINT}");
     }
     let resolved = of(WriteState::Resolved);
     if !resolved.is_empty() {
@@ -815,6 +821,16 @@ pub fn status(report: &StatusReport, plan: &PlanFile, options: ReviewOptions) ->
             grouped(resolved.len())
         );
         let ids: Vec<&str> = resolved.iter().map(|write| write.id.as_str()).collect();
+        id_list(&mut out, "  ", &ids, full);
+    }
+    let skipped = of(WriteState::Skipped);
+    if !skipped.is_empty() {
+        let _ = writeln!(
+            out,
+            "\nskipped by a person ({}): not applied, and never sent",
+            grouped(skipped.len())
+        );
+        let ids: Vec<&str> = skipped.iter().map(|write| write.id.as_str()).collect();
         id_list(&mut out, "  ", &ids, full);
     }
     let waiting = of(WriteState::NotSent);
@@ -845,12 +861,7 @@ pub fn status(report: &StatusReport, plan: &PlanFile, options: ReviewOptions) ->
 /// kept them.
 fn reason(write: &WriteStatus, full: bool) -> String {
     if let Some(text) = &write.error_text {
-        let value = Value::String(text.clone());
-        return if full {
-            printable_json(&value)
-        } else {
-            shortened(&value, ERROR_TEXT)
-        };
+        return error_line(text, full);
     }
     match write.error_code.as_deref() {
         Some("no_result") => {
@@ -861,6 +872,56 @@ fn reason(write: &WriteStatus, full: bool) -> String {
         Some("cancelled") => "cancelled before an answer came back".into(),
         Some(code) => format!("no error text was kept (code {})", escape(code)),
         None => "no error text was kept".into(),
+    }
+}
+
+/// A server's error text on one line, without JSON quoting: `"` and `\` are
+/// printed as they are, and every character that is [`unsafe_to_print`] is a
+/// visible escape such as `\u{a}`, so the text never starts a line of its
+/// own. Unless `full`, each run of spaces becomes one space, so padding
+/// cannot push text to where a line of its own would begin, and a text longer
+/// than about 240 characters is cut, never inside an escape, and shows its
+/// whole size in bytes.
+fn error_line(text: &str, full: bool) -> String {
+    let budget = ERROR_TEXT.saturating_sub(4);
+    let mut out = String::with_capacity(text.len());
+    // Characters in `out`, and where `out` ends at the last piece that fits
+    // the budget.
+    let mut shown = 0;
+    let mut cut = None;
+    let mut space = false;
+    for character in text.chars() {
+        let unsafe_character = unsafe_to_print(character);
+        if !full && character.is_whitespace() && !unsafe_character {
+            // Leading spaces are dropped, and trailing ones never written.
+            space = !out.is_empty();
+            continue;
+        }
+        let before = out.len();
+        if std::mem::take(&mut space) {
+            out.push(' ');
+        }
+        if unsafe_character {
+            let _ = write!(out, "\\u{{{:x}}}", u32::from(character));
+        } else {
+            out.push(character);
+        }
+        let size = out[before..].chars().count();
+        if cut.is_none() && shown + size > budget {
+            cut = Some(before);
+        }
+        shown += size;
+    }
+    if out.is_empty() {
+        return "(the error text is empty)".into();
+    }
+    match cut {
+        Some(at) if !full && shown > ERROR_TEXT => format!(
+            "{} ... ({})",
+            out[..at].trim_end(),
+            plural(text.len(), "byte")
+        ),
+        _ => out,
     }
 }
 
@@ -966,6 +1027,7 @@ fn unknown_advice(
         out,
         "{indent}  codemode resolve {file} {target} --as not-applied   (or --as applied)"
     );
+    let _ = writeln!(out, "{indent}{SKIP_HINT}");
 }
 
 fn edited(report: &StatusReport) -> String {
@@ -1070,11 +1132,15 @@ pub fn tools(facts: &ServerFacts) -> String {
 /// What `resolve` is about to record: the writes it selected, grouped by the
 /// reason each one did not end applied.
 #[must_use]
-pub fn resolution(selected: &[&WriteStatus], applied: bool, reviewer: &str) -> String {
+pub fn resolution(selected: &[&WriteStatus], resolution: Resolution, reviewer: &str) -> String {
     let mut out = format!(
         "Recording {} as {} (reviewer {}):\n\n",
         plural(selected.len(), "write"),
-        if applied { "applied" } else { "not applied" },
+        match resolution {
+            Resolution::Applied => "applied",
+            Resolution::NotApplied => "not applied",
+            Resolution::Skipped => "skipped",
+        },
         escape(reviewer)
     );
     problem_groups(&mut out, selected, true);
@@ -1355,6 +1421,111 @@ mod tests {
     }
 
     #[test]
+    fn a_server_error_text_is_printed_without_json_quoting() {
+        // Quotes and backslashes print as they are.
+        let body = r#"{"successful":false,"error":"{\"message\":\"Gone\"}","path":"C:\temp"}"#;
+        assert_eq!(error_line(body, false), body);
+        assert_eq!(error_line(body, true), body);
+        // A terminal sequence, a bidirectional control, a zero-width character,
+        // and a line break are visible escapes, so the text stays on its line.
+        let hostile = "no\u{1b}[2J\u{1b}[31m \u{202e}evil\u{200b}\nforged line";
+        let expected = r"no\u{1b}[2J\u{1b}[31m \u{202e}evil\u{200b}\u{a}forged line";
+        for full in [false, true] {
+            let line = error_line(hostile, full);
+            assert_eq!(line, expected);
+            assert!(line.chars().all(|c| !unsafe_to_print(c)), "{line:?}");
+        }
+        // Without --full, padding collapses to one space, so it cannot push
+        // text to the start of a terminal line. --full keeps every space.
+        let padded = format!("  denied{}codemode resolve  ", " ".repeat(200));
+        assert_eq!(error_line(&padded, false), "denied codemode resolve");
+        assert_eq!(error_line(&padded, true), padded);
+        assert_eq!(error_line(" \u{3000} ", false), "(the error text is empty)");
+        // A long text is cut, never inside an escape, with its whole size.
+        let long = format!("{}\u{1b}{}", "a".repeat(234), "b".repeat(50));
+        assert_eq!(
+            error_line(&long, false),
+            format!("{} ... (285 bytes)", "a".repeat(234))
+        );
+        assert_eq!(
+            error_line(&long, true),
+            format!("{}\\u{{1b}}{}", "a".repeat(234), "b".repeat(50))
+        );
+        let fits = "x".repeat(ERROR_TEXT);
+        assert_eq!(error_line(&fits, false), fits);
+    }
+
+    #[test]
+    fn a_tool_with_one_write_lists_one_argument_per_line() {
+        let long = "word ".repeat(60);
+        let mut plan = many(3);
+        plan.tools
+            .insert("issues.create".into(), planned(false, false, true));
+        plan.writes.push(
+            serde_json::from_value(json!({"id": "ticket", "tool": "issues.create",
+                "arguments": {"description": long, "team": "core", "title": "Triage"}}))
+            .expect("write"),
+        );
+        let text = reviewed(&plan, false);
+        assert!(
+            text.contains(&format!(
+                "issues.create  1 write  not repeatable\n  ticket\n    description  \"{} ...\" (300 bytes)\n    team         \"core\"\n    title        \"Triage\"\n",
+                "word ".repeat(11).trim_end()
+            )),
+            "{text}"
+        );
+        let full = reviewed(&plan, true);
+        assert!(
+            full.contains(&format!(
+                "  ticket\n    description  \"{long}\"\n    team         \"core\"\n"
+            )),
+            "{full}"
+        );
+    }
+
+    #[test]
+    fn a_plan_with_skipped_writes_is_finished() {
+        let mut writes = vec![
+            write("put-a", "notes.put", WriteState::Applied, NextAction::None),
+            write("put-b", "notes.put", WriteState::Resolved, NextAction::None),
+        ];
+        for id in ["drop-c", "drop-d"] {
+            writes.push(write(
+                id,
+                "notes.delete",
+                WriteState::Skipped,
+                NextAction::None,
+            ));
+        }
+        let report = approved("done: 2 applied, 2 skipped", PlanState::Done, writes);
+        assert_eq!(
+            status(&report, &many(1), OPTIONS),
+            format!(
+                "\
+triage.plan.json  sha256:{digest}
+server   https://mcp.example.com/mcp
+config   server.json  sha256:{config}
+status   done: 2 applied, 2 skipped
+         approved by alberto on 2026-11-11 12:00 UTC
+
+applied 1 · failed 0 · no reply 0 · not sent 0 · resolved 1 · skipped 2
+
+resolved by a person (1): recorded as applied
+  put-b
+
+skipped by a person (2): not applied, and never sent
+  drop-c, drop-d
+
+applied (1)
+  put-a
+",
+                digest = Digest::of(b"fixed").short(),
+                config = Digest::of(b"server file").short()
+            )
+        );
+    }
+
+    #[test]
     fn one_write_is_reviewed_in_full() {
         let plan = plan_of(
             &[("notes.put", planned(true, false, true))],
@@ -1445,7 +1616,10 @@ status   not approved
 13 writes with 4 tools
 
 GITHUB_DELETE_AN_ISSUE  1 write  repeatable  destructive
-  close-105  issue_number=105  owner=\"acme\"  repo=\"app\"
+  close-105
+    issue_number  105
+    owner         \"acme\"
+    repo          \"app\"
 
 INTERNAL_PING  2 writes  not repeatable  no annotations
   same in every write   value=\"x\"
@@ -1501,9 +1675,13 @@ Next: codemode apply triage.plan.json
         assert!(text.contains(
             "  comment-101\n    {\"body\":\"Thanks for the report. Can you add the version you are running and the full output?\",\"issue_number\":101,\"owner\":\"acme\",\"repo\":\"app\"}\n"
         ), "{text}");
-        assert!(text.contains(
-            "  close-105\n    {\"issue_number\":105,\"owner\":\"acme\",\"repo\":\"app\"}\n"
-        ));
+        // A tool with one write lists its arguments one per line.
+        assert!(
+            text.contains(
+                "  close-105\n    issue_number  105\n    owner         \"acme\"\n    repo          \"app\"\n"
+            ),
+            "{text}"
+        );
         assert!(
             !text.contains("--full") && !text.contains("bytes)"),
             "{text}"
@@ -1644,6 +1822,7 @@ Next: codemode apply triage.plan.json
             no_reply: count(WriteState::NoReply),
             refused: count(WriteState::Refused),
             resolved: count(WriteState::Resolved),
+            skipped: count(WriteState::Skipped),
             not_sent: count(WriteState::NotSent),
         };
         report
@@ -1688,9 +1867,10 @@ applied 3 · failed 1 · no reply 0 · not sent 210
 
 failed (1): the server answered with an error
   comment-101  GITHUB_CREATE_AN_ISSUE_COMMENT
-    \"Resource not accessible by integration\"
+    Resource not accessible by integration
     codemode cannot tell whether a failed write changed anything. Check the target, then run:
       codemode resolve triage.plan.json comment-101 --as not-applied   (or --as applied)
+    Use --as skipped for a write that must not be sent.
 
 not sent (210)
   Run `codemode apply triage.plan.json` to continue.
@@ -1758,6 +1938,14 @@ applied (3)
             WriteState::Resolved,
             NextAction::None,
         ));
+        for id in ["drop-1", "drop-2"] {
+            writes.push(write(
+                id,
+                "notes.delete",
+                WriteState::Skipped,
+                NextAction::None,
+            ));
+        }
         writes.push(write(
             "put-w",
             "notes.put",
@@ -1780,37 +1968,43 @@ config   server.json  sha256:{config}
 status   finished with 7 failures
          approved by alberto on 2026-11-11 12:00 UTC
 
-applied 30 · failed 4 · no reply 1 · not sent 1 · refused 2 · resolved 1
+applied 30 · failed 4 · no reply 1 · not sent 1 · refused 2 · resolved 1 · skipped 2
 
 failed (4): the server answered with an error
   3 writes  notes.append
-    \"upstream said no\\u001b[31m \\u202e\"
+    upstream said no\\u{{1b}}[31m \\u{{202e}}
     append-0, append-1, append-2
   put-x  notes.put
-    \"the server returned error -32603: internal error\"
+    the server returned error -32603: internal error
 
   1 write is repeatable: `codemode apply triage.plan.json` sends it again (up to 3 attempts each).
   codemode cannot tell whether a failed write changed anything. Check the target, then run:
     codemode resolve triage.plan.json --errors --as not-applied   (or --as applied)
+  Use --as skipped for a write that must not be sent.
 
 no reply (1): the write may have reached the server, and no answer came back
   append-9  notes.append
     the deadline passed before an answer came back
     The write may or may not have happened. Check the target, then run:
       codemode resolve triage.plan.json append-9 --as not-applied   (or --as applied)
+    Use --as skipped for a write that must not be sent.
 
 refused (2): not applied, and not sent again
   put-y  notes.put
-    \"the server returned HTTP status 403 Forbidden\"
+    the server returned HTTP status 403 Forbidden
   put-z  notes.put
-    \"the server returned HTTP status 429 Too Many Requests\"
+    the server returned HTTP status 429 Too Many Requests
 
   The server refused 1 write before running it. Fix the cause, then run:
     codemode resolve triage.plan.json put-y --as not-applied   (apply then sends it again)
   Every attempt of 1 write is used. Make a new plan for it with `codemode plan`.
+  Use --as skipped for a write that must not be sent.
 
 resolved by a person (1): recorded as applied
   append-7
+
+skipped by a person (2): not applied, and never sent
+  drop-1, drop-2
 
 not sent (1)
   Run `codemode apply triage.plan.json` to continue.
@@ -1823,6 +2017,11 @@ applied (30)
                 digest = Digest::of(b"fixed").short(),
                 config = Digest::of(b"server file").short()
             )
+        );
+        // The error text's terminal sequence and U+202E are visible escapes.
+        assert!(
+            text.chars().all(|c| c == '\n' || !unsafe_to_print(c)),
+            "{text:?}"
         );
         for word in [
             "probe",
@@ -1869,7 +2068,7 @@ applied (30)
         );
         let text = status(&report, &many(1), OPTIONS);
         assert!(
-            text.contains("  w-19  notes.append\n    \"note 19 is locked\"\n  ... 30 more writes with 30 other error texts (--full)\n"),
+            text.contains("  w-19  notes.append\n    note 19 is locked\n  ... 30 more writes with 30 other error texts (--full)\n"),
             "{text}"
         );
         assert!(!text.contains("w-20 "), "{text}");
@@ -1882,7 +2081,7 @@ applied (30)
                 ..OPTIONS
             },
         );
-        assert!(full.contains("\"note 49 is locked\"") && !full.contains("--full"));
+        assert!(full.contains("\n    note 49 is locked\n") && !full.contains("--full"));
     }
 
     #[test]
@@ -1983,12 +2182,16 @@ write_tools allows 1 of 3 write tools in a plan.
         );
         third.error_code = Some("no_result".into());
         assert_eq!(
-            resolution(&[&first, &second, &third], false, "alberto"),
+            resolution(
+                &[&first, &second, &third],
+                Resolution::NotApplied,
+                "alberto"
+            ),
             "\
 Recording 3 writes as not applied (reviewer alberto):
 
   2 writes  notes.append
-    \"upstream said no\"
+    upstream said no
     append-0, append-1
   put-3  notes.put
     no answer is recorded: codemode is still waiting for it, or stopped before it came

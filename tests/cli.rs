@@ -38,7 +38,7 @@ fn the_help_shows_exactly_the_five_commands_and_the_exit_codes_once() {
             "  codemode plan    --server <server.json> (--program <file.ts> | --operations <file|->)",
             "  codemode status  <plan file>",
             "  codemode apply   <plan file>",
-            "  codemode resolve <plan file> (<id>... | --errors | --no-reply) --as applied|not-applied",
+            "  codemode resolve <plan file> (<id>... | --errors | --no-reply) --as applied|not-applied|skipped",
             "  codemode <command> --help",
             "  codemode --version",
         ]

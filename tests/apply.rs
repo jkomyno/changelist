@@ -913,7 +913,7 @@ fn resolve_selects_by_identity_error_or_silence_and_refuses_what_is_settled() {
         ),
         (
             &["resolve", &plan_file, "log", "--as", "maybe"],
-            "--as must be applied or not-applied",
+            "--as must be applied, not-applied, or skipped",
         ),
         (&["resolve", &plan_file, "log"], "--as is required"),
     ];
@@ -943,7 +943,7 @@ fn resolve_selects_by_identity_error_or_silence_and_refuses_what_is_settled() {
     assert_eq!(
         recorded,
         "Recording 1 write as not applied (reviewer rev):\n\n  log  notes.append\n    \
-         \"upstream said no\"\n\nRecorded 1 write. Next: codemode apply mixed.plan.json\n"
+         upstream said no\n\nRecorded 1 write. Next: codemode apply mixed.plan.json\n"
     );
     let after = status(&scratch, &plan_file);
     assert_eq!(standing(&after, "log"), ("not_sent".into(), "apply".into()));
@@ -1001,6 +1001,167 @@ fn resolve_selects_by_identity_error_or_silence_and_refuses_what_is_settled() {
     );
 }
 
+#[test]
+fn a_skipped_write_is_never_sent_and_the_plan_finishes() {
+    let scratch = Scratch::new();
+    // Every call of notes.append fails: sending it again cannot help.
+    let server = serve(&scratch, "s", &["--fault", "notes.append=is-error,sticky"]);
+    http_file(&scratch, &server);
+    let list = operations(&[
+        ("put-a", "notes.put", json!({"id": "a", "text": "one"})),
+        ("log", "notes.append", json!({"id": "log", "text": "line"})),
+        ("put-b", "notes.put", json!({"id": "b", "text": "two"})),
+        ("put-c", "notes.put", json!({"id": "c", "text": "three"})),
+    ]);
+    let plan_file = plan_list(&scratch, "skip", &list);
+
+    // Before the approval there is nothing to skip.
+    let early = exits(
+        &scratch,
+        2,
+        &["resolve", &plan_file, "put-c", "--as", "skipped"],
+    );
+    assert!(
+        stderr(&early).contains("was not approved yet"),
+        "{}",
+        stderr(&early)
+    );
+
+    let (code, first) = approve(&scratch, &plan_file, &["--concurrency", "1"]);
+    assert_eq!(code, 3, "{first}");
+    assert_eq!(
+        states(&first),
+        [
+            ("put-a".to_string(), "applied".to_string()),
+            ("log".to_string(), "failed".to_string()),
+            ("put-b".to_string(), "not_sent".to_string()),
+            ("put-c".to_string(), "not_sent".to_string()),
+        ]
+    );
+    let text = ok(&scratch, &["status", &plan_file]);
+    assert!(
+        text.contains(
+            "      codemode resolve skip.plan.json log --as not-applied   (or --as applied)\n    \
+             Use --as skipped for a write that must not be sent.\n"
+        ),
+        "{text}"
+    );
+
+    // What cannot be skipped is refused, and nothing is recorded.
+    let approved = scratch.read(&plan_file);
+    scratch.write(&plan_file, &approved.replace("\"two\"", "\"2\""));
+    exits(
+        &scratch,
+        4,
+        &["resolve", &plan_file, "log", "--as", "skipped"],
+    );
+    scratch.write(&plan_file, &approved);
+    let refused = exits(
+        &scratch,
+        2,
+        &["resolve", &plan_file, "put-a", "--as", "skipped"],
+    );
+    assert!(
+        stderr(&refused).contains("write 'put-a' has nothing to resolve: it is applied"),
+        "{}",
+        stderr(&refused)
+    );
+    // A write that was not sent is resolved as not applied only by skipping it.
+    let refused = exits(
+        &scratch,
+        2,
+        &["resolve", &plan_file, "put-c", "--as", "not-applied"],
+    );
+    assert!(
+        stderr(&refused).contains("Use --as skipped if it must not be sent"),
+        "{}",
+        stderr(&refused)
+    );
+    assert_eq!(status(&scratch, &plan_file), first, "nothing was recorded");
+
+    // --errors selects the failed write only, never one that was not sent.
+    let recorded = ok(
+        &scratch,
+        &[
+            "resolve",
+            &plan_file,
+            "--errors",
+            "--as",
+            "skipped",
+            "--reviewer",
+            "rev",
+        ],
+    );
+    assert_eq!(
+        recorded,
+        "Recording 1 write as skipped (reviewer rev):\n\n  log  notes.append\n    \
+         upstream said no\n\nRecorded 1 write. Next: codemode apply skip.plan.json\n"
+    );
+    let after = status(&scratch, &plan_file);
+    assert_eq!(standing(&after, "log"), ("skipped".into(), "none".into()));
+    assert_eq!(write(&after, "log")["resolved_by"], "rev");
+    assert_eq!(
+        standing(&after, "put-c"),
+        ("not_sent".into(), "apply".into())
+    );
+    // A write that was not sent can be skipped by its identity.
+    ok(
+        &scratch,
+        &["resolve", &plan_file, "put-c", "--as", "skipped"],
+    );
+    // Skipping is final.
+    for resolution in ["skipped", "not-applied", "applied"] {
+        let refused = exits(
+            &scratch,
+            2,
+            &["resolve", &plan_file, "log", "--as", resolution],
+        );
+        assert!(
+            stderr(&refused)
+                .contains("write 'log' has nothing to resolve: a person already skipped it"),
+            "{}",
+            stderr(&refused)
+        );
+    }
+    let skipped = status(&scratch, &plan_file);
+    assert_eq!(skipped["counts"]["skipped"], 2);
+    assert_eq!(skipped["state"], "incomplete");
+    let text = ok(&scratch, &["status", &plan_file]);
+    assert!(
+        text.contains("\napplied 1 · failed 0 · no reply 0 · not sent 1 · skipped 2\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("\nskipped by a person (2): not applied, and never sent\n  log, put-c\n"),
+        "{text}"
+    );
+
+    // Apply sends the rest and never a skipped write; the plan is finished.
+    let (code, done) = apply(&scratch, &plan_file, &[]);
+    assert_eq!((code, done["state"].as_str()), (0, Some("done")), "{done}");
+    assert_eq!(done["detail"], "done: 2 applied, 2 skipped");
+    assert_eq!(calls(&scratch, "notes.append"), ["is-error"]);
+    assert_eq!(calls(&scratch, "notes.put"), ["run", "run"]);
+    assert_eq!(
+        ledger(&scratch)
+            .iter()
+            .map(|(_, arguments)| arguments["id"].as_str().expect("id").to_string())
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    let text = ok(&scratch, &["status", &plan_file]);
+    assert!(
+        text.contains("\nstatus   done: 2 applied, 2 skipped\n"),
+        "{text}"
+    );
+
+    // A later apply, in a new session, sends nothing and exits with 0.
+    let (code, again) = apply(&scratch, &plan_file, &[]);
+    assert_eq!((code, &again), (0, &done));
+    assert_eq!(calls(&scratch, "notes.append").len(), 1);
+    assert_eq!(calls(&scratch, "notes.put").len(), 2);
+}
+
 /// No character a terminal could act on, apart from the line feeds between lines.
 fn assert_printable(text: &str, what: &str) {
     assert!(
@@ -1051,7 +1212,7 @@ fn text_from_a_plan_or_a_server_cannot_reach_the_terminal_as_it_is() {
     );
     assert!(
         review.contains(
-            r#"text="ok\u001b[2J\u001b[31mAPPROVED\nforged line \u202edesrev ..." (46 bytes)"#
+            r#"    text  "ok\u001b[2J\u001b[31mAPPROVED\nforged line \u202edesrev ..." (46 bytes)"#
         ),
         "{review}"
     );
@@ -1090,10 +1251,15 @@ fn text_from_a_plan_or_a_server_cannot_reach_the_terminal_as_it_is() {
     let text = stdout(&applied);
     assert_printable(&text, "apply");
     assert_printable(&stderr(&applied), "apply's diagnostics");
+    // The server's error text is printed without JSON quoting, on its own
+    // indented line, with the terminal sequence and U+202E as visible escapes.
     assert!(
-        text.contains(r#""upstream said no to ok\u001b[2J\u001b[31mAPPROVED\nforged line \u202edesrever\u200b""#),
+        text.contains(
+            "\n  log  notes.append\n    upstream said no to ok\\u{1b}[2J\\u{1b}[31mAPPROVED\\u{a}forged line \\u{202e}desrever\\u{200b}\n"
+        ),
         "{text}"
     );
+    assert!(!text.contains("\nforged line"), "{text}");
     for extra in [&[][..], &["--full"], &["--json"]] {
         let mut args = vec!["status", plan_file];
         args.extend_from_slice(extra);
@@ -1110,7 +1276,8 @@ fn text_from_a_plan_or_a_server_cannot_reach_the_terminal_as_it_is() {
         &["resolve", plan_file, "--errors", "--as", "applied"],
     );
     assert_printable(&recorded, "resolve");
-    assert!(recorded.contains(r"\u202edesrever"), "{recorded}");
+    assert!(recorded.contains(r"\u{202e}desrever"), "{recorded}");
+    assert!(!recorded.contains("\nforged line"), "{recorded}");
 }
 
 #[test]

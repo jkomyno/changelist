@@ -51,8 +51,9 @@ use crate::recovery::{
 };
 use crate::runtime::{ProviderError, RunReport};
 
-/// The journal format this build reads and writes.
-pub const JOURNAL_FORMAT_VERSION: u32 = 2;
+/// The journal format this build reads and writes. Version 3 added the
+/// `skipped` review.
+pub const JOURNAL_FORMAT_VERSION: u32 = 3;
 const FORMAT: &str = "codemode-journal";
 /// Error code of a probe whose answer was never recorded, for example because
 /// the executor was killed while the provider was answering it.
@@ -130,7 +131,7 @@ CREATE TABLE reconciliations (
 CREATE TABLE reviews (
   ordinal INTEGER PRIMARY KEY,
   operation TEXT NOT NULL,
-  resolution TEXT NOT NULL CHECK (resolution IN ('applied', 'not_applied')),
+  resolution TEXT NOT NULL CHECK (resolution IN ('applied', 'not_applied', 'skipped')),
   reviewer TEXT NOT NULL,
   note TEXT,
   unix_ms INTEGER NOT NULL
@@ -1796,7 +1797,7 @@ mod tests {
         let connection = Connection::open(&path).expect("open");
         connection
             .execute(
-                "UPDATE meta SET value = '1' WHERE key = 'format_version'",
+                "UPDATE meta SET value = '2' WHERE key = 'format_version'",
                 [],
             )
             .expect("downgrade");
@@ -1806,7 +1807,7 @@ mod tests {
             matches!(error, JournalError::Incompatible { .. }),
             "{error}"
         );
-        assert!(error.to_string().contains("format version 1"), "{error}");
+        assert!(error.to_string().contains("format version 2"), "{error}");
         let _ = std::fs::remove_file(&path);
     }
 

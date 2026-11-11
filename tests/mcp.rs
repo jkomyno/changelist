@@ -510,7 +510,7 @@ fn a_lost_reply_repeats_only_the_write_the_server_calls_idempotent() {
         ],
     );
     assert!(
-        recorded.ends_with("Recorded 1 write. Every write is applied or resolved.\n"),
+        recorded.ends_with("Recorded 1 write. The plan is done: every write is applied.\n"),
         "{recorded}"
     );
     let (code, done) = apply(&scratch, &plan, &[]);
@@ -589,7 +589,7 @@ fn a_tool_error_or_a_server_error_leaves_a_write_for_a_person() {
         // So does the text, with the exact command to run next.
         let shown = ok(&scratch, &["status", &plan]);
         assert!(
-            shown.contains(&format!("\n  append  notes.append\n    \"{text}")),
+            shown.contains(&format!("\n  append  notes.append\n    {text}")),
             "{fault}: {shown}"
         );
         assert!(
@@ -630,7 +630,7 @@ fn a_session_stops_after_the_first_failed_write_and_apply_sends_the_rest() {
     assert_eq!(
         first["counts"],
         json!({"total": 12, "applied": 0, "failed": 1, "no_reply": 0, "refused": 0,
-               "resolved": 0, "not_sent": 11})
+               "resolved": 0, "skipped": 0, "not_sent": 11})
     );
     assert_eq!(
         calls(&scratch, "notes.append"),
@@ -680,7 +680,7 @@ fn a_session_stops_after_the_first_failed_write_and_apply_sends_the_rest() {
     );
     assert!(
         recorded.starts_with(
-            "Recording 12 writes as not applied (reviewer tester):\n\n  12 writes  notes.append\n    \"upstream said no\"\n    append-0, append-1,"
+            "Recording 12 writes as not applied (reviewer tester):\n\n  12 writes  notes.append\n    upstream said no\n    append-0, append-1,"
         ),
         "{recorded}"
     );

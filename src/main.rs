@@ -23,7 +23,7 @@ Usage:
   codemode plan    --server <server.json> (--program <file.ts> | --operations <file|->)
   codemode status  <plan file>
   codemode apply   <plan file>
-  codemode resolve <plan file> (<id>... | --errors | --no-reply) --as applied|not-applied
+  codemode resolve <plan file> (<id>... | --errors | --no-reply) --as applied|not-applied|skipped
   codemode <command> --help
   codemode --version
 
@@ -32,15 +32,16 @@ Commands:
   plan     Make a plan file and print its review.
   status   Show a plan: its review before approval, each write's outcome after.
   apply    Ask for approval, then send the writes. Run it again to continue.
-  resolve  Record what happened to a write whose outcome codemode does not know.
+  resolve  Record what happened to a write whose outcome codemode does not know,
+           or skip a write that must not be sent.
 
 Example:
   codemode plan --server server.json --program triage.ts
   codemode apply triage.plan.json
 
 Exit codes:
-  0  Every write is applied, or there is nothing to change, or a command that
-     only reads succeeded.
+  0  Every write is applied or skipped, or there is nothing to change, or a
+     command that only reads succeeded.
   2  Usage error, unreadable file, invalid plan, or a server or program failure
      before any write.
   3  The plan needs attention: a write failed, has no answer, or was refused,

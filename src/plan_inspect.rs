@@ -676,6 +676,7 @@ impl JournalInspection {
                     match review.resolution {
                         Resolution::Applied => "applied",
                         Resolution::NotApplied => "not applied",
+                        Resolution::Skipped => "skipped, never sent",
                     }
                 );
                 lines.push((review.ordinal, out));
@@ -744,7 +745,10 @@ impl JournalInspection {
             );
         }
         if self.next.get("done") == Some(&self.operations.len()) {
-            let _ = writeln!(out, "nothing: every operation is applied or satisfied");
+            let _ = writeln!(
+                out,
+                "nothing: every operation is applied, satisfied, or skipped"
+            );
         }
         out
     }

@@ -154,12 +154,15 @@ Example:
 pub(crate) const RESOLVE_HELP: &str = "codemode resolve — record what happened to a write
 
 Usage:
-  codemode resolve <plan file> (<id>... | --errors | --no-reply) --as applied|not-applied
+  codemode resolve <plan file> (<id>... | --errors | --no-reply) --as applied|not-applied|skipped
 
 When a write fails or gets no answer, codemode cannot tell whether it changed
 anything. Check the target yourself, then record what you found:
   --as applied      The change is there. The write is done.
   --as not-applied  The change is not there. `codemode apply` sends it again.
+  --as skipped      The change is not there, and the write must not be sent.
+                    `codemode apply` never sends it. This is final.
+A write that was not sent yet can be skipped by its identity.
 
 Select writes by identity, or:
   --errors          Every write whose last attempt got an error answer
@@ -1083,10 +1086,13 @@ pub(crate) fn resolve(args: Vec<OsString>) -> Result<u8, Box<dyn Error>> {
             CliError("name the writes to resolve, or pass --errors or --no-reply".into()).into(),
         );
     }
-    let (resolution, applied) = match flags.require("--as")? {
-        "applied" => (Resolution::Applied, true),
-        "not-applied" => (Resolution::NotApplied, false),
-        _ => return Err(CliError("--as must be applied or not-applied".into()).into()),
+    let resolution = match flags.require("--as")? {
+        "applied" => Resolution::Applied,
+        "not-applied" => Resolution::NotApplied,
+        "skipped" => Resolution::Skipped,
+        _ => {
+            return Err(CliError("--as must be applied, not-applied, or skipped".into()).into());
+        }
     };
     let journal_file = journal_path(&loaded.path);
     if !journal_file.exists() {
@@ -1109,11 +1115,17 @@ pub(crate) fn resolve(args: Vec<OsString>) -> Result<u8, Box<dyn Error>> {
         );
         return Ok(4);
     }
-    let open = |write: &WriteStatus| {
-        matches!(
-            write.state,
-            WriteState::Failed | WriteState::NoReply | WriteState::Refused
-        )
+    if report.state == PlanState::NotApproved {
+        return Err(CliError(format!(
+            "{shown} was not approved yet, so no write was sent and there is nothing to resolve"
+        ))
+        .into());
+    }
+    // A person may also drop a write that was never sent, but only by skipping it.
+    let open = |write: &WriteStatus| match write.state {
+        WriteState::Failed | WriteState::NoReply | WriteState::Refused => true,
+        WriteState::NotSent => resolution == Resolution::Skipped,
+        WriteState::Applied | WriteState::Resolved | WriteState::Skipped => false,
     };
     for id in ids {
         let Some(write) = report.writes.iter().find(|write| &write.id == id) else {
@@ -1123,7 +1135,11 @@ pub(crate) fn resolve(args: Vec<OsString>) -> Result<u8, Box<dyn Error>> {
             let why = match write.state {
                 WriteState::Applied => "it is applied",
                 WriteState::Resolved => "a person already resolved it as applied",
-                _ => "it is known not to be applied, and `codemode apply` sends it",
+                WriteState::Skipped => "a person already skipped it",
+                _ => {
+                    "it is known not to be applied, and `codemode apply` sends it. Use --as \
+                     skipped if it must not be sent"
+                }
             };
             return Err(CliError(format!(
                 "write '{}' has nothing to resolve: {why}. Nothing was recorded",
@@ -1146,7 +1162,7 @@ pub(crate) fn resolve(args: Vec<OsString>) -> Result<u8, Box<dyn Error>> {
         return Ok(0);
     }
     let reviewer = user(flags.get("--reviewer"));
-    print(&render::resolution(&selected, applied, &reviewer))?;
+    print(&render::resolution(&selected, resolution, &reviewer))?;
     for write in &selected {
         journal.record_review(&write.id, resolution, &reviewer, None)?;
     }
@@ -1162,7 +1178,7 @@ pub(crate) fn resolve(args: Vec<OsString>) -> Result<u8, Box<dyn Error>> {
         if after.work_remains() {
             format!("Next: codemode apply {shown}")
         } else if after.state == PlanState::Done {
-            "Every write is applied or resolved.".to_string()
+            format!("The plan is {}.", after.detail)
         } else {
             format!("Next: codemode status {shown}")
         }

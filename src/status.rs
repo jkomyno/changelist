@@ -31,6 +31,9 @@ pub enum WriteState {
     Refused,
     /// A person recorded that the write was applied.
     Resolved,
+    /// A person decided that the write was not applied and must never be
+    /// sent. Final.
+    Skipped,
     /// The write was not sent yet, or is known not to be applied and will be
     /// sent again.
     NotSent,
@@ -40,7 +43,7 @@ pub enum WriteState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NextAction {
-    /// Nothing: the write is applied or resolved.
+    /// Nothing: the write is applied, resolved, or skipped.
     None,
     /// `codemode apply` sends it.
     Apply,
@@ -60,7 +63,7 @@ pub enum PlanState {
     Approved,
     /// A session has no recorded end: it is running, or it was killed.
     Running,
-    /// Every write is applied or resolved.
+    /// Every write is applied, resolved as applied, or skipped.
     Done,
     /// A session stopped and at least one write needs a person.
     NeedsAttention,
@@ -162,6 +165,8 @@ pub struct Counts {
     pub refused: usize,
     /// [`WriteState::Resolved`].
     pub resolved: usize,
+    /// [`WriteState::Skipped`].
+    pub skipped: usize,
     /// [`WriteState::NotSent`].
     pub not_sent: usize,
 }
@@ -316,6 +321,7 @@ impl StatusReport {
                 WriteState::NoReply => &mut counts.no_reply,
                 WriteState::Refused => &mut counts.refused,
                 WriteState::Resolved => &mut counts.resolved,
+                WriteState::Skipped => &mut counts.skipped,
                 WriteState::NotSent => &mut counts.not_sent,
             } += 1;
         }
@@ -331,7 +337,7 @@ impl StatusReport {
     }
 
     /// The process exit status after `codemode apply`: 0 when every write is
-    /// applied or resolved, otherwise 3.
+    /// applied, resolved as applied, or skipped, otherwise 3.
     #[must_use]
     pub fn exit_code(&self) -> u8 {
         if self.state == PlanState::Done { 0 } else { 3 }
@@ -348,6 +354,7 @@ fn write_status(status: &OperationStatus, reviewers: &HashMap<&str, &str>) -> Wr
             (WriteState::Resolved, NextAction::None)
         }
         (Conclusion::Applied | Conclusion::Satisfied, _) => (WriteState::Applied, NextAction::None),
+        (Conclusion::Skipped, _) => (WriteState::Skipped, NextAction::None),
         (Conclusion::Pending, _) | (Conclusion::NotApplied, NextStep::Dispatch) => {
             (WriteState::NotSent, NextAction::Apply)
         }
@@ -367,7 +374,7 @@ fn write_status(status: &OperationStatus, reviewers: &HashMap<&str, &str>) -> Wr
             },
         ),
     };
-    // A write a person resolved as not applied starts again: its earlier
+    // A write a person resolved starts again or is settled: its earlier
     // error is no longer what stands.
     let failed = !matches!(state, WriteState::Applied | WriteState::Resolved) && !reviewed;
     WriteStatus {
@@ -392,8 +399,18 @@ fn write_status(status: &OperationStatus, reviewers: &HashMap<&str, &str>) -> Wr
 
 /// The plan's state and a few words for it.
 fn stage(counts: &Counts, writes: &[WriteStatus], history: &History) -> (PlanState, String) {
-    if counts.applied + counts.resolved == counts.total {
-        return (PlanState::Done, "done: every write is applied".into());
+    let applied = counts.applied + counts.resolved;
+    if applied + counts.skipped == counts.total {
+        let detail = if counts.skipped == 0 {
+            "done: every write is applied".to_string()
+        } else {
+            format!(
+                "done: {} applied, {} skipped",
+                grouped(applied),
+                grouped(counts.skipped)
+            )
+        };
+        return (PlanState::Done, detail);
     }
     let Some(last) = history.sessions.last() else {
         return (PlanState::Approved, "approved, not started".into());
