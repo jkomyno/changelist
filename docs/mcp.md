@@ -11,9 +11,11 @@ binary. The tool list comes from the server at run time, so nothing about a
 tool is written into codemode.
 
 **Status.** The client is tested offline against a stand-in server in both
-protocol eras and on both transports. It has listed the tools of two public
-servers that speak revision 2026-07-28. No write has been sent to a live
-server, and it has not been run against Composio Tool Router.
+protocol eras and on both transports. Live and read-only, it has listed the
+tools of two public servers that speak revision 2026-07-28, and it has listed
+tools and run an investigation against a Composio Tool Router session, which
+speaks 2025-11-25 ([details](#composio-tool-router)). No write has been sent
+to a live server.
 
 ## The server file
 
@@ -206,10 +208,14 @@ needs one of them for a tool makes that call fail.
 
 ## Composio Tool Router
 
-Not run yet; this is the intended setup, from Composio's public API reference.
+**Checked live, read-only, on 2026-11-11** against a Composio staging project:
+`mcp tools`, `mcp investigate`, `mcp declare`, and `plan check`. Nothing was
+approved or run, and no tool reached GitHub: the project had no active GitHub
+connection.
 
-A Tool Router session has an MCP URL. By default the session lists a few
-meta-tools (search, multi-execute) and not the app tools. A generic client can
+A Tool Router session has an MCP URL. By default the session lists three
+meta-tools (`COMPOSIO_SEARCH_TOOLS`, `COMPOSIO_GET_TOOL_SCHEMAS`,
+`COMPOSIO_MULTI_EXECUTE_TOOL`) and not the app tools. A generic client can
 classify and bind only the tools the server lists, so create the session with
 the app tools you need in `preload.tools`, and pin the account with
 `connected_accounts`:
@@ -223,14 +229,40 @@ curl -s https://backend.composio.dev/api/v3.1/tool_router/session \
 ```
 
 ```json
-{ "url": "<mcp.url from the response>", "headers": { "x-api-key": "${COMPOSIO_API_KEY}" } }
+{
+  "url": "<mcp.url from the response>",
+  "headers": { "x-api-key": "${COMPOSIO_API_KEY}" },
+  "trust_annotations": true
+}
 ```
 
-Open questions a first live run must answer: which protocol revision the
-session endpoint speaks, whether preloaded tools carry `readOnlyHint` and
-`idempotentHint` annotations, and whether the tool list is stable between
-`declare` and `run`. Until annotations are confirmed, name the read tools in
-`read_tools`.
+What the live check showed:
+
+- The session endpoint speaks revision **2025-11-25**. codemode's
+  `server/discover` probe is not answered as a 2026-07-28 server, and the
+  `initialize` fallback connects.
+- Every listed tool carries all four annotations. With `trust_annotations`,
+  the classes were: `GITHUB_LIST_REPOSITORY_ISSUES` and `GITHUB_GET_AN_ISSUE`
+  read; `GITHUB_ADD_LABELS_TO_AN_ISSUE` and
+  `GITHUB_REMOVE_A_LABEL_FROM_AN_ISSUE` repeatable write;
+  `GITHUB_CREATE_AN_ISSUE_COMMENT` and `GITHUB_UPDATE_AN_ISSUE` write. The two
+  search and schema meta-tools are reads; `COMPOSIO_MULTI_EXECUTE_TOOL` is a
+  write.
+- Two listings of the same session returned the same tools and definitions.
+- The session id is part of the URL path, so an approval is bound to one
+  session, and through it to that session's user and pinned accounts.
+- A tool's value is Composio's envelope, `{successful, data, error, log_id}`.
+  A program reads `result.data`.
+- A GitHub read without an active connection came back as a tool error
+  (`isError`), which the program can catch.
+
+Still unknown: whether every failed execution sets `isError`. If one came back
+as a normal result with `successful: false`, codemode would record the write
+as applied. Check this with a real connection before trusting a run. Also not
+checked: any read that returns data, any write, and the production backend.
+
+Keep `COMPOSIO_MULTI_EXECUTE_TOOL` out of plans. It is one opaque write to
+codemode, which cannot see or bind the tools it runs.
 
 ## Limits
 

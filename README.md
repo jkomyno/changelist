@@ -98,9 +98,11 @@ way to ask whether an earlier call took effect.
 
 The client speaks revision 2026-07-28 and falls back to the `initialize`
 handshake of 2025-11-25 to 2025-03-26. Status: tested offline against a
-stand-in server in both eras and on both transports; it has listed the tools of
-two public 2026-07-28 servers; no write has been sent to a live server, and it
-has not been run against Composio Tool Router. See [the MCP guide](docs/mcp.md).
+stand-in server in both eras and on both transports. Live and read-only, it has
+listed two public 2026-07-28 servers, and listed tools and run an investigation
+against a Composio Tool Router session (2025-11-25), whose preloaded tools
+carry the annotations codemode classifies by. No write has been sent to a live
+server. See [the MCP guide](docs/mcp.md).
 
 ## Execution contract
 
