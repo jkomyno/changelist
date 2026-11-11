@@ -1,207 +1,191 @@
 # codemode
 
-codemode lets an agent change several GitHub issues through the Composio CLI and
-lets you know, after a crash or a lost reply, exactly what happened. An
-investigating program reads GitHub with authorized tools and proposes a change
-list. You review and approve that exact list, codemode executes it under
-host-owned limits with a durable journal, and after an interruption it
-reconciles what it can with GitHub and hands the rest to a person.
+codemode turns many writes into one change list that a person reads and
+approves once. It then sends exactly that list through an
+[MCP](https://modelcontextprotocol.io/specification/2026-07-28) server, stops
+at the first failure, and never repeats a write it cannot show is safe to
+repeat.
 
-It is a small Rust CLI (`codemode`) plus a Composio host
-(`integrations/composio/host.ts`) run by the installed `codemode-composio`
-launcher. Status: on 2026-11-10 the installed bundle ran the investigation live
-and one authorized four-write plan on a dedicated issue, including a lost reply,
-a killed executor, and a resume that sent no duplicate comment
-([record](docs/composio-live-validation.md)). Other failures are tested offline
-against a stand-in GitHub.
+It is one Rust binary with five commands. There is no release yet. You build
+it from source.
 
-## Install
+## The problem
 
-Install one reviewed commit into a prefix, from a clone of this repository:
+An agent that labels 200 issues or updates 2,000 records has two ways to ask
+for permission, and both fail.
 
-```sh
-git checkout --detach "$REVISION"     # a full 40-character commit SHA
-mise trust && mise install rust mr-boxington deno
-scripts/install.sh --revision "$REVISION" --prefix "$HOME/.local/share/codemode"
-INSTALL=$(cd "$HOME/.local/share/codemode/current" && pwd -P)
-```
+- **One prompt per call.** Nobody reads the 40th prompt. The person approves
+  them all, and the approval means nothing.
+- **One prompt for a script.** The person approves a program, not its effects.
+  One approved call can run every tool the program decides to call.
 
-The bundle holds `bin/codemode`, the `bin/codemode-composio` launcher, the host
-adapters, type declarations, and the user guides. See
-[installation](docs/installation.md) for prerequisites, the offline install
-check, upgrade, and rollback.
+Then the batch breaks in the middle. A reply is lost, or a rate limit hits, or
+write 31 of 200 is refused. The agent retries and sends a comment or an email
+twice, or it gives up and nobody knows which writes happened.
 
-## The workflow
+codemode puts a plan file between the agent and the server. The plan is data,
+not code. It lists every write with its exact arguments. A person approves that
+file, and only that file is sent.
 
-Each step is a command in the [GitHub triage guide](docs/composio-github.md),
-which explains every option and output.
-
-1. **Connect.** Run `composio login` and `composio link github`, then take the
-   connected-account id (`ca_...`) from `composio connections list`. No project
-   SDK key is needed.
-2. **Investigate.** `codemode-composio investigate --account ca_... --repo owner/repo --program triage.ts --out plan.json`
-   runs a program (the bundle includes `examples/triage.ts`) once, with GitHub
-   read tools for that repository only, then writes its proposal as `plan.json`
-   and checks it.
-3. **Declare.** `codemode-composio declare ... > declaration.json` prints the
-   recovery contract of each of the four writes: add a label, remove a label,
-   set issue state, and create a marked comment.
-4. **Review.** `codemode plan check plan.json --provider declaration.json` shows
-   every operation exactly as approval binds it: tool, account, repository,
-   canonical arguments in full, contracts, retention, budgets, and the digest.
-   `codemode-composio preflight` optionally confirms labels and preconditions
-   against GitHub, read-only.
-5. **Approve.** `codemode plan approve plan.json --journal triage.db --provider declaration.json --digest sha256:... --approver you`.
-   Any edit to the plan changes its digest and needs a new approval.
-6. **Run and watch.** `codemode-composio run ... --journal triage.db --deadline-ms 300000`
-   executes the plan. From a second terminal, `codemode plan inspect --journal triage.db`
-   shows committed progress without writing to the journal.
-7. **Interrupt and resume.** After Ctrl-C or a crash,
-   `codemode-composio resume ... --journal triage.db` probes each uncertain
-   operation by its contract, continues only what is safe, and leaves the rest
-   for `codemode plan review`.
-8. **Diagnose.** `codemode plan inspect --journal triage.db --json` exports which
-   operations were applied, satisfied, not applied, unknown, or refused, without
-   argument values.
-
-To try investigation, review, approval, a run, and inspection offline, against
-a stand-in GitHub with its own ledger:
+## What it looks like
 
 ```sh
-mise run composio-demo
+codemode tools  --server server.json                       # what the server offers
+codemode plan   --server server.json --program triage.ts   # writes triage.plan.json, sends nothing
+codemode apply  triage.plan.json                           # shows the review, asks, then sends
 ```
 
-## Any MCP server
+`plan` and `apply` print the same review. It groups the writes by tool and
+says which arguments are the same in every write and which differ, so 200
+writes read as a few lines and a table. This is the output for a plan against
+the offline test server.
 
-`codemode mcp` runs the same review, approval, journal, and recovery steps
-against any [Model Context Protocol](https://modelcontextprotocol.io/specification/2026-07-28)
-server, with no host adapter: the client is part of the Rust binary, and the
-tool list comes from the server at run time.
+```
+triage.plan.json  sha256:8fbe6dca0bf3
+server   http://127.0.0.1:63656/mcp  (MCP 2026-07-28)
+config   server.json  sha256:d7f8edfc46ca
+summary  Triage the open issues
+status   not approved
 
-```sh
-codemode mcp tools       --server server.json
-codemode mcp investigate --server server.json --program triage.ts --out plan.json
-codemode mcp declare     --server server.json > declaration.json
-codemode plan check plan.json --provider declaration.json
-codemode plan approve plan.json --journal run.db --provider declaration.json --digest sha256:... --approver you
-codemode mcp run         --server server.json --journal run.db
-codemode mcp resume      --server server.json --journal run.db
+12 writes with 3 tools
+
+notes.delete  2 writes  repeatable  destructive
+  different             id: 2 values ("stale", "old")
+
+  write       id
+  drop-stale  "stale"
+  drop-old    "old"
+
+notes.put  7 writes  repeatable
+  same in every write   text="needs-triage"
+  different             id: 7 values ("issue-101", "issue-102", "issue-105", "issue-106", ...)
+
+  write      id
+  label-101  "issue-101"
+  label-102  "issue-102"
+  label-105  "issue-105"
+  label-106  "issue-106"
+  label-110  "issue-110"
+  label-111  "issue-111"
+  label-112  "issue-112"
+
+notes.append  3 writes  not repeatable
+  different             id: 3 values ("issue-101-comments", "issue-105-comments", "issue-110-comments")
+                        text: 3 values
+
+  write        id                    text
+  comment-101  "issue-101-comments"  "Thanks for the report. Can you add the version you are ..." (118 bytes)
+  comment-105  "issue-105-comments"  "This looks like a duplicate of #88."
+  comment-110  "issue-110-comments"  "Fixed on main. Please try the next release."
+
+Notes
+  ! 2 writes use a tool the server marks destructive: notes.delete.
+  Tool classes come from the server's own hints.
+
+If a reply is lost: a repeatable write is sent again (up to 3 attempts). Any other write waits for a person.
+Sending: the first write alone, then up to 4 at a time. A failed write stops the rest.
+Next: codemode apply triage.plan.json
 ```
 
-`server.json` names a Streamable HTTP URL or a stdio command, takes credentials
-from environment variables, and records whether you trust the server's tool
-annotations. A program may call only read tools. An approval binds the server's
-identity and a digest of each tool's name, argument schema, and annotations.
-After a lost reply, a write the trusted server marks idempotent is sent again;
-every other uncertain write waits for a person, because MCP gives a client no
-way to ask whether an earlier call took effect.
+When a write fails, `apply` stops and `status` says what happened to every
+write and which command comes next.
 
-The client speaks revision 2026-07-28 and falls back to the `initialize`
-handshake of 2025-11-25 to 2025-03-26. Status: tested offline against a
-stand-in server in both eras and on both transports. Live, it has listed two
-public 2026-07-28 servers. Against a Composio Tool Router session (2025-11-25),
-whose preloaded tools carry the annotations codemode classifies by, it has
-investigated, run approved label writes on one GitHub issue, and resumed after
-a deadline. See [the MCP guide](docs/mcp.md).
+```
+status   stopped after 1 failure
+         approved by jkomyno on 2026-11-11 14:08 UTC
 
-## Execution contract
+applied 8 · failed 1 · no reply 0 · not sent 3
 
-- **Host-owned limits.** `codemode bridge` runs each program in a fresh V8
-  worker process started from the `codemode` executable. One deadline
-  (`--timeout-ms`, including worker startup), a call allowance (`--max-calls`),
-  a concurrency cap (`--concurrency`), and an output budget
-  (`--max-output-bytes`) are enforced in Rust; guest code cannot enlarge them.
-- **Authorization outside the guest.** The host names the tools a program may
-  call; Rust refuses every other name before the host sees it. Credentials stay
-  in the host process. The worker gets an empty environment and no imports,
-  filesystem, network, process, or FFI access.
-- **Typed outcomes.** A returned value, a provider result, and the run status
-  are separate. A dispatched call without an observed reply is `unknown`, never
-  failed. There are no automatic retries.
-- **Memory, honestly.** `--heap-mb` (default 256) bounds the V8 JavaScript
-  heap; reaching it ends the run with status `memory_limit`. It is not a
-  process-memory limit: `ArrayBuffer` backing stores and native allocations sit
-  outside it. On Linux the worker also gets a data-segment limit
-  (`RLIMIT_DATA`, default heap budget + 256 MiB, `--process-memory-mb`), which
-  bounds those too. On macOS no process limit is applied, and
-  `--process-memory-mb` is refused before a worker starts. WebAssembly,
-  `SharedArrayBuffer`, and `Atomics` are removed from the guest. A worker that
-  dies for another reason ends the run with `worker_crashed`.
-- **Evidence.** Every run produces a JSON execution record (report schema 5).
-  `codemode inspect <trace.json>` answers why it was slow, which calls ran, and
-  which outcomes need reconciliation, without printing argument or result
-  values.
+failed (1): the server answered with an error
+  comment-101  notes.append
+    "upstream said no"
+    codemode cannot tell whether a failed write changed anything. Check the target, then run:
+      codemode resolve triage.plan.json comment-101 --as not-applied   (or --as applied)
 
-These restrictions are not OS isolation.
+not sent (3)
+  Run `codemode apply triage.plan.json` to continue.
+```
 
-## Recoverable plans
+`mise run demo` runs the whole flow offline in about a second after the build.
 
-A plan is a finite JSON list of operations, each with a stable id, tool,
-arguments, scope (account and destination), and optional preconditions. The
-program that proposed it is never replayed. Approval binds the plan digest, the
-provider's account and contracts, the retention policy, and the attempt, probe,
-and concurrency budgets.
+## What it does
 
-During `plan run` and `plan resume`, each attempt's intent is committed to a
-SQLite journal before the provider sees it, and each observation is committed
-before anyone is told of it. One session deadline (`--deadline-ms`) covers
-authorization, reconciliation, permission waits, and dispatch. One executor
-holds a journal at a time through `<journal>.lock`; `plan inspect` and
-`plan trace` read it read-only while a session runs. After an interruption,
-only the provider's declared contract can settle an uncertain operation; what
-it cannot settle goes to a person. There is no exactly-once claim.
+- **One approval for the exact list.** A plan has one SHA-256 digest over its
+  writes, their order, the server's identity, the server file, and the
+  definition of every tool it uses. On a terminal, `apply` asks and accepts
+  only `yes`. Without a terminal it refuses unless `--approve` carries the
+  full digest. It connects to the server only after the approval. An edited
+  plan, another server file, a changed tool definition, or another server is
+  refused before any write.
+- **A plan a second person can review.** The plan file is stable, sorted JSON
+  with one write per line. It holds no credential. It can go through a pull
+  request like any other change.
+- **The operator limits the tools.** `write_tools` in the server file names the
+  tools a plan may use. `plan` refuses any other write. A plan names the
+  server file it was made with by digest, and `apply --server <file>` accepts
+  only that file.
+- **A broken batch fails once.** The first write goes alone. After a failed
+  write, no new write is sent. A rate limit (HTTP 429) pauses the session for
+  the time the server asks.
+- **No blind repeats.** Every attempt is written to a journal before it is
+  sent. After a lost reply or a killed process, a write the server marks
+  idempotent is sent again. Every other uncertain write waits for a person,
+  and `resolve` records what the person found.
+- **Hostile text stays visible.** Control, bidirectional, and zero-width
+  characters from a plan or a server are printed as escapes, so a plan cannot
+  hide or fake a line of the review.
 
-The journal keeps the approved arguments, including full comment bodies,
-because recovery needs them; deleting the journal files removes them. See
-[recoverable agent actions](docs/recovery.md) for the contract, durability
-(process crashes are tested; power loss is not), and limits.
+## What it does not do
 
-## Other hosts
+- **It does not check a write by reading it back.** MCP gives a client no way
+  to ask whether an earlier call took effect, so an uncertain write that is
+  not repeatable needs a person.
+- **No exactly-once and no rollback.** A write that was applied stays applied.
+- **Approval is not authentication.** The approver's name is recorded as
+  given. A process that can run `codemode apply --approve` and can read the
+  server's credential can approve its own plan. If the agent must not be able
+  to do that, keep the credential away from it. Review the plan file in a pull
+  request and run `apply` where the credential lives.
+- **One server per plan.** No OAuth flow. Give a token in a header.
+- **It is not for one or two writes.** Your agent's own permission prompt
+  handles those.
 
-The same executor is reachable from two secondary hosts, each pinned to the
-version its offline checks use:
+## Status
 
-- [Pi 1.4.0](integrations/pi/README.md): programs call Pi's own tools through
-  Pi's permission gates, and approved plans run and recover through Pi.
-- [OpenCode 1.19.5](integrations/opencode/README.md): each call passes
-  OpenCode's permission service, but only host tools passed to the plugin can be
-  called; OpenCode exposes no plugin API for its own tools.
+Tested offline against a stand-in MCP server, on Streamable HTTP and stdio,
+with protocol revision 2026-07-28 and the older `initialize` handshake. The
+tests cover a killed `apply`, lost replies, tool errors, rate limits, and the
+review of a plan with 10,000 writes.
 
-See [host integration](docs/integrations.md) for the bridge protocols and what
-each host has and has not been verified to do. Codex is not integrated.
+The five commands have not been run against a live server. An earlier build
+with other command names, at commit `9be2351`, listed two public servers and
+ran approved label writes on one GitHub issue through a Composio Tool Router
+session. The [guide](docs/mcp.md#composio-tool-router) records what that
+check showed.
 
-## Development
+That commit also holds what this repository used to carry and no longer does:
+a Composio CLI host, Pi and OpenCode adapters, and a comparison benchmark.
+
+## Build
 
 ```sh
 mise trust && mise install
-mise run check          # fmt, clippy, tests, docs
-mise run typecheck      # host adapters against pinned host APIs
-mise run pi-check       # pinned Pi 1.4.0, offline
-mise run opencode-check # pinned OpenCode 1.19.5, offline
-mise run recovery-demo  # offline: approve a batch, kill the executor, resume, review
+mise exec -- cargo build --release --locked   # target/release/codemode
+mise run check                                 # fmt, clippy, tests, docs
+mise run demo                                  # the whole flow, offline
 ```
 
-The minimum supported Rust is 1.91. Every build compiles V8 from a prebuilt
-`rusty_v8` archive downloaded on first use. Deno is installed by mise only to
-run the TypeScript host tests and scripts; codemode does not use it. See
-[CONTRIBUTING.md](CONTRIBUTING.md), the [design](docs/design.md), and the
-[strategy](STRATEGY.md).
+The minimum supported Rust is 1.91. The build downloads a prebuilt V8 archive
+on first use, because `plan --program` runs TypeScript in an embedded V8
+worker.
 
-## Evaluation
+## Read more
 
-[docs/comparison.md](docs/comparison.md) runs the same GitHub triage workflow
-through codemode, Pi Durable 1.5.0, OpenCode Code Mode 2.2.6, and a competent
-Composio CLI script against one offline provider whose own ledger is the oracle.
-codemode was the only implementation with no wrong outcome in any fault
-scenario: it refused a change list widened after approval, sent nothing after the
-GitHub account switched, and never duplicated a comment that landed late, where
-each alternative failed at least one of these. It was also the slowest on the
-fault-free run against Pi and OpenCode, and after a kill it hands more operations
-to a person instead of resending them. Earlier
-measurements ([evaluation](docs/evaluation.md),
-[benchmark](docs/benchmark.md), [recovery](docs/recovery-evaluation.md),
-[embedded engine](docs/embedded-evaluation.md)) are historical records of
-engines and options that have since changed.
+- [Guide](docs/mcp.md): the server file, tool classes, every command, exit
+  codes, and what happens to each kind of answer.
+- [How codemode works](docs/design.md): the digest, the journal, the worker,
+  and the limits.
+- [Strategy](STRATEGY.md) and [contributing](CONTRIBUTING.md).
 
 ## License
 

@@ -1,17 +1,21 @@
 # Goal
 
-## Current product direction (2026-11-10)
+## Current product direction (2026-11-11)
 
-The goal has narrowed to one workflow: a Composio developer uses the logged-in
-Composio CLI to investigate a GitHub problem with authorized reads, reviews and
-approves an exact change list, executes it under host-owned limits, watches it
-progress, and recovers an interrupted batch without guessing what happened.
-Pi and OpenCode remain secondary hosts that reach the same executor. Programs
-run in one embedded V8 worker; `codemode run`, the Deno backend, mock CLI tools,
-and other compatibility surfaces were removed. [STRATEGY.md](STRATEGY.md) holds
-the current direction, and the
-[workflow plan](docs/plans/2026-11-09-2345-refactor-composio-github-workflow-plan.md)
-holds the requirements and decisions behind it.
+The goal has narrowed to one product. codemode turns many writes into one
+change list that a person reads and approves once. It then sends exactly that
+list through one MCP server, sends the first write alone, stops at the first
+failure, and never repeats a write it cannot show is safe to repeat.
+
+The surface is five commands: `tools`, `plan`, `status`, `apply`, and
+`resolve`. A program may still propose the list. It runs in one embedded V8
+worker and may call read tools only.
+
+Removed since the original brief: `codemode run`, the Deno backend, mock CLI
+tools, the host bridge, the Composio CLI host, the Pi and OpenCode adapters,
+the comparison benchmark, and the earlier `codemode mcp` and `codemode plan`
+subcommands. Commit `9be2351` is the last one that holds them.
+[STRATEGY.md](STRATEGY.md) holds the current direction.
 
 The original brief follows unchanged except for notes on removed surfaces.
 
@@ -103,9 +107,9 @@ Concrete deliverables:
 2. Sandbox runner that can execute a .ts/.js file (or inline code) with the helper surface injected.
 3. Trace schema + emitter (JSON file or stdout).
 4. Minimal TypeScript types for the helper API.
-5. CLI interface: `codemode run --code path/to/file.ts` and a way to print/export the trace. (`codemode run` has since been removed; programs run through `codemode bridge`, and `codemode inspect` reads traces.)
+5. CLI interface: `codemode run --code path/to/file.ts` and a way to print/export the trace. (`codemode run` has since been removed; programs run through `codemode plan --program`, and `--trace <file>` saves the trace.)
 6. A short README explaining the architecture, how to add a tool provider (with Composio as the worked example), and how the traces are meant to be used for evals.
-7. At least one example: a small TypeScript snippet that calls tools (via the mock provider or Composio) and the resulting trace. (The current example is the Composio investigation program `integrations/composio/examples/triage.ts`.)
+7. At least one example: a small TypeScript snippet that calls tools (via the mock provider or Composio) and the resulting trace.
 8. AGENTS.md (and a minimal skills layout) so the repo is ready for further agent work.
 
 Constraints:

@@ -1,158 +1,280 @@
-# A small Rust execution core
+# How codemode works
 
-The design should fit a **30-minute technical explanation and demonstration**
-built around one workflow: GitHub issue triage through the Composio CLI. Its
-concepts are host-owned run limits, rolling scheduling, execution evidence, and
-bounded recovery of an approved batch of operations.
+codemode turns many writes into one plan file. A person reads the plan and
+approves it once. codemode then sends those writes through one MCP server.
+The [guide](mcp.md) describes the commands, the files, and every option. This
+page says what the tool guarantees, how the code keeps each guarantee, and
+where the guarantees end.
 
 ```mermaid
 flowchart LR
-    Host[Composio host under composio run; Pi; OpenCode] -->|program + authorized tools| Bridge[codemode bridge]
-    Bridge --> Worker[Fresh V8 worker process]
-    Worker -->|untrusted call request| Control[Rust admission and scheduler]
-    Control -->|call| Host
-    Host -->|observed result| Control
-    Control -->|bounded reply| Worker
-    Control --> Trace[Execution record]
-    Host -->|approved plan session| Plan[codemode plan run/resume --bridge]
-    Plan --> Journal[(SQLite journal)]
-    Plan -->|operation identities| Control
+    Source[program or operations] -->|codemode plan| Plan[plan file]
+    Plan -->|review and digest| Person[person]
+    Person -->|codemode apply| Apply[apply]
+    Apply -->|intent before, observation after| Journal[(journal)]
+    Apply -->|one request per attempt| Server[MCP server]
+    Server -->|answer| Apply
+    Journal -->|read-only| Status[codemode status]
 ```
 
-## Run-level control
+## What codemode promises
 
-One host-owned deadline, call allowance, concurrency cap, cancellation signal,
-output allowance, and memory budget govern a program's run. Guest code cannot
-enlarge them. Provider calls receive the shared deadline and cancellation
-context.
+- **Nothing is sent before an approval.** `plan` and `status` send no write.
+  `apply` is the only command that does. On its first run it starts no server
+  process and makes no request until the plan is approved, and it records the
+  approval in its journal before the first write.
+- **The writes sent are the writes approved.** An approval names one digest
+  of the plan file. `apply` stores the approved writes in its journal and
+  sends from that copy. It refuses a plan file whose digest no longer matches.
+- **The server is the one the plan was made for.** The plan records a digest
+  of the server file, and `apply` uses only a server file with that digest.
+  Before any write, `apply` also compares the connected server with the plan.
+  A different identity, a missing tool, or a changed tool class or definition
+  ends the run.
+- **A failing server receives one write.** Each run sends its first write
+  alone. By default it stops after the first write that does not end applied.
+- **A write is sent again only when that is known to be safe.** Either its
+  tool is a repeatable write, or the earlier attempt is known not to be
+  applied. Every other uncertain write waits for a person. No write is sent
+  more often than the approved number of attempts.
+- **Every attempt is recorded before it is sent.** A killed `apply` leaves a
+  journal that says which writes may have reached the server.
 
-Each program runs in a fresh worker process started from the `codemode`
-executable. The worker owns one V8 isolate (through the `deno_core` crate) and
-an in-memory TypeScript transpiler. It gets an empty environment, refuses every
-import, and installs no filesystem, network, environment, process, or FFI
-operations; `WebAssembly`, `SharedArrayBuffer`, and `Atomics` are removed. A
-native stdin reader exits the worker when its parent's input closes, even during
-a JavaScript CPU loop. Nothing is reused between runs. The bridge starts the
-worker after the host's start frame, and the run's deadline, which includes
-worker startup, starts with that frame.
+codemode does not promise:
 
-**Memory.** The V8 heap budget (`--heap-mb`, default 256, minimum 16) is
-enforced on every platform. Reaching it stops the worker and ends the run with
-`memory_limit`. The heap budget is not a process-memory limit: `ArrayBuffer`
-backing stores and native allocations are outside it. On Linux the worker
-applies a data-segment limit (`RLIMIT_DATA`, default heap budget + 256 MiB,
-`--process-memory-mb`) to itself before starting V8, which bounds those too; an
-allocation that fails under it also ends the run with `memory_limit`. Other
-platforms apply no process limit and refuse `--process-memory-mb` before a
-worker starts. A worker that dies for another reason ends the run with
-`worker_crashed`, with its exit code or signal in the report. No sampled RSS
-watchdog exists: it could not be a hard ceiling.
+- **Exactly-once delivery.** A repeatable write can reach the server more
+  than once. Whether that is harmless depends on the server's
+  `idempotentHint`, which codemode cannot check.
+- **Rollback.** A run that stops leaves the applied writes applied.
+- **That an applied write had its effect.** `applied` means the server
+  answered with a result. codemode never reads the target back. A failure
+  that a server reports inside a normal result is recorded as applied.
+- **Authentication.** The name of an approver or a reviewer is recorded as
+  given. An approval does not show who gave it.
+- **Operating system isolation for a program.** The worker behind
+  `plan --program` is a restricted V8 process, not a kernel sandbox.
 
-A stop request cannot reverse an external side effect. Worker termination also
-does not make a still-observable provider result unknown: already-dispatched
-results are collected while the run budget allows, and queued work does not
-start after the guest finishes. A call whose result is never observed is
-unknown, including when memory exhaustion or a crash ends the run with it in
-flight. A program's run offers no recovery after the Rust host itself crashes;
-an approved plan does (see below).
+## The plan file and its one digest
 
-### Large tool results
+`plan` lists the server's tools, checks every proposed write against them,
+and writes one JSON file. The [guide](mcp.md#the-plan-file) shows the format.
+The layout is fixed, so the same change list for the same server gives the
+same bytes, and a second person can review the file as a diff.
 
-Each reply to the guest may be up to 1 MiB; source and call frames from the
-guest stay at 64 KiB, and the shared output budget bounds the total. These are
-output and transport limits, not memory limits. A host-side projection or a
-result-reference mechanism was considered and not built: no measured workflow
-needed the extra helper surface. Results above 1 MiB need smaller pages or a
-host-side filter in the adapter; the Composio host, for example, replaces
-signed download URLs before the program sees a result.
+The digest is the SHA-256 of the file's canonical JSON (keys sorted, no white
+space) without the field `server.file`. It covers:
 
-## Rolling scheduling
+- every write (identity, tool, arguments) and the order of the writes
+- the summary
+- the server identity, the protocol revision, and `trust_annotations`
+- `server.config`, the SHA-256 of the server file's bytes as `plan` read them
+- for each tool the writes use, its class, its definition digest, and whether
+  the server marks it destructive or sent any annotation
 
-The guest program expresses dependencies with ordinary awaits and independent
-work with promises. Rust starts a queued call when an active slot becomes free.
-There is no dependency-graph planner, and rolling dispatch is the only policy.
-The report records the limits each run executed under.
+A definition digest is the SHA-256 of the tool's name, argument schema, and
+annotations. The plan digest leaves out:
 
-## Execution evidence
+- `server.file`, the path of the server file, so that both files may move
+- layout, white space, and key order
+- a tool's description and output schema, and every tool the plan does not use
+- the values of the environment variables that the server file names
+- the options of `apply`
 
-A versioned JSON record (report schema 5) identifies the execution source
-(`embedded_v8` for programs, `native` for plan dispatch) and contains the source
-of a program run, host-assigned call identities, arguments, observed results or
-errors, event ordering, timing, final output, the limits including heap and
-process data limits, the run status, and how the worker exited when it died.
-Queued, dispatched, completed, rejected, and unknown work remain separate.
-Records of earlier schemas are not read.
+Through `server.config` an approval binds the server file itself: its URL or
+command, its `env` and header entries, its trust settings, and its
+`write_tools` list. `apply` reads the server file once, from the recorded
+path or from `--server <file>`, and refuses a file with another digest before
+it prints the review. A plan file whose `server.file` was edited to point at
+another server file is therefore refused, and so is a plan made by hand for a
+server file that the operator did not write, when the operator passes their
+own file with `--server`. The approval also binds two options of `apply`, as
+the next section says. `plan` refuses a number whose
+magnitude exceeds `2^53-1`, because a JSON reader such as JavaScript rounds
+it, and the server could then act on a value nobody approved.
 
-Rust timestamps come from its monotonic clock, in whole milliseconds since run
-start. Each call records when it was admitted, dispatched, finished, and, for
-program runs, when its reply reached the worker, so queue waiting, provider
-time, and delivery are separate. Byte counts cover arguments, observed values,
-reply frames, and bytes exchanged with the worker and with a bridge host.
+The plan never holds a credential. The server file names environment
+variables as `${NAME}`, and each command reads their values into memory when
+it starts. The plan records the server identity and the path of the server
+file. The identity has no header or `env` value, and it shows a URL's query
+string only as a digest. `plan` also refuses an argument key that names a
+credential, such as `token`, `password`, or `api_key`, at any depth. That
+check looks at keys only. Argument values are stored and shown as given.
 
-Provider-reported facts are separate from these observations: a bridge host may
-say it received a call, waited for permission, decided, or entered its
-executor. Rust stamps each fact with its arrival time and keeps the host's own
-timestamp apart. A missing fact never proves a call did not run.
+## Approval
 
-`codemode inspect <trace.json>` and `codemode::inspect` answer three questions
-from a record, within a call limit and with counted omissions:
+`apply` takes the approval in one of two ways.
 
-- **Why was this slow?** Exclusive phases that sum to the elapsed time: startup,
-  guest-only time, tools running, waiting at the concurrency cap, waiting while a
-  slot was free, draining after the guest finished, and shutdown.
-- **Which calls ran?** Each call's evidence: result observed, provider error,
-  rejected or never dispatched, or unknown, with how far the host reported it got.
-- **Which outcomes require reconciliation?** The unknown calls, with the status
-  that ended them and the last provider fact.
+- **A terminal question.** When stdin, stdout, and stderr are all terminals
+  and `--json` is absent, `apply` prints the review and asks. Only the exact
+  answer `yes` approves. All three must be terminals, so that the review is
+  on the screen when the person answers.
+- **`--approve <digest>`.** The value must be the plan's full digest. A wrong
+  or shortened digest ends the command with exit code 4.
 
-Inspection prints tool names, error codes, top-level argument keys, and sizes. It
-leaves out argument values, results, and messages unless `--messages` is given.
-Traces can still contain private code or task data; the Composio host's
-investigation trace keeps result sizes, not values.
+`apply` connects only after the approval. A stdio server is a command, and it
+is not started for a plan that nobody approved. If the connection or the
+comparison with the plan then fails, `apply` exits with 2, creates no
+journal, and says that the plan was approved but nothing was recorded or
+sent.
 
-## Bounded recovery of approved operation lists
+Without a terminal and without `--approve`, `apply` asks nobody and exits
+with 4. An approval binds the plan digest and two options of the first run,
+`--concurrency` (default 4) and `--max-attempts` (default 3). A later run
+refuses both options. `--deadline-ms` and `--max-failures` are not bound.
+They decide when a run stops, and they cannot add a write or an attempt.
 
-[Recoverable agent actions](recovery.md) adds durable accounting for one shape
-of work: a finite, digested plan of independent operations that a person
-approved. `plan check` shows every operation's canonical arguments, scope,
-contracts, retention, budgets, and the digest that approval binds; plans refuse
-integers outside ±(2^53−1), so the approved value is the one a JavaScript host
-sends.
+The journal records the approver's stated name, the time, the plan digest,
+the two numbers, the server identity, and for each tool whether it is
+repeatable and its definition digest. A later run compares the file's digest
+with the recorded one. Every run compares the connected server with the plan.
+The executor (`src/executor.rs`) then builds a second digest from the
+journal's copy of the writes, the connected server, and the approved numbers.
+If it differs from the one stored with the approval, the run ends before any
+write and the journal records the refusal.
 
-A SQLite journal records each attempt's intent before the provider can see it
-and its observation before anyone is told. Intents, observations, and probe
-records that arrive while another commit is in flight share the next
-transaction (group commit); each attempt continues only after the commit that
-holds its own record, so the ordering is unchanged. One session deadline
-(`--deadline-ms`) covers authorization, reconciliation probes, host permission
-waits, and dispatch.
+The flag is not a security boundary. The refusal message prints the full
+digest, and `status --json` prints it too. A process that can run
+`codemode apply --approve` and can read the credentials the server file names
+can approve its own plan. The terminal rule only keeps an approval from
+happening by accident in a script. Separation comes from where the credential
+lives. For example, the plan file is reviewed in a pull request, and `apply`
+runs in CI, the only place that holds the credential. The process that
+proposed the plan then has nothing to reach the server with.
 
-One executor holds a journal at a time, through an operating-system lock on
-`<journal>.lock`. `plan inspect` and `plan trace` open the journal read-only,
-never touch the lock, write no journal data, and work while a session runs; an
-open session means "no end recorded", not proof that an executor is alive.
+## Sending writes
 
-After a crash, the provider's declared contract decides whether an uncertain
-operation is reconciled by receipt, by state, repeated, or handed to a person.
-Dispatch submits operation identities to the same admission, rolling
-scheduler, deadline, cancellation, and accounting loop as programs, with no
-worker process. This is not a workflow engine: no dependencies, no control flow,
-and no replay of the agent's program.
+**The journal.** `apply` keeps a SQLite file next to the plan file. It holds a
+copy of the approved writes, the approval, and facts that are only ever
+added. Each fact has a number from one counter. For every attempt the order
+is fixed:
 
-## Presentation shape
+1. The intent is committed. If that fails, nothing is sent and the run stops.
+2. One request goes to the server.
+3. The observation (a result or an error) is committed before the run counts
+   the write as finished. If that fails, the run stops.
+4. When a run ends while attempts still wait, each is recorded as unanswered.
 
-- **5 minutes:** the problem (an agent changes several issues, then something
-  is interrupted) and the host, worker, and provider boundary.
-- **10 minutes:** investigate a repository with read-only tools, show the
-  execution record, and review the proposed plan with `plan check`: exact
-  arguments, scope, contracts, and digest.
-- **10 minutes:** approve, run, inspect from a second terminal, interrupt,
-  resume, and export the diagnosis, following the [guide](composio-github.md)
-  against a test repository. Offline, `mise run composio-demo` covers
-  investigation through inspection, and `mise run recovery-demo` kills an
-  executor mid-batch and resumes it.
-- **5 minutes:** limits (memory, no exactly-once, offline versus live
-  evidence) and the [comparison](comparison.md).
+An attempt with an intent and no observation is a write with no reply. That
+is what a killed `apply` leaves behind. Records that arrive while a commit is
+in flight share the next transaction, and each attempt continues only after
+the commit that holds its own record. Unit tests in `src/executor.rs` hold
+and fail these commits, and `tests/apply.rs` kills `apply` with SIGKILL while
+the server holds a call. The journal uses SQLite's write-ahead log with
+`synchronous=FULL`, so a commit returns after SQLite has asked the operating
+system to flush it.
 
-Use the offline stand-in or a test repository you own. Keep private backend
-code, data, event names, and presentation logistics out of public examples.
+**The first write alone.** Each run sends the first write it has to send, in
+plan order, and waits for its answer. A server that fails every write
+receives one. After that answer, at most the approved number of writes are in
+flight. A plan has no dependencies between writes and no control flow.
+
+**The failure limit.** A run stops sending once `--max-failures` writes
+(default 1) have ended without being applied. Writes already out finish and
+are recorded, so up to the approved concurrency can end uncertain. Writes not
+yet sent stay `not sent` for a later `apply`.
+
+**The deadline.** `--deadline-ms` (default 300000) starts after the
+connection is set up and covers the rest of the run. A write whose request is
+out at the deadline is recorded with no reply. A write whose intent is
+committed but whose request is not yet out is withdrawn and stays `not sent`.
+Ctrl-C, and SIGTERM on Unix, cancel a run with the same effect on its writes.
+
+**Rate limits.** An HTTP 429 means the server refused the request before it
+ran the tool. The run sends nothing during the wait, then one write alone,
+then the rest. The [guide](mcp.md#rate-limits) gives the waits.
+
+**One executor.** `apply` and `resolve` take an operating system lock on
+`<journal>.lock` before they open the journal, and hold it while they run. A
+second `apply` or `resolve` exits with 2 and changes nothing.
+
+**Reading during a run.** `status` opens the journal read-only and never
+touches the lock file. It reads one snapshot of committed facts, writes no
+journal data, and uses no network. It also reads the server file, to say
+whether it still is the one the plan was made with. A run without a recorded end is either
+running or killed. The journal cannot tell which, and `status` says so.
+
+## What happens to each answer
+
+The guide lists [every answer and its code](mcp.md#what-happens-to-each-answer).
+This table gives the rule behind that list.
+
+| Outcome of an attempt | Recorded as | What codemode does next |
+| --- | --- | --- |
+| The server answers with a result | applied | Nothing. The write is never sent again. |
+| A tool error, or another error that does not say whether the tool ran | failed | A repeatable write is sent again by a later `apply`, while attempts are left. Any other write waits for `resolve`. |
+| No reply, repeatable write | no reply | A later `apply` sends it again, while attempts are left. After that it waits for `resolve`. |
+| No reply, any other write | no reply | It is not sent again. It waits for `resolve`. |
+| HTTP 429 | not sent | The same run waits and sends it again as a new attempt. When every attempt is used, the write is refused and needs a new plan. |
+| The request is rejected before the tool runs, by the server or by codemode | refused | It is not sent again. After a person fixes the cause and records `--as not-applied`, `apply` sends it while attempts are left. |
+| The connection cannot be made | not sent | A later `apply` sends it, while attempts are left. |
+
+Every outcome except the first counts toward `--max-failures`. A 429 counts
+only when no further attempt follows it in the same run.
+
+`resolve` adds a person's finding to the journal as one more fact. `applied`
+ends the write. `not-applied` lets `apply` send it again within the approved
+attempts. An answer settles only its own attempt. A repeatable write whose
+first attempt got no reply and whose second was refused is still uncertain.
+
+## The program worker
+
+`plan --program` runs TypeScript to compute the change list. Each run starts
+a fresh worker process from the `codemode` executable, with an empty
+environment. The worker holds one V8 isolate. It refuses every import and has
+no file system, network, environment, process, or FFI operation.
+`WebAssembly`, `SharedArrayBuffer`, and `Atomics` are removed. The worker
+exits when its parent's end of stdin closes, also during a JavaScript loop.
+
+The parent process treats the worker's output as untrusted. Rust checks each
+tool call against the list of read tools before the server sees it, and the
+MCP client refuses any tool that is not a read. Rust also enforces the
+deadline (which includes worker startup), the number of calls, the calls in
+flight, and the output budget. The [guide](mcp.md#the-program) gives the
+defaults. The program text, with the `--input` value inside it, must fit in
+one 64 KiB frame. A call is at most 64 KiB and a reply at most 1 MiB. A
+program that passes a limit ends with a status, and `plan` writes no file.
+`--trace <file>` saves the program's execution record as JSON.
+
+`--heap-mb` (default 256, minimum 16) bounds the V8 heap on every platform.
+Reaching it ends the run with `memory_limit`. The heap budget does not cover
+`ArrayBuffer` backing stores or native allocations. On Linux the worker sets
+`RLIMIT_DATA` to the heap budget plus 256 MiB on itself before V8 starts,
+which bounds those too. On every other platform, macOS included, no process
+limit is applied and `ArrayBuffer` memory is unbounded. The worker is an
+ordinary child process with the user's privileges. It is restricted by what
+the isolate lacks, not by the operating system.
+
+## Internals that are kept but not exposed
+
+The executor is written against a trait, `RecoverableProvider`, and the MCP
+client is one implementation of it. A provider declares a `RecoveryContract`
+for each tool. It says whether a repeat is safe and how an uncertain attempt
+can be reconciled (`receipt`, `state`, or `none`). For `receipt` and `state`,
+a run first sends a reconciliation probe for each uncertain write, journaled
+before the provider is asked and counted against a budget. `src/recovery.rs`
+holds the model, and `tests/recovery.rs` runs it against an in-test provider.
+
+The MCP provider declares `none` for every tool, because MCP gives a client
+no way to ask whether an earlier call took effect. No probe is sent through
+the CLI, and no option reaches this code. A verification read, which would
+confirm a write by reading its target, would attach here as an implementation
+of `reconcile` for a server that can name such a read. It is not built.
+
+## Limits and untested ground
+
+- **Power loss.** The tests kill processes. Whether a commit survives power
+  loss depends on the storage device honoring flushes, and no test covers it.
+- **The journal holds clear text.** It keeps the approved arguments for its
+  whole life, with the stated names and the server's error text. The
+  [guide](mcp.md#the-error-text) says what is removed from that text.
+- **The journal is the only memory.** It is always next to the plan file, and
+  no option moves it. Without it, `apply` treats the plan as new and, once
+  approved, sends every write again. That includes a plan file copied to
+  another directory. Its files are `<journal>`,
+  `<journal>-wal`, `<journal>-shm`, and `<journal>.lock`. Keep them together,
+  and move or delete them only when no command runs. Deleting or replacing
+  the lock file while `apply` runs lets a second executor in.
+- **Formats are unreleased.** A plan file (version 1) or a journal (format
+  version 2) of another version is refused. There is no migration.
+- **Platforms and live servers.** CI runs the tests on Linux only, against an
+  offline stand-in server. The [guide](mcp.md) says what was checked live.
