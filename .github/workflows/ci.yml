@@ -27,52 +27,9 @@ jobs:
         run: |
           mise exec -- rustc --version
           mise exec -- mbx --version
-          mise exec -- node --version
-      - name: Typecheck delivered adapters against pinned host APIs
-        run: mise run typecheck
-      - name: Check the workflow comparison oracle
-        run: mise run oracle-check
       - run: mise run check
-      - name: Install this committed revision with its matching adapters
-        run: scripts/install.sh --revision "$GITHUB_SHA" --prefix "$RUNNER_TEMP/codemode-install"
-      - name: Exercise the installed workflow outside the checkout
-        run: mise exec -- scripts/install-check.sh "$RUNNER_TEMP/codemode-install/current"
-
-  hosts:
-    name: Pinned offline Pi and OpenCode compatibility
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - name: Select bridge and adapter changes (always run manual checks)
-        id: scope
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] ||
-             [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = 0000000000000000000000000000000000000000 ] ||
-             ! git cat-file -e "$BASE_SHA^{commit}"; then
-            echo 'run=true' >> "$GITHUB_OUTPUT"
-          else
-            git diff --name-only "$BASE_SHA" "$GITHUB_SHA" > "$RUNNER_TEMP/codemode-changed-paths"
-            while IFS= read -r path; do
-              case "$path" in
-                src/*|integrations/*|tests/*|scripts/*|Cargo.toml|Cargo.lock|mise.toml|package.json|package-lock.json|tsconfig*.json|.github/workflows/ci.yml)
-                  echo 'run=true' >> "$GITHUB_OUTPUT"
-                  break ;;
-              esac
-            done < "$RUNNER_TEMP/codemode-changed-paths"
-          fi
-      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
-        if: steps.scope.outputs.run == 'true'
-      - name: Pi 1.4.0 scripted host, gates, cancellation, and plan recovery
-        if: steps.scope.outputs.run == 'true'
-        run: mise run pi-check
-      - name: OpenCode 1.19.5 scripted host, permissions, and abort
-        if: steps.scope.outputs.run == 'true'
-        run: mise run opencode-check
+      - name: Run the offline demo
+        run: mise run demo
 
   msrv:
     name: Rust 1.91 (MSRV)

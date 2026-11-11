@@ -4,20 +4,6 @@ min_version = "2026.9.2"
 # Keep mbx ahead of Rust's Cargo bin directory in PATH.
 mr-boxington = "1.26.0"
 rust = { version = "stable", profile = "minimal", components = ["clippy", "rustfmt"], mr_boxington = true }
-# Deno runs only TypeScript host tests and scripts; codemode itself does not use it.
-deno = "2.9.8"
-node = "24.22.1"
-
-[tasks.typecheck]
-description = "Install locked development types and check the host adapters"
-run = [
-    "npm ci --ignore-scripts --no-audit --no-fund",
-    "npm run typecheck",
-]
-
-[tasks.oracle-check]
-description = "Check that the workflow comparison oracle detects duplicate and missing effects"
-run = "node --test bench/workflow/oracle.test.ts"
 
 [tasks.check]
 description = "Check formatting, lints, tests, and documentation"
@@ -30,72 +16,6 @@ run = [
     "cargo doc --locked --no-deps",
 ]
 
-[tasks.pi-demo]
-description = "Run the offline Pi 1.4.0 integration example"
-run = "integrations/pi/run-demo.sh"
-
-[tasks.pi-check]
-description = "Run native Pi 1.4.0 integration checks"
-run = "mise exec npm:@earendil-works/pi-coding-agent@1.4.0 -- cargo test --locked --all-features --test pi --test pi_plan -- --ignored"
-
-[tasks.opencode-demo]
-description = "Run the offline OpenCode 1.19.5 integration example"
-run = "integrations/opencode/run-demo.sh"
-
-[tasks.opencode-check]
-description = "Run native OpenCode 1.19.5 integration checks"
-run = "mise exec aqua:anomalyco/opencode@1.19.5 -- cargo test --locked --all-features --test opencode -- --ignored"
-
-[tasks.composio-demo]
-description = "Run the GitHub triage workflow offline: investigate, review, approve, run, inspect"
-run = "integrations/composio/run-demo.sh"
-
-[tasks.composio-live-check]
-description = "Live, read-only investigation of jkomyno/codemode through the logged-in Composio CLI (COMPOSIO_GITHUB_ACCOUNT=ca_...)"
-run = "integrations/composio/run-live-check.sh"
-
-[tasks.composio-plan-check]
-description = "Run the offline Composio host checks: investigation, lost replies, killed executors, resume"
-run = "cargo test --locked --all-features --test composio --test composio_plan"
-
-[tasks.composio-plan-preflight]
-description = "Live, read-only preflight of a plan (COMPOSIO_GITHUB_ACCOUNT=ca_...): <owner/repo> <plan.json>"
-run = "integrations/composio/run-preflight.sh"
-
-[tasks.bench-setup]
-description = "Fetch and verify the pinned code-mode engines and build the release binary"
-run = "mise exec bun@1.4.4 -- bench/setup.sh"
-
-[tasks.bench-verify]
-description = "Check benchmark expected outputs with two independent implementations"
-run = "mise exec bun@1.4.4 -- bench/verify-expected.sh"
-
-[tasks.bench]
-description = "Benchmark codemode, Pi, and OpenCode code-mode engines on shared fixtures"
-run = "mise exec bun@1.4.4 -- bun bench/run.ts --engines codemode,codemode-c4,pi,opencode --scenarios triage,triage-large,denied,deadline,guest-exception,lost-response --profiles zero,equal,mixed --reps 20 --warmup 3 --cold 8 --out bench/results/local"
-
-[tasks.workflow-bench]
-description = "Compare the GitHub triage workflow across codemode, Pi Durable, OpenCode, and a Composio script"
-run = [
-    "bench/workflow/setup.sh",
-    "node bench/workflow/run.ts",
-]
-
 [tasks.demo]
-description = "Run the offline demonstration: a workflow, a denial, a lost response, and inspection"
-run = [
-    "cargo build --release --locked --bin codemode",
-    "mise exec bun@1.4.4 -- bun bench/demo.ts",
-]
-
-[tasks.recovery-demo]
-description = "Run the offline recovery demonstration: approve a batch, kill the executor, reconcile, and review"
-run = "examples/recovery/demo.sh"
-
-[tasks.recovery-eval]
-description = "Compare recovery strategies after a killed run, and measure journal overhead"
-run = [
-    "cargo build --release --locked --features testkit --bin codemode-fixture",
-    "mkdir -p eval/recovery-local",
-    "cargo run --release --locked --features testkit --bin codemode-recovery-eval -- --reps 15 --out eval/recovery-local > eval/recovery-local/summary.md",
-]
+description = "Run the whole flow offline: tools, plan, status, apply, a failed write, resolve"
+run = "examples/demo.sh"

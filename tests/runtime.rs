@@ -394,6 +394,40 @@ async fn final_output_and_provider_response_share_a_byte_budget() {
 }
 
 #[tokio::test]
+async fn a_returned_value_may_exceed_a_call_frame_up_to_the_output_budget() {
+    // 4,000 operations: several times the 64 KiB that one call frame holds.
+    let source = "return { operations: Array.from({ length: 4000 }, (_, i) => \
+        ({ id: `op-${i}`, tool: 't', arguments: { id: `note-${i}`, text: `text ${i}` } })) };";
+    let mut options = config();
+    options.max_output_bytes = 4 * 1024 * 1024;
+    let report = run(source, options, MockProvider, RunCancellation::default())
+        .await
+        .expect("a large value produces a report");
+    assert_eq!(report.status, RunStatus::Success, "{:?}", report.diagnostic);
+    let output = report.output.expect("the value is kept");
+    let operations = output["operations"].as_array().expect("operations");
+    assert_eq!(operations.len(), 4000);
+    assert_eq!(operations[3999]["arguments"]["text"], "text 3999");
+    assert!(report.bytes.retained > 256 * 1024, "{:?}", report.bytes);
+
+    // The same value over the run's budget ends the run; it is not a
+    // protocol error, and no part of the value is kept.
+    for budget in [1000, 100_000, 256 * 1024] {
+        let mut options = config();
+        options.max_output_bytes = budget;
+        let report = run(source, options, MockProvider, RunCancellation::default())
+            .await
+            .expect("output limit produces a report");
+        assert_eq!(
+            report.status,
+            RunStatus::OutputLimit,
+            "{budget}: {report:?}"
+        );
+        assert_eq!(report.output, None, "{budget}");
+    }
+}
+
+#[tokio::test]
 async fn oversized_provider_results_are_omitted_from_report() {
     let mut options = config();
     options.max_output_bytes = 80;
@@ -805,7 +839,6 @@ async fn trace_separates_admission_dispatch_result_and_delivery_with_byte_accoun
     assert_eq!(report.bytes.retained, values + 1, "plus the output `2`");
     assert_eq!(report.bytes.omitted, 0);
     assert_eq!(report.clock.source, "rust_monotonic");
-    assert!(report.bridge.is_none());
 }
 
 #[tokio::test]
@@ -840,6 +873,122 @@ async fn omitted_results_and_queued_calls_say_why() {
         (last.kind.as_str(), last.reason.as_deref()),
         ("cancelled_before_dispatch", Some("output_limit"))
     );
+}
+
+/// Reports the milestones of a permission-gated call for the first call, and a
+/// fact for that finished call while it serves the second.
+struct ClaimingProvider;
+impl ToolProvider for ClaimingProvider {
+    async fn execute(&self, call: ToolCall, context: CallContext) -> Result<Value, ProviderError> {
+        use codemode::ProviderFactKind::{
+            ExecutorStarted, PermissionGranted, PermissionRequested, Received,
+        };
+        if call.id == 1 {
+            for (kind, provider_ms) in [
+                (Received, 10.25),
+                (PermissionRequested, 10.5),
+                (PermissionGranted, 31.0),
+                (ExecutorStarted, 31.5),
+            ] {
+                context.facts.report(call.id, kind, Some(provider_ms));
+            }
+            Ok(json!("value"))
+        } else {
+            context.facts.report(1, ExecutorStarted, None);
+            Ok(json!("other"))
+        }
+    }
+}
+
+#[tokio::test]
+async fn provider_facts_are_recorded_as_claims_beside_rust_observations() {
+    use codemode::ProviderFactKind;
+    let report = run(
+        "const a = await tools.call('mock.echo', {key:'k'}); await tools.call('mock.echo', {key:'z'}); return a;",
+        config(),
+        ClaimingProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("run completes");
+    assert_eq!(report.status, RunStatus::Success, "{report:?}");
+    // A fact for a finished call is counted as dropped rather than attached to it.
+    assert_eq!(report.provider_facts_dropped, 1);
+    let facts: Vec<(ProviderFactKind, Option<f64>)> = report
+        .provider_facts
+        .iter()
+        .map(|fact| (fact.kind, fact.provider_ms))
+        .collect();
+    assert_eq!(
+        facts,
+        [
+            (ProviderFactKind::Received, Some(10.25)),
+            (ProviderFactKind::PermissionRequested, Some(10.5)),
+            (ProviderFactKind::PermissionGranted, Some(31.0)),
+            (ProviderFactKind::ExecutorStarted, Some(31.5)),
+        ]
+    );
+    let record = &report.calls[0];
+    assert!(report.provider_facts.iter().all(|fact| fact.call_id == 1
+        && record.started_ms <= Some(fact.received_ms)
+        && Some(fact.received_ms) <= record.finished_ms));
+    let kinds: Vec<&str> = report
+        .events
+        .iter()
+        .filter(|event| event.call_id == Some(1))
+        .map(|event| event.kind.as_str())
+        .collect();
+    assert_eq!(
+        kinds,
+        ["admitted", "dispatched", "succeeded", "reply_written"]
+    );
+    assert_eq!(report.output, Some(json!("value")));
+}
+
+/// Acknowledges the first call, then answers neither.
+struct AcknowledgingProvider;
+impl ToolProvider for AcknowledgingProvider {
+    async fn execute(&self, call: ToolCall, context: CallContext) -> Result<Value, ProviderError> {
+        if call.id == 1 {
+            context
+                .facts
+                .report(call.id, codemode::ProviderFactKind::ExecutorStarted, None);
+        }
+        std::future::pending().await
+    }
+}
+
+#[tokio::test]
+async fn a_deadline_leaves_unanswered_calls_unknown_with_their_evidence() {
+    let mut options = config();
+    options.timeout_ms = 1_000;
+    let report = run(
+        "await Promise.all([tools.call('mock.echo', {}), tools.call('mock.echo', {})]);",
+        options,
+        AcknowledgingProvider,
+        RunCancellation::default(),
+    )
+    .await
+    .expect("deadline produces a report");
+    assert_eq!(report.status, RunStatus::Deadline, "{report:?}");
+    for call_id in [1, 2] {
+        assert_eq!(report.calls[call_id - 1].outcome, CallOutcome::Unknown);
+        let unknown = report
+            .events
+            .iter()
+            .find(|event| event.call_id == Some(call_id as u64) && event.kind == "unknown")
+            .expect("unknown event");
+        assert_eq!(unknown.reason.as_deref(), Some("deadline"));
+    }
+    // Only the first call has provider evidence; the second has none, which is
+    // not evidence that it did not run.
+    assert_eq!(report.provider_facts.len(), 1);
+    assert_eq!(report.provider_facts[0].call_id, 1);
+    assert_eq!(
+        report.provider_facts[0].kind,
+        codemode::ProviderFactKind::ExecutorStarted
+    );
+    assert_eq!(report.provider_facts[0].provider_ms, None);
 }
 
 /// Reports facts from another thread until told to stop, for calls that do and do not exist.

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
 
-use crate::runtime::{FRAME_BYTES, MAX_GUEST_ID, REPLY_FRAME_BYTES};
+use crate::runtime::{FRAME_BYTES, MAX_GUEST_ID, OUTPUT_FRAME_BYTES, REPLY_FRAME_BYTES};
 
 const MIB: usize = 1024 * 1024;
 /// Exit code of a worker that exhausted its memory, after its `memory_limit` frame.
@@ -163,9 +163,20 @@ async fn op_guest_receive(state: Rc<RefCell<OpState>>) -> Result<String, JsError
 #[op2(fast)]
 fn op_guest_output(#[string] value: &str) -> Result<(), JsErrorBox> {
     halt_if_exhausted();
-    write_stdout(&frame_line(&Frame::Output {
-        value: payload(value)?,
-    })?)?;
+    // The final value may be a change list as large as the largest plan; the
+    // host bounds it by the run's output budget.
+    let too_large = || JsErrorBox::generic("Returned value exceeds the 32 MiB plan limit");
+    if value.len() > OUTPUT_FRAME_BYTES {
+        return Err(too_large());
+    }
+    let value = crate::json::parse_json(value)
+        .map_err(|error| JsErrorBox::type_error(format!("Value is not JSON-encodable: {error}")))?;
+    let mut line = serde_json::to_string(&Frame::Output { value }).map_err(JsErrorBox::from_err)?;
+    if line.len() >= OUTPUT_FRAME_BYTES {
+        return Err(too_large());
+    }
+    line.push('\n');
+    write_stdout(&line)?;
     std::process::exit(0);
 }
 

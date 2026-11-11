@@ -328,7 +328,8 @@ pub fn header_value(text: &str) -> String {
 pub enum ToolOutcome {
     /// The tool ran; this is its value.
     Value(Value),
-    /// The tool reported an error (`isError`), with its text.
+    /// The tool reported an error (`isError`), with its whole text. The
+    /// caller removes configured values from it before it cuts it short.
     ToolError(String),
     /// The server wants more input (elicitation, sampling, or roots), which
     /// this client cannot give.
@@ -360,7 +361,7 @@ impl ToolOutcome {
         let text = joined_text(content);
         if object.get("isError").and_then(Value::as_bool) == Some(true) {
             let message = text.unwrap_or_else(|| "the tool reported an error".into());
-            return Ok(Self::ToolError(truncate(&message, MAX_MESSAGE_BYTES)));
+            return Ok(Self::ToolError(message));
         }
         if let Some(structured) = object.get("structuredContent") {
             return Ok(Self::Value(structured.clone()));

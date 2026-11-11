@@ -12,6 +12,10 @@ pub const MAX_SERVER_CONFIG_BYTES: usize = 64 * 1024;
 /// Longest identity a plan's scope can hold.
 const MAX_IDENTITY_BYTES: usize = 128;
 
+/// Shortest configured value removed from a server's text. A shorter value
+/// is not a credential, and removing it would garble ordinary words.
+const MIN_REDACTED_BYTES: usize = 8;
+
 /// A server configuration that cannot be used.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigError(pub String);
@@ -40,6 +44,7 @@ struct ServerFile {
     trust_annotations: bool,
     #[serde(default)]
     read_tools: Vec<String>,
+    write_tools: Option<Vec<String>>,
 }
 
 /// How to reach the server.
@@ -101,6 +106,9 @@ pub struct ServerConfig {
     /// Tools a program may call while it investigates, named by a person. Used
     /// in addition to trusted `readOnlyHint` annotations.
     pub read_tools: Vec<String>,
+    /// The only tools a plan may hold, named by a person. `None` allows every
+    /// tool that is not a read. A tool named here that is a read stays a read.
+    pub write_tools: Option<Vec<String>>,
 }
 
 impl ServerConfig {
@@ -178,7 +186,27 @@ impl ServerConfig {
             endpoint,
             trust_annotations: file.trust_annotations,
             read_tools: file.read_tools,
+            write_tools: file.write_tools,
         })
+    }
+
+    /// Whether a plan may hold the write tool `name`: always when the file has
+    /// no `write_tools`, otherwise only when `write_tools` names it.
+    ///
+    /// ```
+    /// use codemode::mcp::ServerConfig;
+    ///
+    /// let open = ServerConfig::parse(r#"{"command":"srv"}"#, |_| None)?;
+    /// assert!(open.allows_write("notes.delete"));
+    /// let narrow = ServerConfig::parse(r#"{"command":"srv","write_tools":["notes.put"]}"#, |_| None)?;
+    /// assert!(narrow.allows_write("notes.put") && !narrow.allows_write("notes.delete"));
+    /// # Ok::<(), codemode::mcp::ConfigError>(())
+    /// ```
+    #[must_use]
+    pub fn allows_write(&self, name: &str) -> bool {
+        self.write_tools
+            .as_ref()
+            .is_none_or(|allowed| allowed.iter().any(|tool| tool == name))
     }
 
     /// The name an approval binds as the account. For a URL: the URL without
@@ -197,6 +225,68 @@ impl ServerConfig {
         let digest = crate::plan::Digest::of(full.as_bytes());
         let hex = digest.as_str().trim_start_matches("sha256:");
         format!("{}#{}", crate::mcp::wire::truncate(&full, 96), &hex[..24])
+    }
+
+    /// The configured values that a server's text must not carry into a
+    /// journal or an output: every header value and `env` value, whole and
+    /// split at white space (so the token of `Bearer <token>` counts by
+    /// itself), and the URL's query, whole and as each of its values, both as
+    /// written and decoded. Values under 8 bytes are left out. The longest
+    /// comes first, so a value is removed before a part of it.
+    pub(crate) fn redactions(&self) -> Vec<String> {
+        let mut values: Vec<String> = Vec::new();
+        let mut add = |value: &str| {
+            values.push(value.to_string());
+            values.extend(value.split_whitespace().map(String::from));
+        };
+        match &self.endpoint {
+            Endpoint::Http { url, headers } => {
+                for (_, value) in headers {
+                    add(value);
+                }
+                if let Some(query) = url.query() {
+                    add(query);
+                    for pair in query.split('&') {
+                        add(pair.split_once('=').map_or(pair, |(_, value)| value));
+                    }
+                    for (_, value) in url.query_pairs() {
+                        add(&value);
+                    }
+                }
+            }
+            Endpoint::Stdio { env, .. } => {
+                for (_, value) in env {
+                    add(value);
+                }
+            }
+        }
+        values.retain(|value| value.len() >= MIN_REDACTED_BYTES);
+        values.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+        values.dedup();
+        values
+    }
+
+    /// The whole command and arguments of a stdio server, as `stdio:` and a
+    /// JSON array, when [`Self::identity`] had to shorten them; `None` for
+    /// an identity that is whole, and for a URL. A review prints it, because
+    /// the command will be executed.
+    ///
+    /// ```
+    /// use codemode::mcp::ServerConfig;
+    ///
+    /// let short = ServerConfig::parse(r#"{"command":"srv","args":["--db","x"]}"#, |_| None)?;
+    /// assert_eq!(short.full_command(), None);
+    /// let long = format!(r#"{{"command":"srv","args":["{}","--last"]}}"#, "a".repeat(200));
+    /// let long = ServerConfig::parse(&long, |_| None)?;
+    /// assert!(long.identity().len() <= 128);
+    /// assert!(long.full_command().expect("shortened").ends_with(r#"","--last"]"#));
+    /// # Ok::<(), codemode::mcp::ConfigError>(())
+    /// ```
+    #[must_use]
+    pub fn full_command(&self) -> Option<String> {
+        let full = self.full_identity();
+        (matches!(self.endpoint, Endpoint::Stdio { .. }) && full.len() > MAX_IDENTITY_BYTES)
+            .then_some(full)
     }
 
     fn full_identity(&self) -> String {
@@ -248,6 +338,17 @@ fn check_url(url: &Url) -> Result<(), ConfigError> {
             "\"url\" has scheme {other:?}; expected https"
         ))),
     }
+}
+
+/// `text` with every one of `values` replaced by `[redacted]`.
+pub(crate) fn redact(text: &str, values: &[String]) -> String {
+    let mut text = text.to_string();
+    for value in values {
+        if text.contains(value.as_str()) {
+            text = text.replace(value.as_str(), "[redacted]");
+        }
+    }
+    text
 }
 
 /// Headers this client sets itself; a server file must not override them.
@@ -369,6 +470,35 @@ mod tests {
         let other = format!(r#"{{"command":"srv","args":["{}x"]}}"#, "é".repeat(100));
         assert_ne!(long, ServerConfig::parse(&other, none).unwrap().identity());
         assert!(!format!("{stdio:?}").contains("\"v\""));
+    }
+
+    #[test]
+    fn configured_values_are_removed_from_a_servers_text() {
+        let http = ServerConfig::parse(
+            r#"{"url":"https://h.example/mcp?tenant=acme-co-42&k=a%20long%20key&n=7",
+                "headers":{"authorization":"Bearer tok-0123456789","x-short":"abc"}}"#,
+            none,
+        )
+        .unwrap();
+        let values = http.redactions();
+        let echoed = "bad token tok-0123456789 (Bearer tok-0123456789) for acme-co-42 \
+                      at /mcp?tenant=acme-co-42&k=a%20long%20key&n=7, key 'a long key', abc 7";
+        assert_eq!(
+            redact(echoed, &values),
+            "bad token [redacted] ([redacted]) for [redacted] at /mcp?[redacted], \
+             key '[redacted]', abc 7"
+        );
+        assert_eq!(redact("upstream said no", &values), "upstream said no");
+
+        let stdio = ServerConfig::parse(
+            r#"{"command":"srv","args":["--verbose"],"env":{"TOKEN":"env-secret-value","MODE":"fast"}}"#,
+            none,
+        )
+        .unwrap();
+        assert_eq!(
+            redact("fast mode refused env-secret-value", &stdio.redactions()),
+            "fast mode refused [redacted]"
+        );
     }
 
     #[test]

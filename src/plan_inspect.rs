@@ -19,12 +19,11 @@ use std::fmt::Write as _;
 use serde::Serialize;
 
 use crate::executor::assess_history;
-use crate::inspect::sanitize;
-use crate::journal::{History, JournalError, JournalReader};
+use crate::journal::{AttemptRecord, History, JournalError, JournalReader};
 use crate::plan::Digest;
 use crate::recovery::{
     Approval, Basis, Conclusion, FailureEffect, NextStep, Observed, Resolution, Retention,
-    machine_code,
+    answered_with_error, machine_code,
 };
 
 /// Characters of a message, evidence, or note printed before truncation.
@@ -157,7 +156,7 @@ pub struct OperationReport {
 }
 
 /// One attempt.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AttemptLine {
     /// Journal fact ordinal, for ordering.
     pub ordinal: u64,
@@ -171,9 +170,15 @@ pub struct AttemptLine {
     pub key: String,
     /// `succeeded`, `failed`, `unobserved`, `withdrawn`, or `no result`.
     pub observed: String,
-    /// Error code for a failure.
+    /// Why the attempt did not succeed, as a machine code; absent for a
+    /// success. For `failed` it is the provider's error code. For `unobserved`
+    /// it is the run status that ended the wait, such as `deadline` or
+    /// `cancelled`. Otherwise it is `withdrawn` or `no_result`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
+    /// Whether an answer came back: a result, or an error the provider's
+    /// system sent. `false` when nothing was sent or no answer arrived.
+    pub answered: bool,
     /// The provider's statement about the effect, or why it is unknown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effect: Option<String>,
@@ -298,57 +303,7 @@ fn build(
                 .attempts
                 .iter()
                 .filter(|attempt| attempt.operation == operation.id)
-                .map(|attempt| {
-                    let mut line = AttemptLine {
-                        ordinal: attempt.ordinal,
-                        number: attempt.number,
-                        session: attempt.session,
-                        call_id: attempt.call_id,
-                        key: attempt.key.clone(),
-                        observed: "no result".into(),
-                        code: None,
-                        effect: Some(
-                            "unknown: no result recorded, so it may have reached the provider"
-                                .into(),
-                        ),
-                        result_bytes: None,
-                        message: None,
-                    };
-                    let message = |text: &str| {
-                        (options.messages && !text.is_empty()).then(|| text.to_string())
-                    };
-                    if let Some(observation) = &attempt.observation {
-                        line.effect = None;
-                        match &observation.observed {
-                            Observed::Succeeded { bytes, .. } => {
-                                line.observed = "succeeded".into();
-                                line.result_bytes = Some(*bytes);
-                            }
-                            Observed::Failed { error, effect } => {
-                                line.observed = "failed".into();
-                                line.code = Some(machine_code(&error.code).to_string());
-                                line.effect = Some(
-                                    match effect {
-                                        FailureEffect::Refused => "refused",
-                                        FailureEffect::NotApplied => "not_applied",
-                                        FailureEffect::Unknown => "unknown",
-                                    }
-                                    .into(),
-                                );
-                                line.message = message(&error.message);
-                            }
-                            Observed::Unobserved { reason } => {
-                                line.observed = "unobserved".into();
-                                line.effect = Some(format!("unknown (run ended: {reason})"));
-                            }
-                            Observed::Withdrawn => {
-                                line.observed = "withdrawn".into();
-                                line.effect = Some("not_applied (never sent)".into());
-                            }
-                        }
-                    }
-                    line
-                })
+                .map(|attempt| attempt_line(attempt, options.messages))
                 .collect();
             let probes = history
                 .probes
@@ -427,6 +382,75 @@ fn build(
         conclusions,
         next,
     }
+}
+
+/// What the journal holds about `attempt`, with the error message it kept
+/// only when `messages` is set.
+pub(crate) fn attempt_line(attempt: &AttemptRecord, messages: bool) -> AttemptLine {
+    let mut line = AttemptLine {
+        ordinal: attempt.ordinal,
+        number: attempt.number,
+        session: attempt.session,
+        call_id: attempt.call_id,
+        key: attempt.key.clone(),
+        observed: "no result".into(),
+        code: Some("no_result".into()),
+        answered: false,
+        effect: Some("unknown: no result recorded, so it may have reached the provider".into()),
+        result_bytes: None,
+        message: None,
+    };
+    let Some(observation) = &attempt.observation else {
+        return line;
+    };
+    line.effect = None;
+    match &observation.observed {
+        Observed::Succeeded { bytes, .. } => {
+            line.observed = "succeeded".into();
+            line.code = None;
+            line.answered = true;
+            line.result_bytes = Some(*bytes);
+        }
+        Observed::Failed { error, effect } => {
+            let code = machine_code(&error.code);
+            line.observed = "failed".into();
+            line.answered = answered_with_error(code);
+            line.code = Some(code.to_string());
+            line.effect = Some(
+                match effect {
+                    FailureEffect::Refused => "refused",
+                    FailureEffect::NotApplied => "not_applied",
+                    FailureEffect::Unknown => "unknown",
+                }
+                .into(),
+            );
+            line.message = (messages && !error.message.is_empty()).then(|| error.message.clone());
+        }
+        Observed::Unobserved { reason } => {
+            line.observed = "unobserved".into();
+            line.code = Some(machine_code(reason).to_string());
+            line.effect = Some(format!("unknown (run ended: {reason})"));
+        }
+        Observed::Withdrawn => {
+            line.observed = "withdrawn".into();
+            line.code = Some("withdrawn".into());
+            line.effect = Some("not_applied (never sent)".into());
+        }
+    }
+    line
+}
+
+/// One line of at most `max` characters with control characters replaced.
+fn sanitize(text: &str, max: usize) -> String {
+    let mut out: String = text
+        .chars()
+        .take(max)
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    if text.chars().nth(max).is_some() {
+        out.push('…');
+    }
+    out
 }
 
 /// Format Unix milliseconds as an ISO 8601 UTC time to the second.
@@ -572,11 +596,7 @@ impl JournalInspection {
                 session.attempts, session.probes
             );
             if session.trace {
-                let _ = write!(
-                    out,
-                    "; trace: codemode plan trace --session {}",
-                    session.session
-                );
+                let _ = write!(out, "; execution record stored");
             }
             let _ = writeln!(out);
         }
@@ -609,7 +629,12 @@ impl JournalInspection {
                     "  attempt {} (session {}{call}): {}",
                     attempt.number, attempt.session, attempt.observed
                 );
-                if let Some(code) = &attempt.code {
+                // The other outcomes already say why in `observed` and `effect`.
+                if let Some(code) = attempt
+                    .code
+                    .as_ref()
+                    .filter(|_| attempt.observed == "failed")
+                {
                     let _ = write!(out, " {code}");
                 }
                 if let Some(effect) = &attempt.effect {
@@ -651,6 +676,7 @@ impl JournalInspection {
                     match review.resolution {
                         Resolution::Applied => "applied",
                         Resolution::NotApplied => "not applied",
+                        Resolution::Skipped => "skipped, never sent",
                     }
                 );
                 lines.push((review.ordinal, out));
@@ -719,7 +745,10 @@ impl JournalInspection {
             );
         }
         if self.next.get("done") == Some(&self.operations.len()) {
-            let _ = writeln!(out, "nothing: every operation is applied or satisfied");
+            let _ = writeln!(
+                out,
+                "nothing: every operation is applied, satisfied, or skipped"
+            );
         }
         out
     }

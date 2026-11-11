@@ -7,9 +7,8 @@ interface ToolError extends Error {
 }
 
 /**
- * Tool contracts available to the guest. Augment this interface with a host's
- * tools, as `integrations/pi/pi-tools.d.ts` does; the host still decides which
- * names are authorized for a run.
+ * Tool contracts available to the guest. Augment this interface with the tools
+ * a program may call; Rust still decides which names are authorized for a run.
  */
 interface CodemodeTools {}
 

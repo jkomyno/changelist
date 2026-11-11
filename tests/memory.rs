@@ -3,7 +3,7 @@
 #![cfg(all(feature = "testkit", unix))]
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use codemode::{
@@ -318,40 +318,6 @@ async fn a_process_memory_limit_is_refused_before_a_worker_starts() {
     );
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(!marker.exists(), "no worker started");
-
-    let output = Command::new(env!("CARGO_BIN_EXE_codemode"))
-        .args(["bridge", "--process-memory-mb", "512"])
-        .stdin(Stdio::null())
-        .output()
-        .expect("codemode runs");
-    assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("Linux"));
-}
-
-#[test]
-fn the_bridge_reports_memory_limit_through_the_cli() {
-    use std::io::{BufRead, BufReader, Write};
-    let mut child = Command::new(env!("CARGO_BIN_EXE_codemode"))
-        .args(["bridge", "--heap-mb", "64", "--timeout-ms", "20000"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("bridge starts");
-    let start = json!({"type":"start","version":2,"tools":[],
-        "code":"const keep = []; for (;;) keep.push(new Array(1e5).fill(0));"});
-    // Keep the input open: closing it cancels the run.
-    let mut input = child.stdin.take().expect("bridge input");
-    writeln!(input, "{start}").expect("start frame");
-    let mut text = String::new();
-    BufReader::new(child.stdout.take().expect("bridge output"))
-        .read_line(&mut text)
-        .expect("report frame");
-    let report: serde_json::Value = serde_json::from_str(&text).expect("JSON report");
-    assert_eq!(report["report"]["status"], "memory_limit", "{text}");
-    assert_eq!(report["report"]["limits"]["heap_bytes"], 64 * MIB);
-    drop(input);
-    assert_eq!(child.wait().expect("bridge exits").code(), Some(1));
 }
 
 #[cfg(target_os = "linux")]

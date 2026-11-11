@@ -8,13 +8,12 @@ the repository root:
 
 ```sh
 mise trust
-mise install rust mr-boxington deno
+mise install rust mr-boxington
 mise run check
 ```
 
 Use mise for both development and CI. Nix is not part of the toolchain.
-`mise.toml` selects stable Rust, a specific Mr Boxington release, and the Deno
-release that runs the TypeScript host tests and scripts; codemode itself does not use Deno.
+`mise.toml` selects stable Rust and a specific Mr Boxington release.
 `Cargo.toml` declares the minimum supported Rust version, currently 1.91, which the
 embedded V8 dependencies require.
 
@@ -41,30 +40,11 @@ Before submitting a code or build change, run:
 
 ```sh
 mise run check
-mise run typecheck
 ```
 
 The task checks formatting, runs Clippy on all targets and features, runs tests
 including doc tests, and builds documentation. Clippy and rustdoc warnings fail
 the check. To fix formatting, run `mise exec -- cargo fmt --all`.
-`typecheck` installs the locked development-only npm dependencies without install
-scripts and checks delivered adapters against the pinned Pi and OpenCode APIs.
-Node is managed by mise; it is not needed to use the installed Rust CLI.
-
-For changes to the bridge or `integrations/`, also run the host checks, which
-fetch Pi 1.4.0 and OpenCode 1.19.5 through mise and need no credentials:
-
-```sh
-mise run pi-check
-mise run opencode-check
-```
-
-The offline Composio host tests run in `mise run check`; `mise run composio-plan-check`
-runs only them, and `mise run composio-demo` walks the workflow offline. With
-`composio login` and a GitHub connection,
-`COMPOSIO_GITHUB_ACCOUNT=ca_... mise run composio-live-check` runs a read-only
-investigation; report its result separately from offline checks. A live write
-needs explicit authorization naming the exact plan and issue.
 
 For compatibility changes, also test the declared MSRV:
 
@@ -74,25 +54,8 @@ mise exec -- cargo +1.91.0 test --locked --all-features
 ```
 
 The [CI workflow](.github/workflows/ci.yml) installs tools with mise and runs Cargo
-through Mr Boxington. It also installs the exact CI commit and exercises its
-binary, adapters, trace inspection, native plan workflow, and Composio launcher
-from an empty directory. Pi and OpenCode checks run on bridge, integration, build, and test
-changes, and on manual workflow runs. These offline checks do not establish live
-model, interactive UI, or live-provider behavior, or that a person can follow
-the workflow; the [operator trial](docs/operator-trial.md) is for that.
-
-For installation changes, commit the complete bundle before running the real
-source-install boundary check; the installer intentionally excludes uncommitted
-files. Use an isolated prefix:
-
-```sh
-scripts/install.sh --revision "$(git rev-parse HEAD)" --prefix /tmp/codemode-install
-mise exec -- scripts/install-check.sh /tmp/codemode-install/current
-```
-
-See [installation and compatibility](docs/installation.md) for upgrade, rollback,
-and compatibility (there is none to preserve before a release).
-CI currently runs on Linux. Check platform-specific changes
+through Mr Boxington. These offline checks do not establish live-provider
+behavior. CI currently runs on Linux. Check platform-specific changes
 on the affected platform and report what you tested.
 
 ## Manage dependencies and build storage
@@ -113,7 +76,7 @@ directly. A remote compilation cache is not configured.
 
 ## Update tools and skills
 
-Change tool selections in `mise.toml`, then run `mise install rust mr-boxington deno`
+Change tool selections in `mise.toml`, then run `mise install rust mr-boxington`
 and `mise run check`. Stable Rust follows a moving channel. Pin an exact Rust
 release there if your project needs a fixed compiler.
 

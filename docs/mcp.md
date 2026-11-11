@@ -1,21 +1,28 @@
 # Use any MCP server
 
-`codemode mcp` connects the `codemode` binary to one
+codemode connects to one
 [Model Context Protocol](https://modelcontextprotocol.io/specification/2026-07-28)
-server. A program reads through the server's tools and proposes a change list.
-You review and approve that list. codemode sends it under a deadline with a
-durable journal, and after an interruption it continues only what is safe.
+server. A program or a script proposes writes. codemode puts them in one plan
+file. A person reads the plan and approves it once. codemode then sends exactly
+those writes, stops at the first failure, and never repeats a write it cannot
+show is safe to repeat.
 
-No host adapter and no Deno are needed: the MCP client is part of the Rust
-binary. The tool list comes from the server at run time, so nothing about a
-tool is written into codemode.
+```
+codemode tools   --server <server.json>
+codemode plan    --server <server.json> (--program <file.ts> | --operations <file|->)
+codemode status  <plan file>
+codemode apply   <plan file>
+codemode resolve <plan file> (<id>... | --errors | --no-reply) --as applied|not-applied|skipped
+```
 
-**Status.** The client is tested offline against a stand-in server in both
-protocol eras and on both transports. Live, it has listed the tools of two
-public servers that speak revision 2026-07-28. Against a Composio Tool Router
-session, which speaks 2025-11-25, it has investigated, run approved label
-writes on one GitHub issue, and resumed after a deadline
-([details](#composio-tool-router)). No other live server has received a write.
+The MCP client is part of the Rust binary. The tool list comes from the server
+at run time, so nothing about a tool is written into codemode.
+
+**Status.** The client and the five commands are tested offline against a
+stand-in server in both protocol eras and on both transports; `mise run demo`
+runs the whole flow. Live, the five commands ran one plan of 9 writes with
+GitHub and Linear tools through a Composio Tool Router session
+([details](#composio-tool-router)).
 
 ## The server file
 
@@ -26,7 +33,8 @@ One JSON file names the server and records what you trust about it.
   "url": "https://mcp.example.com/mcp",
   "headers": { "x-api-key": "${EXAMPLE_API_KEY}" },
   "trust_annotations": true,
-  "read_tools": []
+  "read_tools": [],
+  "write_tools": ["GITHUB_ADD_LABELS_TO_AN_ISSUE"]
 }
 ```
 
@@ -49,6 +57,12 @@ One JSON file names the server and records what you trust about it.
   `env`.
 - `trust_annotations` and `read_tools` decide each tool's class; see below.
   Both are off or empty unless you set them.
+- `write_tools` is optional. When it is present, a plan may hold only the
+  tools it names. `plan` refuses any other write, and `apply` checks again
+  before it sends anything. When it is absent, a plan may hold every tool that
+  is not a read. The operator writes this list, not the program: it is the
+  least a program needs, stated on the client side.
+- `read_tools` and `write_tools` must name tools the server lists.
 
 The **server identity** is what an approval binds. For a URL it is the URL
 without its fragment; a query string is bound too, but shown only as
@@ -66,127 +80,625 @@ treat them as untrusted unless the server is trusted. codemode follows that:
 
 | Class | A tool is in it when | What codemode does |
 | --- | --- | --- |
-| `read` | `read_tools` names it, or `trust_annotations` is true and the server marks it `readOnlyHint: true` | A program may call it during `investigate`. It cannot be in a plan. |
-| `repeatable_write` | `trust_annotations` is true and the server marks it `idempotentHint: true` | It may be in a plan. After a lost reply it is sent again, up to the approved attempt budget. |
-| `write` | every other tool | It may be in a plan. After a lost reply it is not sent again. A person decides. |
+| read | `read_tools` names it, or `trust_annotations` is true and the server marks it `readOnlyHint: true` | A program may call it. A plan cannot hold it. |
+| repeatable write | `trust_annotations` is true and the server marks it `idempotentHint: true` | A plan may hold it. After a lost reply it is sent again, up to the approved number of attempts. |
+| write | every other tool | A plan may hold it. After a lost reply it is not sent again. A person decides. |
 
-With an empty server file every tool is a `write`, and a program can call
+With an empty server file every tool is a write, and a program can call
 nothing. Set `trust_annotations` only for a server you trust to describe its
 tools correctly: a wrong `idempotentHint` makes codemode repeat a write that is
 not safe to repeat.
 
-```sh
-codemode mcp tools --server server.json          # name, class, definition digest
-codemode mcp tools --server server.json --json   # also schemas and annotations
+```
+$ codemode tools --server server.json
+server   http://127.0.0.1:63656/mcp  (MCP 2026-07-28)
+
+  tool               class             server marks it  in a plan
+  notes.append       write             -                yes
+  notes.delete       repeatable write  destructive      yes
+  notes.get          read              -                no: a program may call it
+  notes.list         read              -                no: a program may call it
+  notes.put          repeatable write  -                yes
+  plain.unannotated  write             no annotations   yes
+  raw.json_text      read              -                no: a program may call it
+  raw.text           read              -                no: a program may call it
+  region.echo        read              -                no: a program may call it
 ```
 
-## The workflow
+"destructive" means the server sent `destructiveHint: true`. "no annotations"
+means the server sent no hint at all. With `write_tools`, the last column says
+`no: not in write_tools` for every other write. When `trust_annotations` is
+off, a line under the table says so. `--json` prints the same with each tool's
+schemas, annotations, and definition digest.
+
+## Make a plan
+
+`codemode plan` connects, lists the tools, gets the writes from one of two
+sources, checks them, and writes one plan file. It sends no write.
 
 ```sh
-# 1. Investigate: run a program with the read tools, get a plan.
-codemode mcp investigate --server server.json --program triage.ts --out plan.json
-
-# 2. Review: print every operation exactly as approval binds it.
-codemode mcp declare --server server.json > declaration.json
-codemode plan check plan.json --provider declaration.json
-
-# 3. Approve the digest you reviewed.
-codemode plan approve plan.json --journal run.db --provider declaration.json \
-  --digest sha256:... --approver you
-
-# 4. Run. From a second terminal, `codemode plan inspect --journal run.db`
-#    shows progress without writing to the journal.
-codemode mcp run --server server.json --journal run.db --deadline-ms 300000
-
-# 5. After Ctrl-C, a crash, or a lost reply: resume, then review what is left.
-codemode mcp resume --server server.json --journal run.db
-codemode plan review --journal run.db --operation <id> --as applied --reviewer you
+codemode plan --server server.json --program triage.ts       # triage.plan.json
+codemode plan --server server.json --operations ops.json     # ops.plan.json
+some-script | codemode plan --server server.json --operations -   # codemode.plan.json
 ```
 
-`plan check`, `plan approve`, `plan inspect`, `plan review`, and `plan trace`
-are the same commands every provider uses; see
-[recoverable agent actions](recovery.md).
+The file goes to the current directory under the name of its source, or to
+`--out <file>`. A plan that was approved is never overwritten: `plan` refuses
+when the plan's journal exists, and says to choose another `--out`. A change
+list without operations prints `No changes.`, writes no file, and exits with 0.
+
+### The change list
+
+Both sources give the same JSON object, and both get the same checks:
+
+```json
+{
+  "summary": "Mark every note as reviewed",
+  "operations": [
+    { "id": "mark-7", "tool": "notes.append", "arguments": { "id": "7", "text": "reviewed" } }
+  ]
+}
+```
+
+`plan` refuses an operation that names a tool the server does not list, names
+a read tool, names a tool that `write_tools` does not allow, or holds anything
+except `id`, `tool`, and `arguments`. It checks the arguments against the top
+level of the tool's schema: required properties, unknown properties when
+`additionalProperties` is `false`, and simple types. The server stays the
+authority on its own schema. An `id` is 1 to 64 of `A-Z a-z 0-9 . _ -` and is
+unique in the plan.
 
 ### The program
 
-The program is TypeScript that runs once in a V8 worker with no imports,
-filesystem, network, or environment. It has two globals:
+`--program` runs TypeScript once in a V8 worker with no imports, filesystem,
+network, or environment. It has two globals:
 
-- `tools.call(name, arguments)` calls a `read` tool and returns its value.
+- `tools.call(name, arguments)` calls a read tool and returns its value.
   Any other tool name is refused before the server sees it.
-- `input` is the JSON value of `--input <file>`, or `null`.
+- `input` is the JSON value of `--input <file>`, or `null`. The program and
+  its input together must fit in 64 KiB. A program gets larger data through
+  a read tool.
 
 It returns the change list:
 
 ```ts
 const { notes } = await tools.call("notes.list", {});
 return {
-  summary: "Mark every note as reviewed",
+  summary: "Add a review line to every note",
   operations: notes.map((note) => ({
     id: `mark-${note.id}`,
-    tool: "notes.put",
-    arguments: { id: note.id, text: `${note.text} (reviewed)` },
+    tool: "notes.append",
+    arguments: { id: note.id, text: "reviewed" },
   })),
 };
 ```
-
-`investigate` refuses an operation that names a tool the server does not list,
-names a `read` tool, or holds anything except `id`, `tool`, and `arguments`. It
-checks the arguments against the top level of the tool's schema: required
-properties, unknown properties when `additionalProperties` is `false`, and
-simple types. The server stays the authority on its own schema.
 
 A tool's value is its `structuredContent` when the server sends one. Otherwise,
 when every content block is text, it is that text, parsed as JSON when it is
 JSON. Otherwise it is the content array.
 
 Limits: `--timeout-ms` (default 60000), `--max-calls` (32), `--concurrency`
-(4), `--max-output-bytes` (1048576), `--heap-mb` (256). `--trace <file>` saves
-the execution record for `codemode inspect`.
+(4), `--max-output-bytes` (34603008), `--heap-mb` (256). The output budget
+covers the results of the tool calls and the returned change list together. It
+is the largest plan plus 1 MiB, so a program can return as many operations as
+a plan can hold. One tool call's arguments stay within 64 KiB. `--trace
+<file>` saves the program's execution record as JSON.
 
-## What an approval binds
+### The plan file
 
-`codemode mcp declare` prints the provider declaration:
+```json
+{
+  "codemode_plan": 1,
+  "summary": "Mark every note as reviewed",
+  "server": {
+    "identity": "http://127.0.0.1:63656/mcp",
+    "file": "server.json",
+    "config": "sha256:d7f8edfc46ca5d48bc3e11541950e307fafbddb8e2ea5ae10068dcf2ac7857b1",
+    "protocol": "2026-07-28",
+    "trust_annotations": true
+  },
+  "tools": {
+    "notes.put": {"class": "repeatable_write", "definition": "sha256:b773d3e9163b605272fc4a849c6288a5f65b800e5b0751eb5f51ec518340da97", "destructive": false, "annotated": true}
+  },
+  "operations": [
+    {"id": "mark-a", "tool": "notes.put", "arguments": {"id": "a", "text": "alpha (reviewed)"}},
+    {"id": "mark-b", "tool": "notes.put", "arguments": {"id": "b", "text": "beta (reviewed)"}}
+  ]
+}
+```
 
-- the provider name `mcp` and the server identity;
-- for each write tool, its contract: `repeat: safe` for a `repeatable_write`,
-  `repeat: unsafe` for a `write`, and `reconcile: none` for both;
-- for each write tool, a digest of its name, argument schema, and annotations.
+The file is self-contained, and it is made to be read by a second person, for
+example in a pull request:
 
-`run` and `resume` connect again and build the declaration again. They refuse
-the session, before any write, when the identity, a contract, or a definition
-digest of a tool in the plan differs from the approved one. A reworded tool
-description does not change the digest. A changed `trust_annotations` or
-`read_tools` setting changes the contracts, so it also needs a new approval.
+- Keys are in a fixed order. There is one tool per line and one write per
+  line, in the order given. Argument keys are sorted. The same change list
+  for the same server always gives the same bytes.
+- `tools` records what `plan` saw for each tool the writes use: its class, a
+  digest of its name, argument schema, and annotations, whether the server
+  marks it destructive, and whether the server sent any annotation.
+- `server.file` is the path of the server file, relative to the plan file.
+  Because of it, `status`, `apply`, and `resolve` need no `--server`.
+- `server.config` is the SHA-256 of the server file's bytes as `plan` read
+  them. `apply` uses only a server file with that digest. So an approval
+  binds the server file itself: its URL or command, its `env` and header
+  entries, its trust settings, and its `write_tools`.
+- The file never holds a header or `env` value.
+- A control character, a bidirectional control, or a zero-width character in
+  a string is written as a JSON `\u` escape, so it cannot hide or reorder
+  text in a terminal or a diff view. The value is unchanged.
 
-## What happens to each result
+### One digest
 
-| The server's answer to a write | Recorded as | Next |
+A plan has one digest: `sha256:` and 64 hex digits. Text output shows the
+first 12 digits. `status --json` prints all of them.
+
+The digest is the SHA-256 of the plan file's canonical JSON (keys sorted, no
+white space) without `server.file`. It covers the writes and their order, the
+summary, the server identity, the digest of the server file, and each tool's
+class, definition digest, and flags. Layout does not change it. One changed
+character in an argument does. The server file's path is left out so that the
+files may move. Its content is bound through `server.config`.
+
+`plan` refuses to write a plan file over 32 MiB. Escaping can make the file
+larger than the change list it came from.
+
+## Review
+
+`plan` prints the review. `status` prints the same text until the plan is
+approved, and `apply` prints it before it asks.
+
+```
+$ codemode plan --server server.json --operations tidy.json
+tidy.plan.json  sha256:535c97e0b847
+server   http://127.0.0.1:63656/mcp  (MCP 2026-07-28)
+config   server.json  sha256:d7f8edfc46ca
+summary  Tidy the notes
+status   not approved
+
+4 writes with 3 tools
+
+notes.delete  1 write  repeatable  destructive
+  drop-b
+    id  "b"
+
+notes.put  2 writes  repeatable
+  different             id: 2 values ("c", "d")
+                        text: 2 values ("gamma", "delta")
+
+  write  id   text
+  put-c  "c"  "gamma"
+  put-d  "d"  "delta"
+
+notes.append  1 write  not repeatable
+  log
+    id    "log"
+    text  "tidied"
+
+Notes
+  ! 1 write uses a tool the server marks destructive: notes.delete.
+  Tool classes come from the server's own hints.
+
+If a reply is lost: a repeatable write is sent again (up to 3 attempts). Any other write waits for a person.
+Sending: the first write alone, then up to 4 at a time. A failed write stops the rest.
+Next: codemode apply tidy.plan.json
+```
+
+- The `config` line names the server file and the first digits of its
+  digest. `status` reads the file again each time. It prints `changed since
+  the plan was made` when the bytes differ and `cannot be read` when the file
+  is gone.
+- For a stdio server whose identity had to be shortened, a `command` line
+  prints the whole command and its arguments. An approval will run that
+  command.
+- The summary is printed on one line. Each run of white space becomes one
+  space, and a summary over 200 characters is cut and shown with its size in
+  bytes. `--full` prints it as a JSON string, with nothing dropped.
+- Writes are grouped by tool. Tools the server marks destructive come first,
+  then tools without annotations, then the tools with the most writes.
+- For each tool the review says which arguments have the same value in every
+  write, and which differ. For an argument that differs it gives the number of
+  distinct values, and a few of them when they are short.
+- Then it lists the writes: the identity and one column for each argument that
+  differs. It shows 20 writes per tool and says how many it hides. A value
+  over about 60 characters is cut and shown with its size in bytes.
+- A plan with one or two writes prints every argument in full, one per line.
+- A tool with one write prints its identity, then one argument per line. A
+  value over about 60 characters is cut and shown with its size in bytes.
+- `--full` prints every write in full, never cut: a tool with one write one
+  argument per line, the others as canonical JSON.
+- Notes appear only when they apply: a tool without annotations, a tool
+  marked destructive, writes that are identical to another write, and that
+  the classes come from the server's hints.
+
+Every string from a plan, a program, or a server is escaped before it is
+printed. A control character, a format character such as a bidirectional
+control, or a character that is drawn as nothing (zero-width characters,
+fillers, variation selectors) appears as `\u{1b}` in text and as `\u001b`
+inside JSON. A value can never start a new line of output. What a stdio server
+writes to its standard error is shown the same way, one line at a time, with
+the prefix `server: ` and at most 4 KiB of a line.
+
+## Approve and apply
+
+`codemode apply <plan file>` is the only command that sends writes. It
+approves, runs, and continues.
+
+**The first run** works in this order:
+
+1. It reads the plan file and the server file. It refuses, with exit code 2,
+   a server file whose digest is not the plan's `server.config`, and a write
+   that `write_tools` does not allow.
+2. It prints the review.
+3. It gets the approval, as described below.
+4. It connects to the server and compares it with the plan.
+5. It creates the journal, records the approval, and sends the writes.
+
+No server process is started and no request is made before the approval. When
+step 4 fails, the command exits with 2 and says that the plan was approved
+but nothing was recorded or sent. Run it again when the server is reachable.
+
+The approval comes in one of two ways:
+
+- When stdin, stdout, and stderr are all terminals it asks, for example
+  `Apply these 4 writes through http://127.0.0.1:63656/mcp? Type "yes" to
+  approve:`. Only the exact answer `yes` approves. The question says first
+  when a write uses a tool marked destructive or a tool without annotations.
+  All three must be terminals, so that the review is on the screen when the
+  person answers.
+- Otherwise it asks nobody. It exits with 4 and says what to do:
+
+  ```
+  codemode: not approved. A person must approve this plan:
+    run `codemode apply tidy.plan.json` in a terminal and answer the question, or
+    pass `--approve sha256:535c97e0b847670c96b5ded03c3dbaac6f49046e3b3e617362a750ee9e3bff6c`
+  Nothing was sent.
+  ```
+
+- `--approve <digest>` approves when it is the plan's full digest. It is also
+  accepted in a terminal, where it replaces the question. A wrong or shortened
+  digest is refused with exit code 4, and nothing is written.
+- With `--json` nobody is asked either. Pass `--approve`.
+
+An agent that can run a shell can also run `apply`. The rule above is what
+keeps a person in the loop: an approval is an answer typed at a terminal, or a
+digest that someone passed on purpose.
+
+The approval records who approved: `--approver <name>`, or `$USER`, or
+`unknown`. The name is recorded as given. It is not authenticated.
+
+Two options are part of the approval. They are accepted on the first run only,
+and the review's last lines show them:
+
+- `--concurrency <n>` (default 4): writes in flight at once.
+- `--max-attempts <n>` (default 3): times one write may be sent, the first
+  included.
+
+**The server file.** `apply` reads the file that `server.file` names, or the
+file given with `--server <file>`. In both cases the file must have the
+digest in `server.config`. Otherwise `apply` exits with 2, says that the
+server file is not the one the plan was made with, and says to run
+`codemode plan` again. Use `--server` where the operator keeps the server
+file, for example in CI. The path in a plan file can be edited without
+changing the plan's digest. The file's content cannot.
+
+**Before any write**, every run connects and compares the server with the
+plan. It refuses, with exit code 2, when the server identity differs, when a
+tool the plan uses is gone, or when a tool's class or definition digest
+differs. The message says to run `codemode plan` again. A reworded tool
+description does not change a definition digest.
+
+**The journal** is created next to the plan file: the plan's path with `.json`
+replaced by `.journal.db` (`tidy.plan.json` gives `tidy.plan.journal.db`). It
+holds the approval and every attempt, and it is the only memory of what was
+sent. There is no option to keep it elsewhere. A plan file copied to another
+directory without its journal is a new plan, and its writes are sent again
+once it is approved.
+
+**A later run** continues the same plan and asks no question:
+
+- Work remains: it sends what can be sent.
+- Nothing remains: it prints the status and sends nothing.
+- The plan file was edited after the approval, so its digest differs: it
+  refuses with exit code 4 and changes nothing. Restore the approved file. To
+  apply the edited plan as a new plan, save it under another name.
+
+Every run takes two options that are not part of the approval:
+
+- `--deadline-ms <n>` (default 300000) is one deadline for the run.
+- `--max-failures <n>` (default 1) stops the run early; see
+  [when a run stops early](#when-a-run-stops-early). `0` never stops.
+
+While it runs in a terminal, `apply` prints one line to stderr for each
+attempt, after the journal holds its outcome: the identity, the tool, and the
+outcome. At the end it prints the status. With `--json`, stdout holds exactly
+one JSON document.
+
+## Status
+
+`codemode status <plan file>` reads the plan file and its journal. It uses no
+network and changes nothing, so it works from a second terminal while `apply`
+runs. Before approval it prints the review. Afterwards:
+
+```
+$ codemode status tidy.plan.json
+tidy.plan.json  sha256:535c97e0b847
+server   http://127.0.0.1:63656/mcp
+config   server.json  sha256:d7f8edfc46ca
+status   stopped after 1 failure
+         approved by demo on 2026-11-11 15:14 UTC
+
+applied 1 · failed 1 · no reply 0 · not sent 2
+
+failed (1): the server answered with an error
+  log  notes.append
+    upstream said no
+    codemode cannot tell whether a failed write changed anything. Check the target, then run:
+      codemode resolve tidy.plan.json log --as not-applied   (or --as applied)
+    Use --as skipped for a write that must not be sent.
+
+not sent (2)
+  Run `codemode apply tidy.plan.json` to continue.
+
+applied (1)
+  put-c
+```
+
+One line counts the writes. Sections follow, each only when it has writes:
+
+| Section | A write is in it when | Next |
 | --- | --- | --- |
-| A result | applied | done |
-| A result with `isError: true` | unknown | see below |
-| A result that asks for input (elicitation, sampling, roots) | unknown | see below |
-| The connection could not be made; nothing was sent | not applied | sent again, within the attempt budget |
-| HTTP 400, 401, 403, 404, 405, 406, 413, 415, or 431, or JSON-RPC error -32700, -32601, -32020, -32021, -32022 | refused | review |
-| Any other error or status, a broken stream, no reply, the deadline, cancellation | unknown | see below |
+| failed | the server answered with an error that does not say whether the write changed anything | `resolve`; a repeatable write is sent again by `apply` |
+| no reply | the write may have reached the server, and no answer came back | `resolve`; a repeatable write is sent again by `apply` |
+| refused | the write was not applied and is not sent again: the server refused it before running it, or every attempt is used | fix the cause and `resolve --as not-applied`, or make a new plan, or `resolve --as skipped` |
+| resolved by a person | a person recorded it as applied | nothing |
+| skipped by a person | a person recorded that it is not applied and must not be sent | nothing |
+| not sent | it was not sent yet, or it is known not to be applied and will be sent again | `apply` |
+| applied | the server answered with a result | nothing |
 
-For an **unknown** outcome, a `repeatable_write` is sent again within the
-attempt budget, and a `write` waits for `codemode plan review`. MCP gives a
-client no way to ask a server whether an earlier call took effect, so codemode
-never settles an unknown `write` by itself.
+Inside a section, writes with the same error text are shown together, with the
+text once. Each section that needs an action gives the exact command. A list
+of identities stops at 20 and says how many it hides; `--full` prints all.
 
-A tool error is recorded as unknown, not as a failure, because `isError` does
-not say whether part of the work was done. This is strict: a plain validation
-error from a `write` tool also needs a person. JSON-RPC "invalid params"
-(-32602) and "invalid request" (-32600) are unknown for the same reason: some
-servers raise them from a tool handler after the tool did its work.
+The `status` line is one of: `not approved`, `approved, not started`,
+`running, or interrupted before it could record its end`, `stopped after N
+failures`, `finished with N failures`, `stopped at the deadline`, `cancelled`,
+`stopped with writes left to send`, `done: every write is applied`,
+`done: N applied, N skipped`, and `edited after approval`. A plan is done when every write is applied,
+resolved as applied, or skipped. A session without a recorded end is running, or it
+was killed; the journal cannot tell which.
+
+### `--json`
+
+`plan`, `status`, and `apply` print the same document with `--json`:
+
+```json
+{"file": "tidy.plan.json",
+ "digest": "sha256:535c97e0b847670c96b5ded03c3dbaac6f49046e3b3e617362a750ee9e3bff6c",
+ "server": {"identity": "http://127.0.0.1:63656/mcp", "protocol": "2026-07-28",
+            "config": "sha256:d7f8edfc46ca5d48bc3e11541950e307fafbddb8e2ea5ae10068dcf2ac7857b1",
+            "file": "server.json", "file_state": "same"},
+ "summary": "Tidy the notes",
+ "state": "needs_attention",
+ "detail": "stopped after 1 failure",
+ "approval": {"approver": "demo", "approved_unix_ms": 1794410077119,
+              "approved_at": "2026-11-11 15:14 UTC", "concurrency": 1, "max_attempts": 3,
+              "digest": "sha256:535c97e0b847670c96b5ded03c3dbaac6f49046e3b3e617362a750ee9e3bff6c"},
+ "counts": {"total": 4, "applied": 1, "failed": 1, "no_reply": 0, "refused": 0,
+            "resolved": 0, "skipped": 0, "not_sent": 2},
+ "writes": [
+   {"id": "put-c", "tool": "notes.put", "state": "applied", "attempts": 1,
+    "error_code": null, "error_text": null, "answered": true, "next": "none"},
+   {"id": "log", "tool": "notes.append", "state": "failed", "attempts": 1,
+    "error_code": "tool_error", "error_text": "upstream said no", "answered": true,
+    "next": "resolve"},
+   {"id": "put-d", "tool": "notes.put", "state": "not_sent", "attempts": 0,
+    "error_code": null, "error_text": null, "answered": false, "next": "apply"},
+   {"id": "drop-b", "tool": "notes.delete", "state": "not_sent", "attempts": 0,
+    "error_code": null, "error_text": null, "answered": false, "next": "apply"}
+ ]}
+```
+
+- `state` is `not_approved`, `approved`, `running`, `done`, `needs_attention`
+  (a write waits for a person), `incomplete` (only `apply` has work left), or
+  `edited`. `approval` is `null` before an approval.
+- `server.file_state` is `same`, `changed`, or `unreadable`, as the command
+  found the server file. `server.command` is present for a stdio server whose
+  identity was shortened.
+- A write's `state` is `applied`, `failed`, `no_reply`, `refused`, `resolved`,
+  `skipped`, or `not_sent`. Its `next` is `none`, `apply`, `resolve`, or
+  `new_plan`. A skipped write has `next` `none`.
+- `error_code` and `error_text` describe the write's last attempt when it did
+  not succeed; see [codes](#codes). `answered` says whether an answer came
+  back for it. A write that a person resolved or skipped also has
+  `resolved_by`.
+- `plan --json` for a change list without operations prints
+  `{"file": null, "state": "no_changes", "writes": []}`.
+
+## Resolve
+
+When a write failed or got no answer, codemode does not know whether it
+changed anything. MCP gives a client no way to ask a server whether an earlier
+call took effect, so codemode never settles such a write by itself. A person
+checks the target and records what they found:
+
+```
+$ codemode resolve tidy.plan.json log --as not-applied
+Recording 1 write as not applied (reviewer demo):
+
+  log  notes.append
+    upstream said no
+
+Recorded 1 write. Next: codemode apply tidy.plan.json
+```
+
+- `--as applied`: the change is there. The write is done.
+- `--as not-applied`: the change is not there. `apply` sends the write again,
+  while attempts are left.
+- `--as skipped`: the change is not there, and the write must not be sent.
+  `apply` never sends it, in this run or a later one. This is final. Use it
+  for a write that can never succeed, for example one whose target was
+  deleted after `plan`.
+- Name writes by identity, or select them: `--errors` takes every write in
+  the `failed` section, and `--no-reply` every write in the `no reply`
+  section. Identities and selectors can be combined. A `refused` write is
+  resolved by its identity.
+- A write that was not sent yet can only be skipped, and only by its
+  identity. `--errors` and `--no-reply` never select it.
+- It prints what it selected, grouped by error text, and then records it.
+- It refuses a write that is applied, resolved, or skipped, and a write that
+  was not sent yet unless it is skipped. It also refuses while the plan is not
+  approved or was edited. It then records nothing.
+- When every write is applied, resolved as applied, or skipped, the plan is
+  done. `status` then says, for example, `done: 7 applied, 2 skipped`, and
+  `apply` exits with 0.
+- The reviewer is `--reviewer <name>`, or `$USER`, or `unknown`. It is
+  recorded as given and not authenticated.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Every write is applied, resolved as applied, or skipped, or there is nothing to change, or a command that only reads succeeded. |
+| 2 | Usage error, unreadable file, invalid plan, a server file that is not the plan's, a damaged or locked journal, or a server or program failure before any write. |
+| 3 | The plan needs attention: a write failed, has no answer, or was refused, or the run stopped with writes left to send. Also a journal failure after a run started, because a write may have been sent. |
+| 4 | Not approved: no approval was given, the digest was wrong, or the plan was edited after its approval. |
+
+`status` exits with 0 whenever it can read the plan, whatever the plan's
+state.
+
+## What happens to each answer
+
+| The server's answer to a write | Section | Next |
+| --- | --- | --- |
+| A result | applied | nothing |
+| A result with `isError: true` | failed | see below |
+| A result that asks for input (elicitation, sampling, roots) | failed | see below |
+| The connection could not be made; nothing was sent | not sent | sent again by a later `apply`, while attempts are left |
+| HTTP 429 | not sent | sent again in the same run after a wait; see [rate limits](#rate-limits) |
+| HTTP 400, 401, 403, 404, 405, 406, 413, 415, or 431, or JSON-RPC error -32700, -32601, -32020, -32021, -32022 | refused | fix the cause, then `resolve --as not-applied`, or `resolve --as skipped` |
+| Any other error or status, or a reply that is not valid MCP | failed | see below |
+| A broken stream, no reply, the deadline, cancellation, a killed `apply` | no reply | see below |
+
+For a **failed** write and for a write with **no reply**, the outcome is
+unknown. A repeatable write is sent again by a later `apply`, while attempts
+are left. A write waits for `codemode resolve`. When it must not be sent
+again, for example because its target is gone, record it `--as skipped`.
+
+A tool error is unknown, not a plain failure, because `isError` does not say
+whether part of the work was done. This is strict: a plain validation error
+from a write tool also needs a person. JSON-RPC "invalid params" (-32602) and
+"invalid request" (-32600) are unknown for the same reason: some servers raise
+them from a tool handler after the tool did its work.
 
 Connecting, agreeing on a version, and listing the tools must finish within
-60 seconds, before the session deadline starts.
+60 seconds, before the deadline starts.
 
 When codemode stops waiting, it tells the server as the specification
 requires: on Streamable HTTP it closes the connection, on stdio it sends
 `notifications/cancelled`. Neither proves that the tool had no effect.
+
+A second `apply` or a `resolve` cannot take a journal that an `apply` holds.
+It exits with 2 and says so. `status` can read meanwhile.
+
+### When a run stops early
+
+Every run sends its first write alone. The other writes start only after that
+write has an answer. So a server that fails every write receives one write,
+not as many as the approved concurrency.
+
+A run stops sending after `--max-failures` writes have ended without being
+applied. The default is 1: the run stops after the first one. A write counts
+when its attempt ended in any way but applied: failed, with no reply,
+refused, or not sent because the connection could not be made. A write that
+a rate limit only delayed does not count.
+
+- Writes already sent finish and are recorded as usual. After the first
+  write, up to `--concurrency` writes can be out when one fails.
+- A write that was not sent stays `not sent`, and a later `apply` sends it.
+- The run exits with 3, and the status line says `stopped after 1 failure`.
+
+Use `--max-failures 0` to send every write whatever happens. Each failed
+write then needs its own `resolve`; `resolve --errors` takes them together.
+
+### Rate limits
+
+An HTTP 429 answer to a `tools/call` means the server refused the request
+before it ran the tool. This holds for every tool class, so the attempt is
+recorded as not applied and the write is sent again in the same run:
+
+1. The run waits. The wait is the `Retry-After` header, given as seconds or
+   as an HTTP date. Without the header it is 1 second. The wait doubles for
+   each 429 in a row, and one wait is at most 60 seconds.
+2. During the wait the run sends nothing to the server, for any write. A rate
+   limit belongs to the credential, not to one write.
+3. After the wait the run sends one write first. When the server answers it
+   with anything but a 429, the others follow.
+
+Each time a write is sent it uses one of its approved attempts
+(`--max-attempts`, default 3). When the attempts are used, the write is
+`refused` with the code `rate_limited` and needs a new plan. When the wait
+would end after the deadline, the write stays `not sent`, and a later `apply`
+sends it. Both count for `--max-failures`.
+
+A stdio server has no status codes, so it cannot signal a rate limit this way.
+A 429 while codemode connects or lists the tools is a startup error; nothing
+was sent yet, so run the command again later.
+
+### Codes
+
+A write whose last attempt did not succeed has an `error_code` in
+`status --json`:
+
+| `error_code` | Meaning | `answered` | Section |
+| --- | --- | --- | --- |
+| `tool_error` | The tool's result has `isError: true` | true | failed |
+| `input_required` | The server asked for input codemode cannot give | true | failed |
+| `rpc_<code>` | A JSON-RPC error, for example `rpc_-32603` | true | refused for -32700, -32601, -32020, -32021, -32022; otherwise failed |
+| `http_<status>` | An HTTP error status without a JSON-RPC error, for example `http_500` | true | refused for 400, 401, 403, 404, 405, 406, 413, 415, 431; otherwise failed |
+| `rate_limited` | HTTP 429 | true | not sent; refused when every attempt is used |
+| `invalid_response` | A reply arrived that is not valid MCP | true | failed |
+| `no_response` | The request was sent and the connection broke or ended without a reply | false | no reply |
+| `deadline` | The deadline passed before a reply | false | no reply |
+| `cancelled` | The run was cancelled before a reply | false | no reply |
+| `not_sent` | The connection could not be made | false | not sent |
+| `not_a_write_tool`, `preconditions_unsupported` | codemode refused the write before sending it | false | refused |
+| `withdrawn` | The run ended after the attempt was recorded and before it was sent | false | not sent |
+| `no_result` | The journal has no answer for the attempt: `apply` was killed, or is still running | false | no reply |
+
+### The error text
+
+For a failed attempt the journal keeps the error text, cut to 1 KiB:
+
+- for a tool error, the text of the result;
+- for a JSON-RPC error, its code and message;
+- for an HTTP error, the status code with its standard name, for example
+  `the server returned HTTP status 500 Internal Server Error`. The body of an
+  HTTP error is not kept.
+
+The text is the server's own words. codemode puts no header, `env` value, or
+URL into it. A server could repeat a credential it received, so before the
+text is kept or shown, codemode replaces these values in it with `[redacted]`:
+each configured header value, each `env` value, and the URL's query and each
+of its values. A header or `env` value is also matched without its first
+words, so the token of `Bearer <token>` is replaced by itself.
+
+A value shorter than 8 bytes is not replaced. A short value is not a
+credential, and removing it would garble ordinary words. Do not rely on the
+replacement for a short header, `env`, or query value.
+
+The same replacement applies to every error a server answers while codemode
+connects and lists the tools, in `tools`, `plan`, and `apply`, and to each
+line a stdio server writes to its standard error.
+
+`status` and `apply` print the text in the section of the write, and as
+`error_text` with `--json`. `resolve` prints it for what it selects.
+
+The text is printed as it is, without JSON quotes, on its own indented line.
+A control, bidirectional, or invisible character is printed as an escape such
+as `\u{1b}`, so a line break in the text never starts a new line. Without
+`--full`, each run of spaces is printed as one space, and a text longer than
+240 characters is cut and shows its whole size in bytes. `--json` carries the
+exact text.
 
 ## Protocol support
 
@@ -212,7 +724,22 @@ needs one of them for a tool makes that call fail.
 with writes against production: label changes on one closed issue of this
 repository, [#3](https://github.com/jkomyno/codemode/issues/3), which ended
 with the labels it started with. Each write was compared with GitHub's own
-API.
+API. That check used the earlier commands (`codemode mcp ...`) at commit
+`9be2351`.
+
+**The five commands, also on 2026-11-11.** One production session with
+GitHub and Linear tools preloaded and `write_tools` naming three of them. A
+program read the open `bug` issues of this repository and the Linear teams,
+and `plan` wrote 9 writes: one `LINEAR_CREATE_LINEAR_ISSUE`, and for each of
+four issues one `GITHUB_ADD_LABELS_TO_AN_ISSUE` and one
+`GITHUB_CREATE_AN_ISSUE_COMMENT`. One issue was deleted on purpose before
+`apply`. The Linear ticket went first and alone. Seven writes were applied,
+and GitHub and Linear showed them. The two writes for the deleted issue came
+back as tool errors with GitHub's 410 and 404. `resolve --errors --as
+skipped` recorded them, and the next `apply` exited with 0 and "done: 7
+applied, 2 skipped". The issues were closed and the ticket was cancelled
+afterwards. A Linear read with `first: 250` was refused by Linear as too
+complex, and `first: 50` worked.
 
 A Tool Router session has an MCP URL. By default the session lists three
 meta-tools (`COMPOSIO_SEARCH_TOOLS`, `COMPOSIO_GET_TOOL_SCHEMAS`,
@@ -262,39 +789,50 @@ What the live checks showed:
   exist (GitHub 404), a removal of a label that is not on the issue (GitHub
   404), and a read without an active connection each came back as a tool
   error with `successful: false` inside. The program can catch the read
-  error; the failed write was recorded as unknown, not as applied.
+  error; the failed write was recorded with an unknown outcome, not as
+  applied.
 - **Writes.** An approved `GITHUB_ADD_LABELS_TO_AN_ISSUE` and an approved
   `GITHUB_REMOVE_A_LABEL_FROM_AN_ISSUE` each ran once and were recorded as
   applied. GitHub showed the label, then no label.
 - **A late effect.** The same addition ran again with a 400 ms deadline.
   codemode stopped waiting and recorded the outcome as unknown; GitHub showed
-  the label anyway. `mcp resume` sent the addition a second time, because its
-  class is repeatable write, and recorded it as applied. The issue held the
-  label once.
+  the label anyway. The next session sent the addition a second time, because
+  its class is repeatable write, and recorded it as applied. The issue held
+  the label once.
 
 Know this about `GITHUB_REMOVE_A_LABEL_FROM_AN_ISSUE`: the server marks it
 idempotent, but a repeat after a removal that worked returns GitHub's 404 as a
 tool error. So after a lost reply codemode sends it again, gets tool errors
-until the attempt budget is spent, and then asks for a review. That is safe,
+until the attempt budget is spent, and then waits for a person. That is safe,
 but it does not settle by itself.
 
 Not checked: a `write` class tool (for example a comment), a killed process,
-more than one operation in a plan, and every way an execution can fail. A
+more than one write in a plan, and every way an execution can fail. A
 failure that came back as a normal result with `successful: false` and no
 `isError` would be recorded as applied; none was seen.
 
 Keep `COMPOSIO_MULTI_EXECUTE_TOOL` out of plans. It is one opaque write to
 codemode, which cannot see or bind the tools it runs.
 
+
 ## Limits
 
-- No automatic reconciliation. A per-tool way to verify a write (which read
-  confirms it) is not part of MCP. Until a server can declare one, every
-  uncertain non-repeatable write goes to a person.
-- No preconditions and no destination scoping: MCP has no place for either, so
-  a plan that holds them is refused.
+- No automatic check of an unknown write. A per-tool way to verify a write
+  (which read confirms it) is not part of MCP. Until a server can declare one,
+  every uncertain write that is not repeatable goes to a person.
+- No preconditions and no restriction to one destination: MCP has no place for
+  either, so a change list that holds them is refused.
 - The account behind a server is not visible to the client. An approval binds
   the server identity, not a login. If the same URL starts to act as another
   account, codemode cannot tell.
+- The name of an approver or a reviewer is recorded as given. It is not
+  authenticated.
 - Argument checking before approval covers the top level of the schema only.
 - One server per plan.
+- A plan holds at most 10,000 writes and 32 MiB, and the arguments of one
+  write at most 64 KiB. Every journal commit is flushed to storage, so a run
+  takes time: 5,000 `notes.put` writes against the offline test server over
+  Streamable HTTP took about 53 seconds on one laptop with a debug build, with
+  at most 87 MiB of memory and a 4.5 MiB journal. Choose `--deadline-ms` with
+  that in mind; a run that reaches its deadline is continued by the next
+  `apply`.
