@@ -7,13 +7,14 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::client::{McpClient, McpError};
-use super::config::ServerConfig;
+use super::config::{ServerConfig, redact};
 use super::transport::RequestError;
 use super::wire::{self, Tool, ToolOutcome};
 use crate::plan::{Operation, Scope};
 use crate::recovery::{
-    Attempt, AttemptError, FailureEffect, ProbeContext, ProviderDeclaration, ReconcileMethod,
-    Reconciliation, RecoverableProvider, RecoveryContract, RepeatSafety, Retention,
+    Attempt, AttemptError, FailureEffect, ProbeContext, ProviderDeclaration, RateLimit,
+    ReconcileMethod, Reconciliation, RecoverableProvider, RecoveryContract, RepeatSafety,
+    Retention,
 };
 use crate::runtime::{CallContext, ProviderError, ToolCall, ToolProvider};
 
@@ -24,7 +25,7 @@ pub const MCP_PROVIDER: &str = "mcp";
 const SETUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// What codemode may do with a tool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolClass {
     /// A program may call it while it investigates. It cannot be in a plan.
@@ -42,6 +43,9 @@ struct Inner {
     identity: String,
     tools: BTreeMap<String, (Tool, ToolClass)>,
     warnings: Vec<String>,
+    /// Configured values that the server's text must not carry out; see
+    /// [`ServerConfig::redactions`].
+    redactions: Vec<String>,
 }
 
 /// One MCP server, connected, with its tools classified.
@@ -64,9 +68,18 @@ impl McpProvider {
     /// # Errors
     /// Returns an [`McpError`] when the server cannot be reached, shares no
     /// protocol revision, returns an unusable tool list, or does not finish
-    /// within 60 seconds, and when `read_tools` names a tool the server does
-    /// not list.
+    /// within 60 seconds, and when `read_tools` or `write_tools` names a tool
+    /// the server does not list.
     pub async fn connect(config: &ServerConfig) -> Result<Self, McpError> {
+        // What the server says while the client connects is its own words
+        // too: a configured value it repeats is removed, as in a tool error.
+        let redactions = config.redactions();
+        Self::connect_unredacted(config)
+            .await
+            .map_err(|error| error.redacted(&redactions))
+    }
+
+    async fn connect_unredacted(config: &ServerConfig) -> Result<Self, McpError> {
         let setup = async {
             let client = McpClient::connect(config).await?;
             let listed = client.list_tools().await?;
@@ -80,11 +93,17 @@ impl McpProvider {
                     SETUP_TIMEOUT.as_secs()
                 ))
             })??;
-        for name in &config.read_tools {
-            if !listed.iter().any(|tool| &tool.name == name) {
-                return Err(McpError::Protocol(format!(
-                    "\"read_tools\" names {name:?}, which the server does not list"
-                )));
+        let named = [
+            ("read_tools", Some(&config.read_tools)),
+            ("write_tools", config.write_tools.as_ref()),
+        ];
+        for (key, names) in named {
+            for name in names.into_iter().flatten() {
+                if !listed.iter().any(|tool| &tool.name == name) {
+                    return Err(McpError::Protocol(format!(
+                        "\"{key}\" names {name:?}, which the server does not list"
+                    )));
+                }
             }
         }
         let tools = listed
@@ -98,7 +117,11 @@ impl McpProvider {
             client,
             identity: config.identity(),
             tools,
-            warnings,
+            warnings: warnings
+                .iter()
+                .map(|warning| redact(warning, &config.redactions()))
+                .collect(),
+            redactions: config.redactions(),
         })))
     }
 
@@ -169,10 +192,37 @@ fn classify(tool: &Tool, config: &ServerConfig) -> ToolClass {
     }
 }
 
+/// An error in this client's own words.
 fn provider_error(code: impl Into<String>, message: impl std::fmt::Display) -> ProviderError {
     ProviderError {
         code: code.into(),
         message: wire::truncate(&message.to_string(), wire::MAX_MESSAGE_BYTES),
+    }
+}
+
+impl McpProvider {
+    /// An error whose text may hold the server's own words. A configured
+    /// header value, `env` value, or URL query that the server repeats is
+    /// replaced with `[redacted]` in the whole text, and only then is the text
+    /// cut to 1 KiB, so no part of such a value is kept.
+    fn server_error(&self, code: impl Into<String>, text: &str) -> ProviderError {
+        provider_error(code, redact(text, &self.0.redactions))
+    }
+
+    /// A failed request as an error: its machine code, and what the server
+    /// said or how far the request got.
+    fn request_error(&self, error: &RequestError) -> ProviderError {
+        let text = match error {
+            // The whole message, so that a value to remove is never cut in two.
+            RequestError::Rpc { error, .. } => {
+                format!(
+                    "the server returned error {}: {}",
+                    error.code, error.message
+                )
+            }
+            other => other.to_string(),
+        };
+        self.server_error(error.code(), &text)
     }
 }
 
@@ -182,13 +232,18 @@ async fn bounded<T>(
     context: &CallContext,
     call: impl Future<Output = T>,
 ) -> Result<T, ProviderError> {
+    let deadline = || provider_error("deadline", "the deadline passed before the server answered");
     tokio::select! {
         outcome = call => Ok(outcome),
-        () = tokio::time::sleep_until(context.deadline) => {
-            Err(provider_error("deadline", "the deadline passed before the server answered"))
-        }
+        () = tokio::time::sleep_until(context.deadline) => Err(deadline()),
+        // A run that reaches its deadline cancels its calls, so a
+        // cancellation after the deadline is the deadline.
         () = context.cancellation.cancelled() => {
-            Err(provider_error("cancelled", "cancelled before the server answered"))
+            if tokio::time::Instant::now() >= context.deadline {
+                Err(deadline())
+            } else {
+                Err(provider_error("cancelled", "cancelled before the server answered"))
+            }
         }
     }
 }
@@ -204,9 +259,9 @@ impl ToolProvider for McpProvider {
         };
         match bounded(&context, self.0.client.call_tool(tool, &call.arguments)).await? {
             Ok(ToolOutcome::Value(value)) => Ok(value),
-            Ok(ToolOutcome::ToolError(message)) => Err(provider_error("tool_error", message)),
+            Ok(ToolOutcome::ToolError(message)) => Err(self.server_error("tool_error", &message)),
             Ok(ToolOutcome::InputRequired) => Err(input_required()),
-            Err(error) => Err(provider_error(error.code(), &error)),
+            Err(error) => Err(self.request_error(&error)),
         }
     }
 }
@@ -241,7 +296,10 @@ impl RecoverableProvider for McpProvider {
             provider: MCP_PROVIDER.into(),
             account: self.0.identity.clone(),
             contracts,
-            retention: Retention::Metadata,
+            // The journal keeps each failed attempt's error text, so that a
+            // person can see why a write failed: the server's own words, cut
+            // to 1 KiB, with configured values removed.
+            retention: Retention::Summary,
             definitions,
         }
     }
@@ -263,14 +321,15 @@ impl RecoverableProvider for McpProvider {
     }
 
     async fn execute(&self, attempt: Attempt, context: CallContext) -> Result<Value, AttemptError> {
-        let refused = |error| AttemptError {
-            error,
-            effect: FailureEffect::Refused,
+        let failed = |effect| {
+            move |error| AttemptError {
+                error,
+                effect,
+                rate_limit: None,
+            }
         };
-        let unknown = |error| AttemptError {
-            error,
-            effect: FailureEffect::Unknown,
-        };
+        let refused = failed(FailureEffect::Refused);
+        let unknown = failed(FailureEffect::Unknown);
         let operation = &attempt.operation;
         let tool = match self.tool(&operation.tool) {
             Some((tool, ToolClass::RepeatableWrite | ToolClass::Write)) => tool,
@@ -292,16 +351,25 @@ impl RecoverableProvider for McpProvider {
             Ok(ToolOutcome::Value(value)) => Ok(value),
             // A tool error does not say whether part of the work was done.
             Ok(ToolOutcome::ToolError(message)) => {
-                Err(unknown(provider_error("tool_error", message)))
+                Err(unknown(self.server_error("tool_error", &message)))
             }
             Ok(ToolOutcome::InputRequired) => Err(unknown(input_required())),
             Err(error) => Err(AttemptError {
                 effect: match &error {
-                    RequestError::NotSent(_) => FailureEffect::NotApplied,
+                    // Nothing ran: the operation may be sent again.
+                    RequestError::NotSent(_) | RequestError::RateLimited { .. } => {
+                        FailureEffect::NotApplied
+                    }
                     error if error.not_processed() => FailureEffect::Refused,
                     _ => FailureEffect::Unknown,
                 },
-                error: provider_error(error.code(), &error),
+                rate_limit: match &error {
+                    RequestError::RateLimited { retry_after } => Some(RateLimit {
+                        retry_after: *retry_after,
+                    }),
+                    _ => None,
+                },
+                error: self.request_error(&error),
             }),
         }
     }

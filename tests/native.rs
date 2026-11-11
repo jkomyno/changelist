@@ -268,12 +268,6 @@ async fn provider_errors_and_bounded_facts_remain_observed_without_reply_deliver
             .iter()
             .all(|fact| Some(fact.received_ms) <= report.calls[0].finished_ms)
     );
-    let inspection = codemode::inspect(&report, &codemode::InspectOptions::default());
-    assert_eq!(
-        inspection.calls.rows[0].evidence,
-        codemode::Evidence::DeniedByProvider
-    );
-    assert!(inspection.timing.slowest[0].delivery_ms.is_none());
 }
 
 struct HoldingProvider(std::sync::Arc<tokio::sync::Notify>);
@@ -336,12 +330,6 @@ async fn deadline_and_cancellation_distinguish_running_and_queued_calls() {
             == CallOutcome::CancelledBeforeDispatch
             && record.started_ms.is_none()));
         assert!(cancellation.is_cancelled());
-        let inspection = codemode::inspect(&report, &codemode::InspectOptions::default());
-        assert_eq!(inspection.reconcile.items.len(), 1);
-        assert_eq!(
-            inspection.reconcile.items[0].evidence,
-            codemode::Evidence::UnknownAfterExecutorStart
-        );
     }
 }
 

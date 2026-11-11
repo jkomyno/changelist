@@ -48,6 +48,25 @@ impl fmt::Display for McpError {
 
 impl std::error::Error for McpError {}
 
+impl McpError {
+    /// The same error with every one of `values` replaced by `[redacted]` in
+    /// its text. A server can repeat a header or a query value it received in
+    /// the error it answers with, also while this client connects.
+    #[must_use]
+    pub(crate) fn redacted(self, values: &[String]) -> Self {
+        let clean = |text: String| super::config::redact(&text, values);
+        match self {
+            Self::Start(reason) => Self::Start(clean(reason)),
+            Self::Version(reason) => Self::Version(clean(reason)),
+            Self::Protocol(reason) => Self::Protocol(clean(reason)),
+            Self::Request { method, error } => Self::Request {
+                method,
+                error: Box::new(error.redacted(values)),
+            },
+        }
+    }
+}
+
 /// A connection to one MCP server.
 pub struct McpClient {
     transport: Transport,
@@ -83,7 +102,10 @@ impl McpClient {
                 Transport::Http(Http::new(url.clone(), headers).map_err(McpError::Start)?)
             }
             Endpoint::Stdio { command, args, env } => {
-                Transport::Stdio(Stdio::start(command, args, env).map_err(McpError::Start)?)
+                let redactions = config.redactions();
+                Transport::Stdio(
+                    Stdio::start(command, args, env, redactions).map_err(McpError::Start)?,
+                )
             }
         };
         let mut client = Self {
@@ -129,7 +151,11 @@ impl McpClient {
             Ok(Err(error @ RequestError::NotSent(_))) => {
                 return Err(McpError::Start(error.to_string()));
             }
-            Ok(Err(error @ RequestError::Http { status: 401 | 403 })) => {
+            // A refusal that an `initialize` request would meet as well.
+            Ok(Err(
+                error @ (RequestError::Http { status: 401 | 403 }
+                | RequestError::RateLimited { .. }),
+            )) => {
                 return Err(McpError::Request {
                     method: "server/discover",
                     error: Box::new(error),
@@ -322,4 +348,45 @@ fn no_common_version(supported: &[String]) -> McpError {
     McpError::Version(format!(
         "the server supports MCP {supported:?}; this client supports {MODERN_VERSION} and {LEGACY_VERSIONS:?}"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp::RpcError;
+
+    #[test]
+    fn a_connect_time_error_never_carries_a_configured_value() {
+        let values = vec![
+            "api_key=QUERYSECRET9876".to_string(),
+            "QUERYSECRET9876".to_string(),
+            "sk-live-SECRET".to_string(),
+        ];
+        let echo = "invalid credentials: authorization=Bearer sk-live-SECRET target=/mcp?api_key=QUERYSECRET9876";
+        let errors = [
+            McpError::Request {
+                method: "tools/list",
+                error: Box::new(RequestError::Rpc {
+                    status: Some(200),
+                    error: RpcError {
+                        code: -32001,
+                        message: echo.into(),
+                        data: None,
+                    },
+                }),
+            },
+            McpError::Start(echo.into()),
+            McpError::Version(echo.into()),
+            McpError::Protocol(echo.into()),
+        ];
+        for error in errors {
+            let text = error.redacted(&values).to_string();
+            assert!(
+                text.ends_with(
+                    "invalid credentials: authorization=Bearer [redacted] target=/mcp?[redacted]"
+                ),
+                "{text}"
+            );
+        }
+    }
 }

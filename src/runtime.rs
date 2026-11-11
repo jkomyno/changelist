@@ -20,6 +20,14 @@ use crate::embedded::MEMORY_LIMIT_EXIT_CODE;
 
 /// Largest frame from the guest (source and call frames), including its LF.
 pub(crate) const FRAME_BYTES: usize = 64 * 1024;
+/// Largest output frame from the guest, including its LF: a program may return
+/// a change list as large as the largest plan. A run's own
+/// [`RunConfig::max_output_bytes`] still bounds the value.
+pub(crate) const OUTPUT_FRAME_BYTES: usize = crate::plan::MAX_PLAN_BYTES + OUTPUT_ENVELOPE_BYTES;
+/// What every output frame starts with: the worker writes a frame's `type` first.
+const OUTPUT_FRAME_PREFIX: &[u8] = br#"{"type":"output","#;
+/// Bytes of an output frame around its value, including its LF.
+const OUTPUT_ENVELOPE_BYTES: usize = br#"{"type":"output","value":}"#.len() + 1;
 /// Largest reply frame to the guest, including its LF; the worker accepts up to 1 MiB.
 pub(crate) const REPLY_FRAME_BYTES: usize = 1024 * 1024;
 /// Version of the serialized [`RunReport`] format written by this build.
@@ -62,8 +70,8 @@ pub struct RunConfig {
     /// Worker executable that runs each program in a fresh process embedding V8,
     /// preferably an absolute path. It must call [`crate::run_embedded_worker`] when
     /// started with the single argument `--internal-embedded-guest`, as the `codemode`
-    /// binary does; a library caller's own executable need not. Required by [`run`]
-    /// and [`crate::serve_bridge`]; native [`run_calls`] starts no worker.
+    /// binary does; a library caller's own executable need not. Required by [`run`];
+    /// native [`run_calls`] starts no worker.
     pub worker: Option<PathBuf>,
     /// Tool names authorized by this host, independently of guest requests.
     /// Empty by default: every call is denied until the host authorizes its tool.
@@ -593,9 +601,6 @@ pub struct RunReport {
     pub clock: ClockInfo,
     /// Bytes moved, retained, and omitted, as Rust observed them.
     pub bytes: ByteTotals,
-    /// Bridge stdio accounting, present when the run was served over the bridge.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bridge: Option<BridgeTotals>,
     /// A bounded explanation of the terminal status; child stderr is discarded.
     pub diagnostic: Option<String>,
     /// How the worker exited when it ended without output and without being
@@ -611,15 +616,6 @@ pub struct WorkerExit {
     pub code: Option<i32>,
     /// Terminating signal number, when a signal ended the worker.
     pub signal: Option<i32>,
-}
-
-/// Bytes the bridge exchanged with its host, excluding the final report frame.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BridgeTotals {
-    /// Bytes of host frames read, including the start frame.
-    pub from_host: u64,
-    /// Bytes of call frames written to the host.
-    pub to_host: u64,
 }
 
 /// Failure to configure execution, launch a guest, or communicate with it.
@@ -800,12 +796,16 @@ fn validate_call(call: &ToolCall, config: &RunConfig) -> Result<(), ProviderErro
     Ok(())
 }
 
-/// Read one LF-terminated frame of at most `limit` bytes, keeping partial input
-/// in `bytes` so a cancelled read can resume.
-pub(crate) async fn frame(
+/// Read one LF-terminated frame of at most `limit` bytes, or of at most
+/// `output_limit` bytes when it is the output frame, keeping partial input in
+/// `bytes` so a cancelled read can resume. An output frame over its limit
+/// fails with [`io::ErrorKind::FileTooLarge`], any other frame over its limit
+/// with [`io::ErrorKind::InvalidData`].
+async fn frame(
     reader: &mut (impl AsyncBufRead + Unpin),
     bytes: &mut Vec<u8>,
     limit: usize,
+    output_limit: usize,
 ) -> io::Result<Option<Vec<u8>>> {
     loop {
         let available = reader.fill_buf().await?;
@@ -823,11 +823,25 @@ pub(crate) async fn frame(
             .iter()
             .position(|byte| *byte == b'\n')
             .map_or(available.len(), |position| position + 1);
-        if bytes.len() + count > limit {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("frame exceeds {limit} bytes"),
-            ));
+        let size = bytes.len() + count;
+        if size > limit {
+            let is_output = bytes
+                .iter()
+                .chain(&available[..count])
+                .take(OUTPUT_FRAME_PREFIX.len())
+                .eq(OUTPUT_FRAME_PREFIX);
+            if !is_output {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("frame exceeds {limit} bytes"),
+                ));
+            }
+            if size > output_limit {
+                return Err(io::Error::new(
+                    io::ErrorKind::FileTooLarge,
+                    format!("output frame exceeds {output_limit} bytes"),
+                ));
+            }
         }
         let finished = available[count - 1] == b'\n';
         bytes.extend_from_slice(&available[..count]);
@@ -1119,6 +1133,8 @@ enum Submission {
     Error(String),
     MemoryLimit(u64),
     InvalidFrame,
+    /// The output frame exceeds what the run may still return.
+    OutputTooLarge,
     Exhausted,
 }
 
@@ -1171,7 +1187,6 @@ async fn execute(
         elapsed_ms: 0,
         clock: ClockInfo::default(),
         bytes: ByteTotals::default(),
-        bridge: None,
         diagnostic: None,
         worker_exit: None,
     };
@@ -1206,6 +1221,11 @@ async fn execute(
     let mut source_exhausted = false;
     let mut input_closed = false;
     let mut partial_frame = Vec::new();
+    // An output frame may exceed a call frame, up to what the run may return.
+    let output_frame_bytes = config
+        .max_output_bytes
+        .saturating_add(OUTPUT_ENVELOPE_BYTES)
+        .clamp(FRAME_BYTES, OUTPUT_FRAME_BYTES);
     let mut io_failure = None;
     // How the worker itself ended, once known; later stops cannot replace it.
     let mut worker_end: Option<(RunStatus, String)> = None;
@@ -1344,9 +1364,11 @@ async fn execute(
             }
             result = async {
                 if let Some(output) = &mut output {
-                    let bytes = match frame(output, &mut partial_frame, FRAME_BYTES).await? {
-                        Some(bytes) => bytes,
-                        None => return Ok::<_, io::Error>((Submission::Exhausted, 0)),
+                    let bytes = match frame(output, &mut partial_frame, FRAME_BYTES, output_frame_bytes).await {
+                        Ok(Some(bytes)) => bytes,
+                        Ok(None) => return Ok::<_, io::Error>((Submission::Exhausted, 0)),
+                        Err(error) if error.kind() == io::ErrorKind::FileTooLarge => return Ok((Submission::OutputTooLarge, 0)),
+                        Err(error) => return Err(error),
                     };
                     let message = match serde_json::from_slice::<GuestFrame>(&bytes) {
                         Ok(GuestFrame::Call { id, tool, arguments }) => Submission::Call { guest_id: Some(id), tool, arguments },
@@ -1439,6 +1461,11 @@ async fn execute(
                     Submission::InvalidFrame => {
                         report.status = RunStatus::ProtocolError;
                         report.diagnostic = Some("invalid child stdout frame".into());
+                        break;
+                    }
+                    Submission::OutputTooLarge => {
+                        event_because(&mut report, start, None, "guest_finished", Some("output"));
+                        report.status = RunStatus::OutputLimit;
                         break;
                     }
                     Submission::Exhausted => {
@@ -1626,7 +1653,7 @@ async fn stopped_memory_limit(
     output: &mut BufReader<ChildStdout>,
     partial: &mut Vec<u8>,
 ) -> Option<u64> {
-    while let Ok(Some(bytes)) = frame(output, partial, FRAME_BYTES).await {
+    while let Ok(Some(bytes)) = frame(output, partial, FRAME_BYTES, FRAME_BYTES).await {
         if let Ok(GuestFrame::MemoryLimit { heap_limit_bytes }) = serde_json::from_slice(&bytes) {
             return Some(heap_limit_bytes);
         }
@@ -1706,17 +1733,47 @@ mod tests {
             .expect("first fragment is writable");
         tokio::select! {
             biased;
-            result = frame(&mut reader, &mut partial, 128) => panic!("partial frame completed: {result:?}"),
+            result = frame(&mut reader, &mut partial, 128, 128) => panic!("partial frame completed: {result:?}"),
             () = tokio::task::yield_now() => {}
         }
         sender
             .write_all(b"\"output\",\"value\":1}\n")
             .await
             .expect("second fragment is writable");
-        let bytes = frame(&mut reader, &mut partial, 128)
+        let bytes = frame(&mut reader, &mut partial, 128, 128)
             .await
             .expect("complete frame is readable")
             .expect("frame exists");
         assert_eq!(bytes, b"{\"type\":\"output\",\"value\":1}\n");
+    }
+
+    #[tokio::test]
+    async fn only_an_output_frame_may_exceed_the_frame_limit() {
+        let read = |text: String| async move {
+            let mut reader = BufReader::new(text.as_bytes());
+            frame(&mut reader, &mut Vec::new(), 64, 256).await
+        };
+        let output = |size: usize| {
+            format!(
+                "{{\"type\":\"output\",\"value\":\"{}\"}}\n",
+                "x".repeat(size)
+            )
+        };
+        let long = read(output(150)).await.expect("readable").expect("frame");
+        assert_eq!(long.len(), output(150).len());
+        let over = read(output(300)).await.expect_err("over the output limit");
+        assert_eq!(over.kind(), std::io::ErrorKind::FileTooLarge);
+        // A call frame, or anything else, keeps the smaller limit.
+        let call = format!(
+            "{{\"type\":\"call\",\"id\":1,\"tool\":\"{}\"}}\n",
+            "t".repeat(100)
+        );
+        let refused = read(call).await.expect_err("over the frame limit");
+        assert_eq!(refused.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(refused.to_string(), "frame exceeds 64 bytes");
+        let noise = read("x".repeat(100))
+            .await
+            .expect_err("over the frame limit");
+        assert_eq!(noise.kind(), std::io::ErrorKind::InvalidData);
     }
 }

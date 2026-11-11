@@ -7,8 +7,9 @@
 //!
 //! ```text
 //! codemode-mcp-fixture (--stdio | --http <addr-file>) [--era modern|legacy|dual] [--state <file>]
-//!                      [--ledger <file>] [--sse] [--require-header <Name>=<value>]
-//!                      [--page-size <n>] [--fault <tool>=<kind>[,<kind>...]]...
+//!                      [--ledger <file>] [--calls <file>] [--sse]
+//!                      [--require-header <Name>=<value>] [--page-size <n>]
+//!                      [--fault <tool>=<kind>[,<kind>...]]...
 //! ```
 //!
 //! # Flags
@@ -27,6 +28,10 @@
 //!   effect, synced before the reply is sent; `seq` continues from existing lines.
 //!   Effect tools are `notes.put`, `notes.append`, `notes.delete`, `plain.unannotated`;
 //!   a call is ledgered whenever it executes successfully (deleting a missing note too).
+//! - `--calls <file>`: appends `{"tool":"<name>","outcome":"<what>"}` for every
+//!   `tools/call` that passes protocol validation, whether or not it has an effect.
+//!   `outcome` is the fault kind that answered it, `rate-limited` for a call refused
+//!   inside a rate-limit window, or `run`.
 //! - `--sse` (HTTP only): `200` replies to requests use `text/event-stream`: a
 //!   `: keep-alive` comment, a `notifications/progress` event if the request set
 //!   `_meta.progressToken`, then `event: message` with the response.
@@ -64,8 +69,16 @@
 //!   `notifications/cancelled`, HTTP client disconnect) still applies its effect but
 //!   sends nothing.
 //! - `is-error`: no effect; result `isError: true`, text `upstream said no`.
+//! - `is-error-echo`: no effect; result `isError: true` whose text repeats what the
+//!   server received: over HTTP the request target and every request header value,
+//!   over stdio the value of the environment variable `CODEMODE_MCP_FIXTURE_ECHO`.
 //! - `rpc-error`: no effect; JSON-RPC `-32603` `internal error`.
 //! - `http-500`: no effect; HTTP `500` with a plain-text body (stdio: same as `rpc-error`).
+//! - `http-429[:<seconds>]`: no effect; HTTP `429` with a plain-text body. With
+//!   `<seconds>` it carries `Retry-After: <seconds>`, and for that long after the
+//!   answer every `tools/call` of any tool that arrives is refused the same way
+//!   with the time that is left, before its own fault is looked at (stdio: same as
+//!   `rpc-error`, no window).
 //! - `input-required`: no effect; an `input_required` result asking for `confirm`.
 //! - `sticky`: keep the fault for every later call.
 //!
@@ -95,7 +108,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -113,8 +126,12 @@ const MAX_BODY: usize = 1 << 20;
 const MAX_HEAD: usize = 64 * 1024;
 
 const USAGE: &str = "usage: codemode-mcp-fixture (--stdio | --http <addr-file>) \
-[--era modern|legacy|dual] [--state <file>] [--ledger <file>] [--sse] \
+[--era modern|legacy|dual] [--state <file>] [--ledger <file>] [--calls <file>] [--sse] \
 [--require-header <Name>=<value>] [--page-size <n>] [--fault <tool>=<kind>[,<kind>...]]...";
+/// The environment variable `is-error-echo` repeats on stdio.
+const ECHO_VARIABLE: &str = "CODEMODE_MCP_FIXTURE_ECHO";
+/// The pseudo header that holds an HTTP request's target.
+const TARGET: &str = ":target";
 
 // ---------------------------------------------------------------------------------------
 // Configuration
@@ -138,9 +155,28 @@ enum FaultAction {
     DropReply,
     NoEffectDrop,
     IsError,
+    IsErrorEcho,
     RpcError,
     Http500,
+    /// With the `Retry-After` seconds, when given.
+    Http429(Option<u64>),
     InputRequired,
+}
+
+impl FaultAction {
+    /// The name `--calls` records.
+    fn name(self) -> &'static str {
+        match self {
+            Self::DropReply => "drop-reply",
+            Self::NoEffectDrop => "no-effect-drop",
+            Self::IsError => "is-error",
+            Self::IsErrorEcho => "is-error-echo",
+            Self::RpcError => "rpc-error",
+            Self::Http500 => "http-500",
+            Self::Http429(_) => "http-429",
+            Self::InputRequired => "input-required",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -156,6 +192,7 @@ struct Config {
     era: Era,
     state: Option<PathBuf>,
     ledger: Option<PathBuf>,
+    calls: Option<PathBuf>,
     sse: bool,
     /// Lowercase header name and exact value.
     require_header: Option<(String, String)>,
@@ -170,6 +207,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Config, String> 
         era: Era::Modern,
         state: None,
         ledger: None,
+        calls: None,
         sse: false,
         require_header: None,
         page_size: None,
@@ -190,6 +228,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Config, String> 
             }
             "--state" => config.state = Some(value()?.into()),
             "--ledger" => config.ledger = Some(value()?.into()),
+            "--calls" => config.calls = Some(value()?.into()),
             "--sse" => config.sse = true,
             "--require-header" => {
                 let spec = value()?;
@@ -240,20 +279,29 @@ fn parse_fault(spec: &str) -> Result<(String, Fault), String> {
             "drop-reply" => FaultAction::DropReply,
             "no-effect-drop" => FaultAction::NoEffectDrop,
             "is-error" => FaultAction::IsError,
+            "is-error-echo" => FaultAction::IsErrorEcho,
             "rpc-error" => FaultAction::RpcError,
             "http-500" => FaultAction::Http500,
+            "http-429" => FaultAction::Http429(None),
             "input-required" => FaultAction::InputRequired,
             "sticky" => {
                 fault.sticky = true;
                 continue;
             }
             other => {
-                let ms = other
-                    .strip_prefix("delay-ms:")
-                    .and_then(|ms| ms.parse().ok())
-                    .ok_or_else(|| format!("unknown fault kind `{other}`"))?;
-                fault.delay_ms = Some(ms);
-                continue;
+                if let Some(seconds) = other.strip_prefix("http-429:") {
+                    let seconds = seconds
+                        .parse()
+                        .map_err(|_| format!("invalid Retry-After seconds in `{other}`"))?;
+                    FaultAction::Http429(Some(seconds))
+                } else {
+                    let ms = other
+                        .strip_prefix("delay-ms:")
+                        .and_then(|ms| ms.parse().ok())
+                        .ok_or_else(|| format!("unknown fault kind `{other}`"))?;
+                    fault.delay_ms = Some(ms);
+                    continue;
+                }
             }
         };
         if fault.action.replace(action).is_some() {
@@ -616,6 +664,8 @@ enum Reply {
     Empty(u16),
     /// HTTP status with a plain-text body (nothing on stdio).
     Text(u16, String),
+    /// HTTP `429` with a plain-text body and, when given, `Retry-After` seconds.
+    RateLimited(Option<u64>),
     /// Send nothing at all.
     Drop,
 }
@@ -700,7 +750,10 @@ struct State {
     notes: BTreeMap<String, String>,
     faults: HashMap<String, Fault>,
     ledger: Option<File>,
+    calls: Option<File>,
     seq: u64,
+    /// Until when every HTTP `tools/call` is refused with `429`.
+    limited_until: Option<Instant>,
     stdio_initialized: bool,
     sessions: HashSet<String>,
     /// Serialized ids of stdio requests named by `notifications/cancelled`.
@@ -737,6 +790,8 @@ struct PlannedCall {
     fault: Fault,
     style: Style,
     http: bool,
+    /// What `is-error-echo` repeats.
+    echo: String,
 }
 
 enum SessionCheck {
@@ -772,8 +827,24 @@ impl Server {
             }
             None => (None, 0),
         };
+        let calls = match &config.calls {
+            Some(path) => Some(
+                OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .map_err(|e| format!("{}: {e}", path.display()))?,
+            ),
+            None => None,
+        };
         let faults = std::mem::take(&mut config.faults);
-        Ok(Self::new(config, notes, faults, ledger, seq))
+        let mut server = Self::new(config, notes, faults, ledger, seq);
+        server
+            .state
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .calls = calls;
+        Ok(server)
     }
 
     fn new(
@@ -787,7 +858,9 @@ impl Server {
             notes,
             faults,
             ledger,
+            calls: None,
             seq,
+            limited_until: None,
             stdio_initialized: false,
             sessions: HashSet::new(),
             cancelled: HashSet::new(),
@@ -1055,14 +1128,48 @@ impl Server {
         {
             return reply.into();
         }
+        let http = matches!(transport, Transport::Http(_));
+        if http && let Some(left) = self.limited_for() {
+            self.log_call(name, "rate-limited");
+            return Reply::RateLimited(Some(left)).into();
+        }
+        let fault = self.take_fault(name);
+        self.log_call(name, fault.action.map_or("run", FaultAction::name));
+        let echo = match transport {
+            Transport::Http(headers) => {
+                let values: Vec<&str> = headers.0.iter().map(|(_, value)| value.as_str()).collect();
+                values.join(" ")
+            }
+            Transport::Stdio => std::env::var(ECHO_VARIABLE).unwrap_or_default(),
+        };
         Outcome::Call(PlannedCall {
             id: id.clone(),
             def,
             args,
-            fault: self.take_fault(name),
+            fault,
             style,
-            http: matches!(transport, Transport::Http(_)),
+            http,
+            echo,
         })
+    }
+
+    /// The whole seconds left of a rate-limit window, rounded up; `None` outside one.
+    fn limited_for(&self) -> Option<u64> {
+        let left = self
+            .lock()
+            .limited_until?
+            .checked_duration_since(Instant::now())?;
+        (!left.is_zero()).then(|| left.as_secs() + u64::from(left.subsec_nanos() > 0))
+    }
+
+    /// Appends one line to the `--calls` file.
+    fn log_call(&self, tool: &str, outcome: &str) {
+        if let Some(calls) = &mut self.lock().calls {
+            let line = json!({ "tool": tool, "outcome": outcome });
+            if let Err(error) = calls.write_all(format!("{line}\n").as_bytes()) {
+                eprintln!("{SERVER_NAME}: calls: {error}");
+            }
+        }
     }
 
     fn take_fault(&self, tool: &str) -> Fault {
@@ -1083,6 +1190,7 @@ impl Server {
             fault,
             style,
             http,
+            echo,
         } = call;
         match fault.action {
             Some(FaultAction::NoEffectDrop) => Reply::Drop,
@@ -1090,10 +1198,24 @@ impl Server {
                 &id,
                 call_result(style, &ToolOutput::error("upstream said no")),
             ),
+            Some(FaultAction::IsErrorEcho) => ok(
+                &id,
+                call_result(
+                    style,
+                    &ToolOutput::error(format!("upstream said no to {echo}")),
+                ),
+            ),
             Some(FaultAction::Http500) if http => {
                 Reply::Text(500, "injected upstream failure\n".into())
             }
-            Some(FaultAction::RpcError | FaultAction::Http500) => {
+            Some(FaultAction::Http429(seconds)) if http => {
+                if let Some(seconds) = seconds {
+                    // The window starts with this answer, after any delay.
+                    self.lock().limited_until = Some(Instant::now() + Duration::from_secs(seconds));
+                }
+                Reply::RateLimited(seconds)
+            }
+            Some(FaultAction::RpcError | FaultAction::Http500 | FaultAction::Http429(_)) => {
                 rpc_error(&id, 200, -32603, "internal error", None)
             }
             Some(FaultAction::InputRequired) => ok(&id, finish_result(style, input_required())),
@@ -1508,6 +1630,15 @@ fn render(reply: Reply, sse: bool, msg: &Value) -> Option<HttpResponse> {
             headers: Vec::new(),
             body: text.into_bytes(),
         }),
+        Reply::RateLimited(seconds) => Some(HttpResponse {
+            status: 429,
+            content_type: Some("text/plain; charset=utf-8"),
+            headers: seconds
+                .map(|seconds| ("Retry-After", seconds.to_string()))
+                .into_iter()
+                .collect(),
+            body: b"slow down\n".to_vec(),
+        }),
         Reply::Json {
             status,
             body,
@@ -1564,7 +1695,8 @@ fn read_head(reader: &mut impl BufRead) -> Result<Head, Option<u16>> {
         return Err(Some(400));
     };
     let path = target.split('?').next().unwrap_or_default().to_owned();
-    let mut headers = Vec::new();
+    // Kept with the headers, so that `is-error-echo` can repeat it.
+    let mut headers = vec![(TARGET.to_owned(), target.to_owned())];
     loop {
         let line = read_line(reader, &mut budget)?;
         if line.is_empty() {
@@ -1629,6 +1761,7 @@ fn reason(status: u16) -> &'static str {
         406 => "Not Acceptable",
         411 => "Length Required",
         413 => "Content Too Large",
+        429 => "Too Many Requests",
         431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
         _ => "Unknown",
@@ -1681,6 +1814,7 @@ mod tests {
             era,
             state: None,
             ledger: None,
+            calls: None,
             sse: false,
             require_header: None,
             page_size,
@@ -1922,6 +2056,89 @@ mod tests {
         assert_eq!(server.lock().notes["a"], "t");
     }
 
+    /// One `tools/call` over HTTP with the headers the modern era requires.
+    fn call_over_http(server: &Server, tool: &str) -> Reply {
+        let msg = modern_request(
+            1,
+            "tools/call",
+            json!({ "name": tool, "arguments": { "id": "a", "text": "t" } }),
+        );
+        let headers = headers(&[
+            (TARGET, "/mcp?tenant=acme"),
+            ("Accept", "application/json, text/event-stream"),
+            ("MCP-Protocol-Version", MODERN),
+            ("Mcp-Method", "tools/call"),
+            ("Mcp-Name", tool),
+            ("X-Api-Key", "s3cret"),
+        ]);
+        server.resolve(server.handle(&msg, &Transport::Http(&headers)))
+    }
+
+    #[test]
+    fn a_rate_limit_with_seconds_refuses_every_call_until_it_ends() {
+        let stdio = server(Era::Modern, None, &["notes.put=http-429:30"]);
+        let server = server(
+            Era::Modern,
+            None,
+            &["notes.append=http-429", "notes.put=http-429:30"],
+        );
+        // Without seconds: one refusal, no Retry-After, no window.
+        assert!(matches!(
+            call_over_http(&server, "notes.append"),
+            Reply::RateLimited(None)
+        ));
+        assert!(matches!(
+            call_over_http(&server, "notes.append"),
+            Reply::Json { status: 200, .. }
+        ));
+        // With seconds: the window covers every tool.
+        assert!(matches!(
+            call_over_http(&server, "notes.put"),
+            Reply::RateLimited(Some(30))
+        ));
+        for tool in ["notes.append", "notes.put"] {
+            assert!(matches!(
+                call_over_http(&server, tool),
+                Reply::RateLimited(Some(left)) if (1..=30).contains(&left)
+            ));
+        }
+        assert_eq!(server.lock().notes["a"], "t\n", "nothing ran inside it");
+        server.lock().limited_until = Some(Instant::now());
+        assert!(matches!(
+            call_over_http(&server, "notes.put"),
+            Reply::Json { status: 200, .. }
+        ));
+        assert_eq!(server.lock().notes["a"], "t");
+
+        // stdio has no status codes: the fault is a JSON-RPC error.
+        let msg = modern_request(
+            2,
+            "tools/call",
+            json!({ "name": "notes.put", "arguments": { "id": "a", "text": "t" } }),
+        );
+        for expected in [json!(-32603), Value::Null] {
+            assert_eq!(
+                body(&stdio, &msg, &Transport::Stdio).1["error"]["code"],
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn an_echoed_error_repeats_the_request() {
+        let server = server(Era::Modern, None, &["notes.put=is-error-echo"]);
+        let Reply::Json { body, .. } = call_over_http(&server, "notes.put") else {
+            panic!("expected a result");
+        };
+        assert_eq!(body["result"]["isError"], true);
+        let text = body["result"]["content"][0]["text"].as_str().expect("text");
+        assert!(
+            text.starts_with("upstream said no to /mcp?tenant=acme ") && text.ends_with(" s3cret"),
+            "{text}"
+        );
+        assert!(server.lock().notes.is_empty());
+    }
+
     #[test]
     fn modern_rejects_bad_metadata_and_versions() {
         let server = server(Era::Modern, None, &[]);
@@ -2023,6 +2240,13 @@ mod tests {
         );
         assert!(args("--stdio --sse").is_err());
         assert!(args("--stdio --fault nope=is-error").is_err());
+        assert!(args("--stdio --fault notes.put=http-429:soon").is_err());
+        let limited = args("--stdio --calls c --fault notes.put=http-429:2,sticky").expect("valid");
+        assert_eq!(
+            limited.faults["notes.put"].action,
+            Some(FaultAction::Http429(Some(2)))
+        );
+        assert_eq!(limited.calls.as_deref(), Some(Path::new("c")));
         assert!(args("--stdio --fault notes.put=is-error,rpc-error").is_err());
         assert!(args("--era modern").is_err());
     }

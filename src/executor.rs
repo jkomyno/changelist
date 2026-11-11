@@ -10,6 +10,14 @@
 //! arguments, records the intent durably, calls the trusted provider, and
 //! records the observation durably before replying.
 //!
+//! Three rules hold across the calls of one session. The first operation a
+//! session dispatches, in plan order, is sent alone, and the others start only
+//! after it has an answer.
+//! Once [`SessionOptions::max_failures`] operations have ended without being
+//! applied, no further operation is sent. After a provider's rate limit
+//! refuses an attempt, nothing is sent until the wait is over; then one
+//! attempt goes first, and the rest follow once it is answered.
+//!
 //! Recovery never reruns an agent's program: it works only from the approved list.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -19,16 +27,17 @@ use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{Value, json};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::task::JoinSet;
 use tokio::time::{self, Instant};
 
 use crate::journal::{History, Journal, JournalError, Record, SessionKind, storage};
 use crate::plan::{FrozenPlan, Operation};
+use crate::plan_inspect::{AttemptLine, attempt_line};
 use crate::recovery::{
-    Approval, Assessment, Attempt, Fact, NextStep, Observed, ProbeContext, ReconcileMethod,
-    RecoverableProvider, RecoveryContract, RecoveryPolicy, RepeatSafety, Retention,
-    approval_binding, assess, machine_code,
+    Approval, Assessment, Attempt, Fact, FailureEffect, NextStep, Observed, ProbeContext,
+    ReconcileMethod, RecoverableProvider, RecoveryContract, RecoveryPolicy, RepeatSafety,
+    Retention, approval_binding, assess, machine_code,
 };
 use crate::runtime::{
     CallContext, NativeCall, ProviderError, RunCancellation, RunConfig, RunError, RunReport,
@@ -45,6 +54,14 @@ pub struct SessionOptions {
     /// call. Not part of the approval, because stopping earlier can only reduce
     /// effects. Defaults to 300 seconds.
     pub deadline: Duration,
+    /// Stop sending operations once this many have ended the session without
+    /// being applied: the provider failed or refused the attempt, its outcome
+    /// is unknown, or a rate limit used up the attempt budget or outlasts the
+    /// deadline. Attempts already sent finish and are recorded; operations not
+    /// yet sent stay as they were, for a later `resume`. `0` never stops.
+    /// Defaults to 1. Not part of the approval, because stopping earlier can
+    /// only reduce effects.
+    pub max_failures: usize,
 }
 
 impl Default for SessionOptions {
@@ -52,6 +69,7 @@ impl Default for SessionOptions {
         Self {
             kind: SessionKind::Run,
             deadline: Duration::from_secs(300),
+            max_failures: 1,
         }
     }
 }
@@ -66,6 +84,23 @@ pub struct OperationStatus {
     /// What is known and what may happen next.
     #[serde(flatten)]
     pub assessment: Assessment,
+    /// The operation's latest attempt, from any session, with the error
+    /// message the journal kept; absent before the first attempt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_attempt: Option<AttemptLine>,
+}
+
+/// How a session stopped before it sent every operation it could have.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StoppedEarly {
+    /// The session's [`SessionOptions::max_failures`].
+    pub max_failures: usize,
+    /// The operations whose end without being applied reached the limit, in
+    /// the order they ended.
+    pub tripped_by: Vec<String>,
+    /// Operations the session then held back: it did not send them, or did
+    /// not send them again after a rate limit. A later `resume` sends them.
+    pub not_sent: usize,
 }
 
 /// Wall-clock phases of a session, in milliseconds.
@@ -88,9 +123,13 @@ pub struct SessionOutcome {
     pub session: u64,
     /// `completed`, `needs_review`, `incomplete`, `interrupted`, or `refused`.
     pub status: String,
-    /// Why a session was refused or interrupted.
+    /// Why a session was refused, was interrupted, or stopped early.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Set when the session held operations back after
+    /// [`SessionOptions::max_failures`] of them ended without being applied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stopped_early: Option<StoppedEarly>,
     /// What stopped an `interrupted` session: [`RunStatus::Cancelled`],
     /// [`RunStatus::Deadline`], or another status that ended its dispatch run.
     #[serde(skip)]
@@ -110,7 +149,8 @@ pub struct SessionOutcome {
 }
 
 impl SessionOutcome {
-    /// Process exit status for `codemode plan run|resume`: 0 when `completed`;
+    /// A process exit status for a host that runs one session per process: 0
+    /// when `completed`;
     /// for `interrupted`, the [`RunStatus::exit_code`] of [`Self::interruption`]
     /// (124 for a deadline and 130 for cancellation, whether or not dispatch
     /// began), never below 1, and 1 when the interruption is unknown; 3 for
@@ -123,6 +163,7 @@ impl SessionOutcome {
     ///     session: 1,
     ///     status: "interrupted".into(),
     ///     detail: None,
+    ///     stopped_early: None,
     ///     interruption: Some(RunStatus::Deadline),
     ///     probed: 0,
     ///     dispatched: 0,
@@ -214,7 +255,10 @@ pub fn assess_history(
     let approval = history.approvals.last();
     let policy = approval.map(|approval| approval.policy).unwrap_or_default();
     let mut facts: HashMap<&str, Vec<(u64, Fact<'_>)>> = HashMap::new();
+    // Attempts are in intent order, so the last one seen is the latest.
+    let mut latest = HashMap::new();
     for attempt in &history.attempts {
+        latest.insert(attempt.operation.as_str(), attempt);
         let list = facts.entry(attempt.operation.as_str()).or_default();
         list.push((
             attempt.ordinal,
@@ -261,6 +305,9 @@ pub fn assess_history(
                     &policy,
                     probed_this_session.contains(&operation.id),
                 ),
+                last_attempt: latest
+                    .get(operation.id.as_str())
+                    .map(|attempt| attempt_line(attempt, true)),
             }
         })
         .collect()
@@ -413,6 +460,22 @@ async fn after_queued_writes<T: Send + 'static>(
 /// (`unobserved`). A probe it cuts off stays charged and is recorded as
 /// `probe_timeout`; an authorization it cuts off ends the session before dispatch.
 ///
+/// The first operation the session dispatches, in plan order, is sent alone;
+/// the others start once it has an answer, so that a provider that fails
+/// every attempt receives one attempt, not as many as the approved
+/// concurrency. The session stops
+/// sending operations once `options.max_failures` of them
+/// have ended without being applied; [`SessionOutcome::stopped_early`] then
+/// says which ones and how many operations were held back. An attempt a
+/// provider's rate limit refused ([`AttemptError::rate_limit`]) is sent again
+/// in the same session, as a new attempt within the approved budget, after the
+/// wait the provider asked for: 1 second when it named none, doubled for each
+/// rate-limit answer in a row, and at most 60 seconds. Nothing else is sent to
+/// the provider during the wait. An operation whose budget is spent, or whose
+/// wait would pass the deadline, ends as not applied.
+///
+/// [`AttemptError::rate_limit`]: crate::AttemptError::rate_limit
+///
 /// # Errors
 /// Returns [`SessionError::Refused`] (already recorded in the journal) when no
 /// approval matches the current plan, provider declaration, and policy, or a
@@ -497,6 +560,10 @@ pub async fn run_session<P: RecoverableProvider>(
 
     let dispatch_started = Instant::now();
     let mut trace = None;
+    // The first operation of the list goes alone, whichever call the
+    // scheduler starts first.
+    let first = dispatch.first().map(|(operation, _)| operation.id.clone());
+    let gate = Arc::new(Gate::new(options.max_failures, first));
     interrupted = interrupted.or_else(|| stopped(&cancellation, deadline));
     if interrupted.is_none() && !dispatch.is_empty() {
         let report = dispatch_run(
@@ -508,6 +575,7 @@ pub async fn run_session<P: RecoverableProvider>(
             session,
             deadline,
             &cancellation,
+            &gate,
         )
         .await;
         let report = match report {
@@ -560,14 +628,32 @@ pub async fn run_session<P: RecoverableProvider>(
         None => "incomplete",
     }
     .to_string();
-    let detail = interrupted.map(|status| {
-        let status = status.as_str();
-        if trace.is_some() {
-            format!("the dispatch run ended with {status}")
-        } else {
-            format!("the session ended with {status} before dispatch")
+    let stopped_early = gate.stopped_early();
+    let detail = match (&interrupted, &stopped_early) {
+        (Some(status), _) => {
+            let status = status.as_str();
+            Some(if trace.is_some() {
+                format!("the dispatch run ended with {status}")
+            } else {
+                format!("the session ended with {status} before dispatch")
+            })
         }
-    });
+        (None, Some(stop)) => {
+            // The outcome lists every operation; a sentence names a few.
+            let named = stop.tripped_by.len().min(3);
+            let more = match stop.tripped_by.len() - named {
+                0 => String::new(),
+                more => format!(", and {more} more"),
+            };
+            Some(format!(
+                "stopped early: {} not applied ({}{more}); {} not sent",
+                stop.tripped_by.len(),
+                stop.tripped_by[..named].join(", "),
+                stop.not_sent
+            ))
+        }
+        (None, None) => None,
+    };
     let stored = (status.clone(), detail.clone(), trace.clone());
     journaled(&journal, move |journal| {
         let (status, detail, trace) = stored;
@@ -578,6 +664,7 @@ pub async fn run_session<P: RecoverableProvider>(
         session,
         status,
         detail,
+        stopped_early,
         interruption: interrupted,
         probed: probed.len(),
         dispatched,
@@ -812,6 +899,7 @@ async fn dispatch_run<P: RecoverableProvider>(
     session: u64,
     deadline: Instant,
     cancellation: &RunCancellation,
+    gate: &Arc<Gate>,
 ) -> Result<RunReport, RunError> {
     let calls: Vec<NativeCall> = operations
         .iter()
@@ -831,50 +919,256 @@ async fn dispatch_run<P: RecoverableProvider>(
         timeout_ms: remaining,
         max_calls: operations.len(),
         max_concurrency: policy.concurrency,
+        // The run's results are this module's own short replies, so their
+        // budget grows with the plan instead of ending a large one.
+        max_output_bytes: operations
+            .len()
+            .saturating_mul(REPLY_BYTES)
+            .max(RunConfig::default().max_output_bytes),
         allowed_tools: tools.into_iter().collect(),
         ..RunConfig::default()
     };
-    let journal_id = journal.id();
     let entries = operations
         .into_iter()
-        .map(|(operation, number)| {
-            let key = format!("{journal_id}-{}-{number}", operation.id);
-            (
-                operation.id.clone(),
-                Entry {
-                    operation,
-                    number,
-                    key,
-                },
-            )
-        })
+        .map(|(operation, number)| (operation.id.clone(), Entry { operation, number }))
         .collect();
     let journaling = JournalingProvider {
+        journal_id: journal.id(),
         journal: journal.clone(),
         provider: Arc::clone(provider),
         entries,
         dispatched: Mutex::new(HashSet::new()),
         session,
         retention,
+        max_attempts: policy.max_attempts,
+        gate: Arc::clone(gate),
         cancellation: cancellation.clone(),
     };
     run_calls(&calls, config, journaling, cancellation.clone()).await
+}
+
+/// Most serialized bytes of one reply this module gives the runtime for a call:
+/// an operation identity of at most 64 bytes with an attempt number, or a
+/// machine code of at most 64 bytes with a fixed message.
+const REPLY_BYTES: usize = 256;
+/// The wait after a rate limit when the provider names none.
+const RATE_LIMIT_WAIT: Duration = Duration::from_secs(1);
+/// The longest wait after one rate-limit answer.
+const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(60);
+/// The error code of a call that ends because of a rate limit.
+const RATE_LIMITED: &str = "rate_limited";
+
+/// The wait after the `repeats`-th rate-limit answer in a row (1 for the first):
+/// what the provider asked for, or one second, doubled for each repeat, and at
+/// most 60 seconds.
+fn rate_limit_wait(retry_after: Option<Duration>, repeats: u32) -> Duration {
+    let doublings = repeats.saturating_sub(1).min(6);
+    retry_after
+        .unwrap_or(RATE_LIMIT_WAIT)
+        .saturating_mul(1 << doublings)
+        .min(MAX_RATE_LIMIT_WAIT)
+}
+
+/// What a session's calls share: the first attempt that goes alone, the
+/// failures that stop the session early, and the wait after a rate limit.
+struct Gate {
+    /// [`SessionOptions::max_failures`].
+    max_failures: usize,
+    /// The operation whose first attempt is sent alone: the first one the
+    /// session dispatches. `None` when the session dispatches nothing.
+    first: Option<String>,
+    state: Mutex<GateState>,
+    /// Bumped after every change a waiting call must look at.
+    changed: watch::Sender<u64>,
+}
+
+#[derive(Default)]
+struct GateState {
+    /// Operations that ended without being applied, in the order they ended.
+    failed: Vec<String>,
+    /// Calls turned away after the session stopped.
+    held: usize,
+    /// Rate-limit answers in a row; 0 when the provider is not limiting.
+    limited: u32,
+    /// Nothing is sent before this.
+    resume_at: Option<Instant>,
+    /// Whether the one attempt sent alone is still out: the first attempt of
+    /// the session, or the first one after a rate-limit wait.
+    probing: bool,
+    /// Whether any attempt of this session has an answer. Until one has,
+    /// only the first attempt is sent.
+    answered: bool,
+}
+
+/// What a call may do now.
+enum Admission {
+    /// Send an attempt. `probe` marks the one attempt sent alone: the first
+    /// of the session, or the first after a rate-limit wait. Its answer
+    /// decides whether the others follow.
+    Send { probe: bool },
+    /// The session stopped early: send nothing.
+    Stopped,
+    /// The rate-limit wait ends after the session deadline: send nothing.
+    Paused,
+    /// Cancellation or the deadline ended the wait.
+    Ended,
+}
+
+impl Gate {
+    fn new(max_failures: usize, first: Option<String>) -> Self {
+        let state = GateState {
+            // Without a first operation nothing waits for its answer.
+            answered: first.is_none(),
+            ..GateState::default()
+        };
+        Self {
+            max_failures,
+            first,
+            state: Mutex::new(state),
+            changed: watch::Sender::new(0),
+        }
+    }
+
+    fn announce(&self) {
+        self.changed.send_modify(|version| *version += 1);
+    }
+
+    fn stopped(&self, state: &GateState) -> bool {
+        self.max_failures > 0 && state.failed.len() >= self.max_failures
+    }
+
+    /// Wait until an attempt of `operation` may be sent, or until none may.
+    async fn admit(&self, context: &CallContext, operation: &str) -> Admission {
+        // Subscribed before the state is read, so no change is missed.
+        let mut changes = self.changed.subscribe();
+        loop {
+            let resume_at = {
+                let mut state = lock(&self.state);
+                if self.stopped(&state) {
+                    state.held += 1;
+                    return Admission::Stopped;
+                }
+                if state.limited == 0 {
+                    if state.answered {
+                        return Admission::Send { probe: false };
+                    }
+                    if !state.probing && self.first.as_deref() == Some(operation) {
+                        state.probing = true;
+                        return Admission::Send { probe: true };
+                    }
+                    // The first operation has no answer yet.
+                    None
+                } else {
+                    match state.resume_at.filter(|at| *at > Instant::now()) {
+                        Some(at) if at >= context.deadline => return Admission::Paused,
+                        Some(at) => Some(at),
+                        None if !state.probing => {
+                            state.probing = true;
+                            return Admission::Send { probe: true };
+                        }
+                        None => None,
+                    }
+                }
+            };
+            let wait = async {
+                match resume_at {
+                    Some(at) => time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                biased;
+                () = context.cancellation.cancelled() => return Admission::Ended,
+                () = time::sleep_until(context.deadline) => return Admission::Ended,
+                _ = changes.changed() => {}
+                () = wait => {}
+            }
+        }
+    }
+
+    /// An attempt sent at `sent` has an answer, or ended without one.
+    ///
+    /// `rate_limit` is set when a rate limit refused it, with the wait the
+    /// provider asked for: nothing is sent until the wait it starts, or
+    /// extends, is over. Any other end of the one attempt sent alone lets the
+    /// others follow. `failed` names the operation when it ended this session
+    /// without being applied. All of it is one change, so that no waiting
+    /// call is admitted between the answer and the count of the failure.
+    fn observed(
+        &self,
+        probe: bool,
+        sent: Instant,
+        rate_limit: Option<Option<Duration>>,
+        failed: Option<&str>,
+    ) {
+        let mut state = lock(&self.state);
+        state.answered = true;
+        if probe {
+            state.probing = false;
+        }
+        match rate_limit {
+            Some(retry_after) => {
+                // Attempts sent before the wait began were refused by the same
+                // limit as the attempt that began it; they do not count as a
+                // repeat.
+                if state.resume_at.is_none_or(|at| sent >= at) {
+                    state.limited += 1;
+                }
+                let resume_at = Instant::now() + rate_limit_wait(retry_after, state.limited);
+                state.resume_at = Some(state.resume_at.map_or(resume_at, |at| at.max(resume_at)));
+            }
+            // The answer to the attempt sent first after a wait shows that
+            // the provider is no longer limiting.
+            None if probe => {
+                state.limited = 0;
+                state.resume_at = None;
+            }
+            None => {}
+        }
+        if let Some(operation) = failed {
+            state.failed.push(operation.to_string());
+        }
+        drop(state);
+        self.announce();
+    }
+
+    /// `operation` ended this session without being applied and without
+    /// being sent.
+    fn failed(&self, operation: &str) {
+        lock(&self.state).failed.push(operation.to_string());
+        self.announce();
+    }
+
+    /// How the session stopped early, if it held any operation back.
+    fn stopped_early(&self) -> Option<StoppedEarly> {
+        let state = lock(&self.state);
+        (state.held > 0).then(|| StoppedEarly {
+            max_failures: self.max_failures,
+            tripped_by: state
+                .failed
+                .iter()
+                .take(self.max_failures)
+                .cloned()
+                .collect(),
+            not_sent: state.held,
+        })
+    }
 }
 
 /// One operation approved for dispatch in this run.
 #[derive(Clone)]
 struct Entry {
     operation: Operation,
-    /// The attempt number this dispatch records.
+    /// The attempt number of its first dispatch in this run.
     number: u32,
-    /// The attempt key.
-    key: String,
 }
 
 /// The runtime's provider for a dispatch run: it journals each attempt around the
 /// trusted provider's call.
 struct JournalingProvider<P> {
     journal: Shared,
+    /// The journal's identity, which starts every attempt key.
+    journal_id: String,
     provider: Arc<P>,
     /// Operation identity -> its entry.
     entries: HashMap<String, Entry>,
@@ -882,6 +1176,9 @@ struct JournalingProvider<P> {
     session: u64,
     /// What the journal keeps of the provider's replies, from the approval.
     retention: Retention,
+    /// The approved number of dispatches of one operation across all sessions.
+    max_attempts: u32,
+    gate: Arc<Gate>,
     cancellation: RunCancellation,
 }
 
@@ -936,59 +1233,105 @@ impl<P: RecoverableProvider> ToolProvider for JournalingProvider<P> {
     async fn execute(&self, call: ToolCall, context: CallContext) -> Result<Value, ProviderError> {
         let Entry {
             operation,
-            number,
-            key,
+            mut number,
         } = self.claim(&call)?;
         let id = operation.id.clone();
-        let session = self.session;
-        let call_id = call.id;
-        let intent = Record::intent(&key, &id, number, session, Some(call_id));
-        let recorded = committed(&self.journal, intent).await;
-        if let Err(error) = recorded {
-            return Err(self.journal_failed(&error, "the dispatch intent was not recorded"));
-        }
-        if context.cancellation.is_cancelled() || Instant::now() >= context.deadline {
-            if let Ok(withdrawn) =
-                Record::observation(&key, Observed::Withdrawn, Retention::Metadata)
-            {
-                let _ = committed(&self.journal, withdrawn).await;
+        // Whether a rate limit refused an earlier attempt of this call.
+        let mut limited = false;
+        loop {
+            let probe = match self.gate.admit(&context, &id).await {
+                Admission::Send { probe } => probe,
+                Admission::Stopped => {
+                    return Err(refusal(
+                        "stopped_early",
+                        "the session stopped sending operations before this one was sent",
+                    ));
+                }
+                Admission::Paused => {
+                    if limited {
+                        self.gate.failed(&id);
+                    }
+                    return Err(refusal(
+                        RATE_LIMITED,
+                        "the provider's rate limit lasts beyond the session deadline",
+                    ));
+                }
+                Admission::Ended => {
+                    return Err(refusal("cancelled", "the run stopped before dispatch"));
+                }
+            };
+            let key = format!("{}-{id}-{number}", self.journal_id);
+            let intent = Record::intent(&key, &id, number, self.session, Some(call.id));
+            if let Err(error) = committed(&self.journal, intent).await {
+                return Err(self.journal_failed(&error, "the dispatch intent was not recorded"));
             }
-            return Err(refusal("cancelled", "the run stopped before dispatch"));
-        }
-        let attempt = Attempt {
-            operation,
-            key: key.clone(),
-            number,
-        };
-        // The run's deadline drops this future; the session then records the
-        // attempt as unobserved, which is unknown.
-        let (observed, reply) = match self.provider.execute(attempt, context).await {
-            Ok(value) => (
-                Observed::Succeeded {
-                    bytes: serde_json::to_vec(&value).map_or(0, |bytes| bytes.len() as u64),
-                },
-                Ok(json!({"operation": id, "attempt": number})),
-            ),
-            // Only a machine code reaches the trace, never the provider's message.
-            Err(error) => {
-                let reply = Err(refusal(
-                    machine_code(&error.error.code),
-                    "the provider failed",
-                ));
-                let observed = Observed::Failed {
-                    error: error.error,
-                    effect: error.effect,
-                };
-                (observed, reply)
+            if context.cancellation.is_cancelled() || Instant::now() >= context.deadline {
+                if let Ok(withdrawn) =
+                    Record::observation(&key, Observed::Withdrawn, Retention::Metadata)
+                {
+                    let _ = committed(&self.journal, withdrawn).await;
+                }
+                return Err(refusal("cancelled", "the run stopped before dispatch"));
             }
-        };
-        let recorded = match Record::observation(&key, observed, self.retention) {
-            Ok(observation) => committed(&self.journal, observation).await,
-            Err(error) => Err(error),
-        };
-        match recorded {
-            Ok(_) => reply,
-            Err(error) => Err(self.journal_failed(&error, "the observed result was not recorded")),
+            let attempt = Attempt {
+                operation: operation.clone(),
+                key: key.clone(),
+                number,
+            };
+            let sent = Instant::now();
+            // The run's deadline drops this future; the session then records the
+            // attempt as unobserved, which is unknown.
+            let outcome = self.provider.execute(attempt, context.clone()).await;
+            // The gate learns of the answer before the answer is committed, so
+            // that no other call is sent in between.
+            let limit = outcome.as_ref().err().and_then(|error| {
+                error
+                    .rate_limit
+                    .filter(|_| error.effect == FailureEffect::NotApplied)
+            });
+            // A refused attempt is sent again while the budget lasts.
+            let again = limit.is_some() && number < self.max_attempts;
+            self.gate.observed(
+                probe,
+                sent,
+                limit.map(|limit| limit.retry_after),
+                (outcome.is_err() && !again).then_some(id.as_str()),
+            );
+            let (observed, reply) = match outcome {
+                Ok(value) => (
+                    Observed::Succeeded {
+                        bytes: serde_json::to_vec(&value).map_or(0, |bytes| bytes.len() as u64),
+                    },
+                    Ok(json!({"operation": id, "attempt": number})),
+                ),
+                // Only a machine code reaches the trace, never the provider's message.
+                Err(error) => {
+                    let reply = Err(refusal(
+                        machine_code(&error.error.code),
+                        "the provider failed",
+                    ));
+                    let observed = Observed::Failed {
+                        error: error.error,
+                        effect: error.effect,
+                    };
+                    (observed, reply)
+                }
+            };
+            let shown = observed.clone();
+            let recorded = match Record::observation(&key, observed, self.retention) {
+                Ok(observation) => committed(&self.journal, observation).await,
+                Err(error) => Err(error),
+            };
+            if let Err(error) = recorded {
+                return Err(self.journal_failed(&error, "the observed result was not recorded"));
+            }
+            self.provider.recorded(&operation, number, &shown);
+            if !again {
+                return reply;
+            }
+            // Sent again once the wait is over, as the next attempt.
+            number += 1;
+            limited = true;
         }
     }
 }
@@ -1161,18 +1504,22 @@ mod tests {
                 let entry = Entry {
                     operation,
                     number: 1,
-                    key: format!("key-{id}-1"),
                 };
                 (id.to_string(), entry)
             })
             .collect();
         let provider = JournalingProvider {
             journal: Shared::new(journal),
+            journal_id: "key".into(),
             provider: Arc::new(Recording(Arc::clone(&events))),
             entries,
             dispatched: Mutex::new(HashSet::new()),
             session,
             retention: Retention::Metadata,
+            max_attempts: 3,
+            // These tests poll several calls at once, so the first attempt of
+            // the session already has its answer.
+            gate: Arc::new(open_gate(1)),
             cancellation: RunCancellation::default(),
         };
         Harness {
@@ -1427,6 +1774,219 @@ mod tests {
             }),
             "the late intent is marked as never observed"
         );
+    }
+
+    #[test]
+    fn the_wait_after_a_rate_limit_doubles_and_is_capped() {
+        let seconds = |asked: Option<u64>, repeats| {
+            rate_limit_wait(asked.map(Duration::from_secs), repeats).as_secs()
+        };
+        // One second when the provider names no wait.
+        assert_eq!(
+            [1, 2, 3, 4, 7, 100].map(|repeats| seconds(None, repeats)),
+            [1, 2, 4, 8, 60, 60]
+        );
+        assert_eq!(
+            [1, 2, 3].map(|repeats| seconds(Some(5), repeats)),
+            [5, 10, 20]
+        );
+        assert_eq!(seconds(Some(0), 3), 0);
+        assert_eq!(seconds(Some(3600), 1), 60);
+        assert_eq!(seconds(Some(u64::MAX), 9), 60);
+    }
+
+    fn far(seconds: u64) -> CallContext {
+        context(
+            Instant::now() + Duration::from_secs(seconds),
+            RunCancellation::default(),
+        )
+    }
+
+    /// A gate whose first operation already has an answer.
+    fn open_gate(max_failures: usize) -> Gate {
+        Gate::new(max_failures, None)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_first_operation_of_a_session_goes_alone() {
+        let first = || Some("first".to_string());
+        // The scheduler may start another call before the first operation's:
+        // it waits all the same.
+        let gate = Gate::new(1, first());
+        let context = far(600);
+        let mut second = pin!(gate.admit(&context, "second"));
+        assert!(poll_once(second.as_mut()).is_pending());
+        assert!(matches!(
+            gate.admit(&context, "first").await,
+            Admission::Send { probe: true }
+        ));
+        let mut third = pin!(gate.admit(&context, "third"));
+        assert!(poll_once(second.as_mut()).is_pending());
+        assert!(poll_once(third.as_mut()).is_pending());
+        time::advance(Duration::from_secs(30)).await;
+        assert!(poll_once(second.as_mut()).is_pending());
+        // It fails: the session stops with one failure, and nothing else was sent.
+        gate.observed(true, Instant::now(), None, Some("first"));
+        assert!(matches!(second.await, Admission::Stopped));
+        assert!(matches!(third.await, Admission::Stopped));
+        assert_eq!(
+            gate.stopped_early(),
+            Some(StoppedEarly {
+                max_failures: 1,
+                tripped_by: vec!["first".into()],
+                not_sent: 2,
+            })
+        );
+
+        // It is applied: the others follow at once.
+        let gate = Gate::new(1, first());
+        assert!(matches!(
+            gate.admit(&context, "first").await,
+            Admission::Send { probe: true }
+        ));
+        let mut second = pin!(gate.admit(&context, "second"));
+        assert!(poll_once(second.as_mut()).is_pending());
+        gate.observed(true, Instant::now(), None, None);
+        assert!(matches!(second.await, Admission::Send { probe: false }));
+        assert!(matches!(
+            gate.admit(&context, "third").await,
+            Admission::Send { probe: false }
+        ));
+
+        // A rate limit refuses it: the wait begins, and then one attempt of
+        // any operation goes first.
+        let gate = Gate::new(1, first());
+        assert!(matches!(
+            gate.admit(&context, "first").await,
+            Admission::Send { probe: true }
+        ));
+        let refused = Instant::now();
+        gate.observed(true, refused, Some(Some(Duration::from_secs(3))), None);
+        assert!(matches!(
+            gate.admit(&context, "second").await,
+            Admission::Send { probe: true }
+        ));
+        assert_eq!(refused.elapsed(), Duration::from_secs(3));
+        let mut waiting = pin!(gate.admit(&context, "first"));
+        assert!(poll_once(waiting.as_mut()).is_pending());
+
+        // Cancellation releases a call that waits for the first answer.
+        let gate = Gate::new(1, first());
+        let mut waiting = pin!(gate.admit(&context, "second"));
+        assert!(poll_once(waiting.as_mut()).is_pending());
+        context.cancellation.cancel();
+        assert!(matches!(waiting.await, Admission::Ended));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn after_a_rate_limit_one_attempt_goes_first_and_the_rest_follow_its_answer() {
+        let gate = open_gate(0);
+        let context = far(600);
+        assert!(matches!(
+            gate.admit(&context, "op").await,
+            Admission::Send { probe: false }
+        ));
+        let sent = Instant::now();
+        gate.observed(false, sent, Some(Some(Duration::from_secs(5))), None);
+        // A second refusal of the same burst is not a repeat and asks for less.
+        gate.observed(false, sent, Some(None), None);
+
+        let started = Instant::now();
+        assert!(matches!(
+            gate.admit(&context, "op").await,
+            Admission::Send { probe: true }
+        ));
+        assert_eq!(started.elapsed(), Duration::from_secs(5));
+        // The next call waits for the answer to the one that went first.
+        let mut second = pin!(gate.admit(&context, "op"));
+        assert!(poll_once(second.as_mut()).is_pending());
+        time::advance(Duration::from_secs(30)).await;
+        assert!(poll_once(second.as_mut()).is_pending());
+
+        // Refused again: a repeat, so the wait is twice the second asked for.
+        let refused = Instant::now();
+        gate.observed(true, refused, Some(Some(Duration::from_secs(1))), None);
+        assert!(matches!(second.await, Admission::Send { probe: true }));
+        assert_eq!(refused.elapsed(), Duration::from_secs(2));
+        let mut third = pin!(gate.admit(&context, "op"));
+        assert!(poll_once(third.as_mut()).is_pending());
+
+        // Answered: the limit is over, and everything else is sent at once.
+        gate.observed(true, Instant::now(), None, None);
+        assert!(matches!(third.await, Admission::Send { probe: false }));
+        assert!(matches!(
+            gate.admit(&context, "op").await,
+            Admission::Send { probe: false }
+        ));
+        assert!(gate.stopped_early().is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_wait_that_passes_the_deadline_or_a_stopped_session_sends_nothing() {
+        let gate = open_gate(0);
+        let limited = |gate: &Gate, retry_after| {
+            gate.observed(false, Instant::now(), Some(retry_after), None);
+        };
+        limited(&gate, Some(Duration::from_secs(3600)));
+        // The wait is capped at 60 seconds, which is still after this deadline.
+        assert!(matches!(
+            gate.admit(&far(59), "op").await,
+            Admission::Paused
+        ));
+        let started = Instant::now();
+        assert!(matches!(
+            gate.admit(&far(600), "op").await,
+            Admission::Send { probe: true }
+        ));
+        assert_eq!(started.elapsed(), Duration::from_secs(60));
+
+        // A session with no limit never stops; one with a limit stops at it.
+        for operation in ["a", "b", "c"] {
+            gate.failed(operation);
+        }
+        gate.observed(true, Instant::now(), None, None);
+        assert!(matches!(
+            gate.admit(&far(600), "op").await,
+            Admission::Send { probe: false }
+        ));
+        let gate = open_gate(2);
+        gate.failed("a");
+        assert!(matches!(
+            gate.admit(&far(600), "op").await,
+            Admission::Send { probe: false }
+        ));
+        gate.failed("b");
+        gate.failed("c");
+        for _ in 0..3 {
+            assert!(matches!(
+                gate.admit(&far(600), "op").await,
+                Admission::Stopped
+            ));
+        }
+        assert_eq!(
+            gate.stopped_early(),
+            Some(StoppedEarly {
+                max_failures: 2,
+                tripped_by: vec!["a".into(), "b".into()],
+                not_sent: 3,
+            })
+        );
+
+        // A call waiting for a rate limit is released when the session stops,
+        // or when it is cancelled.
+        let gate = open_gate(1);
+        limited(&gate, None);
+        let context = far(600);
+        let mut waiting = pin!(gate.admit(&context, "op"));
+        assert!(poll_once(waiting.as_mut()).is_pending());
+        gate.failed("a");
+        assert!(matches!(waiting.await, Admission::Stopped));
+        let gate = open_gate(0);
+        limited(&gate, None);
+        let mut waiting = pin!(gate.admit(&context, "op"));
+        assert!(poll_once(waiting.as_mut()).is_pending());
+        context.cancellation.cancel();
+        assert!(matches!(waiting.await, Admission::Ended));
     }
 
     /// Wait, without awaiting, until `count` journal writes are queued.

@@ -19,11 +19,11 @@ use sha2::{Digest as _, Sha256};
 /// The plan format version this build accepts.
 pub const PLAN_FORMAT_VERSION: u32 = 1;
 /// Largest number of operations in one plan.
-pub const MAX_OPERATIONS: usize = 256;
+pub const MAX_OPERATIONS: usize = 10_000;
 /// Largest serialized arguments of one operation, matching the guest call frame.
 pub const MAX_ARGUMENT_BYTES: usize = 64 * 1024;
-/// Largest plan text accepted by [`Plan::parse`].
-pub const MAX_PLAN_BYTES: usize = 1024 * 1024;
+/// Largest plan text accepted by [`Plan::parse`], and largest canonical plan.
+pub const MAX_PLAN_BYTES: usize = 32 * 1024 * 1024;
 const MAX_NAME_BYTES: usize = 128;
 const MAX_SUMMARY_BYTES: usize = 1024;
 
@@ -220,8 +220,8 @@ impl fmt::Display for PlanError {
             Self::DuplicateId(id) => write!(formatter, "operation id '{id}' appears twice"),
             Self::CredentialLike { operation, key } => write!(
                 formatter,
-                "operation {operation}: key '{key}' looks like a credential; credentials \
-                 stay with the provider and must not appear in a plan"
+                "operation {operation}: key '{key}' looks like a credential; a plan is \
+                 stored and shown to people, so a credential must not appear in it"
             ),
         }
     }
@@ -485,7 +485,7 @@ fn field(path: &[Segment]) -> String {
 fn inexact_reason(number: &str, path: &[Segment]) -> String {
     format!(
         "{}: {number} is outside -(2^53-1)..=2^53-1, where a JSON host such as \
-         JavaScript rounds numbers, so the provider could receive another value",
+         JavaScript rounds numbers, so the tool could receive another value",
         field(path)
     )
 }
@@ -579,9 +579,9 @@ fn inexact_number_token(text: &str) -> Option<(Vec<Segment>, &str)> {
     None
 }
 
-/// The first number in `value` that a JavaScript host, such as a bridge client,
-/// would round, extending `path` to it: the host would then act on a value nobody
-/// approved. Covers plans built in code; [`Plan::parse`] checks the text first.
+/// The first number in `value` that a JSON host such as JavaScript would
+/// round, extending `path` to it: a server written for such a host would then
+/// act on a value nobody approved. Covers plans built in code; [`Plan::parse`] checks the text first.
 fn inexact_number(value: &Value, path: &mut Vec<Segment>) -> Option<serde_json::Number> {
     match value {
         Value::Number(number) => {
@@ -663,7 +663,7 @@ mod tests {
     fn invalid_plans_are_refused_with_the_operation_named() {
         let cases = [
             (r#"{"version":2,"operations":[]}"#.to_string(), "version 2"),
-            (plan(""), "1 to 256"),
+            (plan(""), "1 to 10000"),
             (plan(&format!("{ADD},{ADD}")), "appears twice"),
             (plan(&ADD.replace(r#""id":"a""#, r#""id":"a b""#)), "#0"),
             (
@@ -686,6 +686,25 @@ mod tests {
                 "{error} should mention {expected}"
             );
         }
+    }
+
+    #[test]
+    fn a_plan_holds_up_to_the_operation_limit() {
+        let listed = |count: usize| {
+            let operations: Vec<String> = (0..count)
+                .map(|index| ADD.replace(r#""id":"a""#, &format!(r#""id":"a{index}""#)))
+                .collect();
+            plan(&operations.join(","))
+        };
+        let largest = Plan::parse(&listed(MAX_OPERATIONS)).expect("at the limit");
+        assert_eq!(largest.plan().operations.len(), MAX_OPERATIONS);
+        assert_eq!(
+            Plan::parse(&listed(MAX_OPERATIONS + 1)).expect_err("over the limit"),
+            PlanError::OperationCount(MAX_OPERATIONS + 1)
+        );
+        // The size is checked before anything is parsed.
+        let padded = format!("{}{}", plan(ADD), " ".repeat(MAX_PLAN_BYTES));
+        assert_eq!(Plan::parse(&padded), Err(PlanError::TooLarge));
     }
 
     fn with_arguments(arguments: &str) -> String {

@@ -3,7 +3,7 @@ name = "codemode"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.91"
-description = "A local Rust execution runtime for bounded agent-written tool workflows."
+description = "Turns many MCP writes into one change list that a person approves once."
 repository = "https://github.com/jkomyno/codemode"
 license = "MIT"
 publish = false
@@ -20,23 +20,13 @@ unimplemented = "warn"
 
 [features]
 default = []
-# Offline fixtures, mock tools, and fault injection for tests, demos, and evaluations.
+# The offline MCP server, mock tools, and fault injection for tests and demos.
 # Never part of the production binary or the default library API.
 testkit = []
 
 [[bin]]
-name = "codemode-fixture"
-path = "src/bin/codemode-fixture.rs"
-required-features = ["testkit"]
-
-[[bin]]
 name = "codemode-mcp-fixture"
 path = "src/bin/codemode-mcp-fixture.rs"
-required-features = ["testkit"]
-
-[[bin]]
-name = "codemode-recovery-eval"
-path = "src/bin/codemode-recovery-eval.rs"
 required-features = ["testkit"]
 
 [dependencies]
@@ -47,7 +37,7 @@ rusqlite = { version = "0.37", default-features = false, features = ["bundled"] 
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2 = "0.10"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "sync", "time", "signal", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time", "signal", "fs"] }
 base64 = "0.23.1"
 url = "2.5.8"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }

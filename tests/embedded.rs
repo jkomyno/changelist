@@ -215,7 +215,8 @@ fn stdin_eof_terminates_a_spinning_guest() {
 fn overlong_source_input_and_output_are_rejected() {
     for code in [
         " ".repeat(64 * 1024 + 1),
-        "return 'x'.repeat(64 * 1024);".into(),
+        // The returned value may be as large as the largest plan, 32 MiB.
+        "return 'x'.repeat(32 * 1024 * 1024);".into(),
         "return await tools.call('echo', 'x'.repeat(64 * 1024));".into(),
     ] {
         let mut worker = Worker::start();
@@ -223,6 +224,13 @@ fn overlong_source_input_and_output_are_rejected() {
         assert_eq!(worker.receive()["type"], "error");
         assert!(!worker.wait_for_exit().success());
     }
+    // A returned value above the size of a call frame is written whole.
+    let mut worker = Worker::start();
+    worker.run("return 'x'.repeat(1024 * 1024);");
+    let frame = worker.receive();
+    assert_eq!(frame["type"], "output");
+    assert_eq!(frame["value"].as_str().map(str::len), Some(1024 * 1024));
+    assert!(worker.wait_for_exit().success());
     let mut worker = Worker::start();
     worker
         .input

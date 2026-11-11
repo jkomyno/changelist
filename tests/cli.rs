@@ -1,417 +1,198 @@
-//! Command-line contracts: removed surfaces, plan previews, the bridge over
-//! process stdio, and signal and worker-process handling.
+//! The command line without a server: the help, the commands that exist, and
+//! usage errors.
 
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
-use serde_json::{Value, json};
+fn codemode(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_codemode"))
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .expect("CLI starts")
+}
+
+fn help(args: &[&str]) -> String {
+    let output = codemode(args);
+    assert!(output.status.success(), "{args:?}: {output:?}");
+    assert!(output.stderr.is_empty(), "{args:?}: {output:?}");
+    String::from_utf8(output.stdout).expect("UTF-8")
+}
+
+const COMMANDS: [&str; 5] = ["tools", "plan", "status", "apply", "resolve"];
 
 #[test]
-fn removed_commands_and_options_are_unknown() {
-    let cases: &[(&[&str], &str)] = &[
-        (&["run", "--code", "-"], "unknown command 'run'"),
-        (&["bridge", "--code", "x.ts"], "unknown option '--code'"),
-        (&["bridge", "--trace", "x.json"], "unknown option '--trace'"),
-        (&["bridge", "--deno", "x"], "unknown option '--deno'"),
-        (
-            &["bridge", "--backend", "embedded-v8"],
-            "unknown option '--backend'",
-        ),
-        (&["plan", "run", "--deno", "x"], "unknown option '--deno'"),
-        (
-            &["plan", "resume", "--deno", "x"],
-            "unknown option '--deno'",
-        ),
-        (
-            &["plan", "run", "--fixture", "x"],
-            "unknown option '--fixture'",
-        ),
-        (
-            &["plan", "resume", "--fixture", "x"],
-            "unknown option '--fixture'",
-        ),
-        (
-            &["plan", "run", "--account", "x"],
-            "unknown option '--account'",
-        ),
-        (
-            &["plan", "resume", "--account", "x"],
-            "unknown option '--account'",
-        ),
-        (
-            &["plan", "inspect", "--durability", "process"],
-            "unknown option '--durability'",
-        ),
-        (
-            &["plan", "approve", "--durability", "process"],
-            "unknown option '--durability'",
-        ),
-        (
-            &["plan", "run", "--durability", "process"],
-            "unknown option '--durability'",
-        ),
-        (
-            &["plan", "resume", "--durability", "process"],
-            "unknown option '--durability'",
-        ),
-        (
-            &["plan", "review", "--durability", "process"],
-            "unknown option '--durability'",
-        ),
-        (
-            &["plan", "trace", "--durability", "process"],
-            "unknown option '--durability'",
-        ),
-        (
-            &["plan", "approve", "--attempt-timeout-ms", "1"],
-            "unknown option '--attempt-timeout-ms'",
-        ),
-        (
-            &["plan", "approve", "--probe-timeout-ms", "1"],
-            "unknown option '--probe-timeout-ms'",
-        ),
-        (
-            &["plan", "approve", "--session-timeout-ms", "1"],
-            "unknown option '--session-timeout-ms'",
-        ),
-        (
-            &["plan", "run", "--bridge", "--deadline-ms", "0"],
-            "--deadline-ms must be positive",
-        ),
-    ];
-    for (args, expected) in cases {
-        let output = Command::new(env!("CARGO_BIN_EXE_codemode"))
-            .args(*args)
-            .stdin(Stdio::null())
-            .output()
-            .expect("CLI starts");
-        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains(expected), "{args:?}: {stderr}");
+fn the_help_shows_exactly_the_five_commands_and_the_exit_codes_once() {
+    let main = help(&["--help"]);
+    assert_eq!(main, help(&[]), "no arguments prints the help");
+    assert_eq!(main, help(&["-h"]));
+    let usage: Vec<&str> = main
+        .lines()
+        .skip_while(|line| *line != "Usage:")
+        .skip(1)
+        .take_while(|line| !line.is_empty())
+        .collect();
+    assert_eq!(
+        usage,
+        [
+            "  codemode tools   --server <server.json>",
+            "  codemode plan    --server <server.json> (--program <file.ts> | --operations <file|->)",
+            "  codemode status  <plan file>",
+            "  codemode apply   <plan file>",
+            "  codemode resolve <plan file> (<id>... | --errors | --no-reply) --as applied|not-applied",
+            "  codemode <command> --help",
+            "  codemode --version",
+        ]
+    );
+    assert_eq!(main.matches("Exit codes:").count(), 1);
+    for code in ["\n  0  ", "\n  2  ", "\n  3  ", "\n  4  Not approved."] {
+        assert!(main.contains(code), "{code:?} in {main}");
+    }
+    assert_eq!(main.matches("Example:").count(), 1);
+
+    for command in COMMANDS {
+        let text = help(&[command, "--help"]);
+        assert_eq!(text, help(&[command, "-h"]));
+        assert!(
+            text.starts_with(&format!("codemode {command} — ")),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("\nUsage:\n  codemode {command} ")),
+            "{text}"
+        );
+        assert_eq!(
+            text.matches("Example:").count(),
+            1,
+            "{command}: one example"
+        );
+        assert!(
+            !text.contains("Exit code"),
+            "{command}: the exit codes are in the main help"
+        );
+        assert!(
+            text.lines().count() <= 40,
+            "{command}: the help stays short"
+        );
+    }
+    // The help speaks of writes, tools, and servers, and names no removed command.
+    let all: String = COMMANDS
+        .iter()
+        .map(|command| help(&[command, "--help"]))
+        .chain([main])
+        .collect();
+    for gone in [
+        "codemode mcp",
+        "codemode inspect",
+        "investigate",
+        "declare",
+        "resume",
+        "plan check",
+        "plan approve",
+        "plan review",
+        "plan trace",
+        "bridge",
+        "probe",
+        "reconcile",
+        "contract",
+        "binding",
+        "scope",
+        "provider",
+        "--journal",
+    ] {
+        assert!(!all.contains(gone), "the help mentions {gone:?}");
+    }
+    assert!(all.lines().all(|line| line.chars().count() <= 100));
+}
+
+#[test]
+fn the_version_is_printed() {
+    for flag in ["--version", "-V"] {
+        assert_eq!(
+            help(&[flag]),
+            format!("codemode {}\n", env!("CARGO_PKG_VERSION"))
+        );
     }
 }
 
-/// Lives here, not beside the in-process bridge tests: a spawned child briefly
-/// inherits every descriptor the test process has open, including other tests'
-/// journal locks.
 #[test]
-fn the_session_deadline_ends_an_unanswered_authorization_with_exit_status_124() {
-    use std::io::BufRead;
-
-    use codemode::{Approval, Durability, Journal, Plan, ProviderDeclaration, RecoveryPolicy};
-
-    let path =
-        std::env::temp_dir().join(format!("codemode-cli-deadline-{}.db", std::process::id()));
-    let _ = std::fs::remove_file(&path);
-    let declaration = json!({"provider": "test", "account": "bot",
-                             "contracts": {"label": {"repeat": "safe", "reconcile": "none"}}});
-    let plan = Plan::parse(
-        &json!({"version": 1, "operations": [{"id": "a", "tool": "label",
-                "scope": {"provider": "test", "account": "bot"}, "arguments": {}}]})
-        .to_string(),
-    )
-    .expect("plan");
-    let parsed: ProviderDeclaration =
-        serde_json::from_value(declaration.clone()).expect("declaration");
-    let policy = RecoveryPolicy::default();
-    Journal::create(&path, &plan, Durability::Process)
-        .expect("journal")
-        .approve(&Approval {
-            binding: codemode::approval_binding(plan.digest(), &parsed, &policy),
-            plan: plan.digest().clone(),
-            declaration: parsed,
-            policy,
-            approver: "tester".into(),
-            note: None,
-            approved_unix_ms: 0,
-        })
-        .expect("approve");
-
-    let mut bridge = Command::new(env!("CARGO_BIN_EXE_codemode"))
-        .args(["plan", "run", "--journal"])
-        .arg(&path)
-        .args(["--bridge", "--deadline-ms", "300"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("CLI starts");
-    // The input stays open: closing it would cancel the session instead.
-    let mut input = bridge.stdin.take().expect("stdin");
-    writeln!(
-        input,
-        "{}",
-        json!({"type": "start", "version": 3, "declaration": declaration})
-    )
-    .expect("start frame");
-    let mut frames = std::io::BufReader::new(bridge.stdout.take().expect("stdout")).lines();
-    let mut next = || -> Value {
-        serde_json::from_str(&frames.next().expect("a frame").expect("readable")).expect("JSON")
-    };
-    assert_eq!(next()["type"], "authorize");
-    let outcome = next();
-    assert_eq!(outcome["type"], "outcome", "{outcome}");
-    assert_eq!(outcome["outcome"]["status"], "interrupted", "{outcome}");
-    assert_eq!(outcome["outcome"]["dispatched"], 0, "{outcome}");
-    assert_eq!(bridge.wait().expect("exits").code(), Some(124));
-    drop(input);
-    let _ = std::fs::remove_file(&path);
-}
-
-#[test]
-fn plan_preview_escapes_terminal_text_without_changing_the_approved_data() {
-    let directory = std::env::temp_dir().join(format!("codemode-cli-plan-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&directory);
-    std::fs::create_dir(&directory).expect("create scratch directory");
-    let summary = "safe\u{1b}[2J\u{1b}[HAPPROVED\nforged line";
-    let key = "x\u{1b}[31m";
-    let plan = json!({"version":1,"summary":summary,"operations":[{
-        "id":"op","tool":"test.action",
-        "scope":{"provider":"test","account":"bot","destination":"repo"},
-        "arguments":{key:1}
-    }]})
-    .to_string();
-    let path = directory.join("plan.json");
-    std::fs::write(&path, &plan).expect("write plan");
-    let path = path.to_str().expect("UTF-8 path");
-    let expected = codemode::Plan::parse(&plan).expect("valid plan");
-    let check = |extra: &[&str]| {
-        let output = Command::new(env!("CARGO_BIN_EXE_codemode"))
-            .args(["plan", "check", path])
-            .args(extra)
-            .stdin(Stdio::null())
-            .output()
-            .expect("CLI starts");
-        assert!(output.status.success(), "{output:?}");
-        String::from_utf8(output.stdout).expect("UTF-8")
-    };
-    let preview = check(&[]);
-    assert!(!preview.chars().any(|c| c.is_control() && c != '\n'));
-    assert!(!preview.contains("\nforged line"));
-    assert!(preview.contains(expected.digest().as_str()));
-    let decoded: Value = serde_json::from_str(&check(&["--json"])).expect("JSON preview");
-    let _ = std::fs::remove_dir_all(&directory);
-    assert_eq!(decoded["digest"], expected.digest().as_str());
-    assert_eq!(decoded["plan"]["summary"], summary);
-    assert_eq!(decoded["plan"]["operations"][0]["arguments"][key], 1);
-}
-
-#[test]
-fn bridge_subcommand_speaks_the_host_protocol_over_process_stdio() {
-    use std::io::{BufRead, BufReader};
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_codemode"))
-        .args(["bridge", "--timeout-ms", "5000"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("CLI starts");
-    let mut input = child.stdin.take().expect("stdin is piped");
-    let mut output = BufReader::new(child.stdout.take().expect("stdout is piped"));
-    let mut line = String::new();
-    let start = json!({"type":"start","version":2,"tools":["host.add"],
-        "code":"return await tools.call('host.add', {a: 2, b: 40});"});
-    writeln!(input, "{start}").expect("start frame is writable");
-    output.read_line(&mut line).expect("call frame is readable");
-    let call: Value = serde_json::from_str(&line).expect("call frame is JSON");
-    assert_eq!(
-        call,
-        json!({"type":"call","id":1,"tool":"host.add","arguments":{"a":2,"b":40}})
-    );
-    writeln!(
-        input,
-        "{}",
-        json!({"type":"result","id":1,"ok":true,"value":42})
-    )
-    .expect("result is writable");
-    line.clear();
-    output
-        .read_line(&mut line)
-        .expect("report frame is readable");
-    let frame: Value = serde_json::from_str(&line).expect("report frame is JSON");
-    assert_eq!(frame["type"], "report");
-    assert_eq!(frame["report"]["output"], 42);
-    // The bridge exits after its report even though the host keeps stdin open.
-    let status = child.wait().expect("bridge exits");
-    assert!(status.success());
-    drop(input);
-}
-
-/// SIGTERM, like Ctrl-C, cancels a running program and still reports it.
-#[cfg(unix)]
-#[test]
-fn sigterm_cancels_the_run_and_still_reports() {
-    use std::io::{BufRead, BufReader};
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_codemode"))
-        .args(["bridge", "--timeout-ms", "20000"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("CLI starts");
-    let mut input = child.stdin.take().expect("stdin is piped");
-    let mut output = BufReader::new(child.stdout.take().expect("stdout is piped"));
-    writeln!(
-        input,
-        "{}",
-        json!({"type":"start","version":2,"tools":["host.wait"],
-        "code":"return await tools.call('host.wait');"})
-    )
-    .expect("start frame is writable");
-    let mut line = String::new();
-    output.read_line(&mut line).expect("call frame is readable");
-    assert_eq!(
-        serde_json::from_str::<Value>(&line).expect("call frame")["type"],
-        "call"
-    );
-    let status = Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
-        .status()
-        .expect("kill runs");
-    assert!(status.success());
-    line.clear();
-    output
-        .read_line(&mut line)
-        .expect("report frame is readable");
-    let frame: Value = serde_json::from_str(&line).expect("report frame is JSON");
-    assert_eq!(frame["type"], "report");
-    assert_eq!(frame["report"]["status"], "cancelled");
-    assert_eq!(frame["report"]["calls"][0]["outcome"]["status"], "unknown");
-    let status = child.wait().expect("CLI finishes");
-    assert_eq!(status.code(), Some(130));
-    drop(input);
-}
-
-/// A bridge waiting for its program still stops on SIGTERM.
-#[cfg(unix)]
-#[test]
-fn an_idle_bridge_stops_on_sigterm() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_codemode"))
-        .arg("bridge")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("bridge starts");
-    // Keep the input open, so only the signal can stop the bridge.
-    let _input = child.stdin.take();
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let status = Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
-        .status()
-        .expect("kill runs");
-    assert!(status.success());
-    let started = std::time::Instant::now();
-    let output = child.wait_with_output().expect("bridge exits");
-    assert!(started.elapsed() < std::time::Duration::from_secs(5));
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stdout).contains("cancelled before the start frame"));
-}
-
-/// The bridge starts its worker from its own executable, without a PATH.
-#[test]
-fn a_bridge_runs_its_program_with_an_empty_environment() {
-    use std::io::{BufRead, BufReader};
-
-    let mut bridge = Command::new(env!("CARGO_BIN_EXE_codemode"))
-        .arg("bridge")
-        .env_clear()
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("bridge starts");
-    let mut input = bridge.stdin.take().expect("bridge stdin");
-    let mut output = BufReader::new(bridge.stdout.take().expect("bridge stdout"));
-    writeln!(
-        input,
-        "{}",
-        json!({"type":"start","version":2,"tools":["host.echo"],
-        "code":"const n: number = 42; return await tools.call('host.echo', n);"})
-    )
-    .expect("start");
-    let mut line = String::new();
-    output.read_line(&mut line).expect("call");
-    let call: Value = serde_json::from_str(&line).expect("call JSON");
-    assert_eq!(call["tool"], "host.echo");
-    writeln!(
-        input,
-        "{}",
-        json!({"type":"result","id":call["id"],"ok":true,"value":42})
-    )
-    .expect("reply");
-    line.clear();
-    output.read_line(&mut line).expect("report");
-    let report: Value = serde_json::from_str(&line).expect("report JSON");
-    assert_eq!(report["report"]["backend"], "embedded_v8");
-    assert_eq!(report["report"]["output"], 42);
-    assert!(bridge.wait().expect("bridge exits").success());
-}
-
-/// Killing a program host leaves no worker running, even one spinning on CPU.
-#[cfg(unix)]
-#[test]
-fn killing_a_program_host_does_not_leave_its_worker_running() {
-    use std::io::{BufRead, BufReader};
-    use std::time::{Duration, Instant};
-
-    let mut bridge = Command::new(env!("CARGO_BIN_EXE_codemode"))
-        .args(["bridge", "--timeout-ms", "20000"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("bridge starts");
-    let mut input = bridge.stdin.take().expect("bridge stdin");
-    let mut output = BufReader::new(bridge.stdout.take().expect("bridge stdout"));
-    writeln!(
-        input,
-        "{}",
-        json!({"type":"start","version":2,"tools":["ready"],
-        "code":"await tools.call('ready'); for (;;) {}"})
-    )
-    .expect("start");
-    let mut line = String::new();
-    output.read_line(&mut line).expect("ready call");
-    let call: Value = serde_json::from_str(&line).expect("call");
-    assert_eq!(call["type"], "call");
-    let children = Command::new("pgrep")
-        .args(["-P", &bridge.id().to_string()])
-        .output()
-        .expect("find worker");
-    assert!(
-        children.status.success(),
-        "worker must exist before killing its parent"
-    );
-    let pid: u32 = String::from_utf8(children.stdout)
-        .expect("worker pid")
-        .trim()
-        .parse()
-        .expect("one direct worker child");
-    writeln!(
-        input,
-        "{}",
-        json!({"type":"result","id":call["id"],"ok":true,"value":null})
-    )
-    .expect("reply");
-    bridge.kill().expect("SIGKILL bridge");
-    bridge.wait().expect("reap bridge");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let status = Command::new("ps")
-            .args(["-o", "stat=", "-p", &pid.to_string()])
-            .output()
-            .expect("worker status");
-        let state = String::from_utf8_lossy(&status.stdout);
-        if !status.status.success() || state.trim().is_empty() || state.trim().starts_with('Z') {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "worker {pid} outlived its killed bridge"
-        );
-        std::thread::sleep(Duration::from_millis(20));
+fn removed_commands_and_options_are_usage_errors() {
+    let cases: &[(&[&str], &str)] = &[
+        (&["mcp", "tools", "--server", "x"], "unknown command 'mcp'"),
+        (&["inspect", "trace.json"], "unknown command 'inspect'"),
+        (&["run", "--code", "-"], "unknown command 'run'"),
+        (&["bridge"], "unknown command 'bridge'"),
+        (&["investigate"], "unknown command 'investigate'"),
+        (
+            &["plan", "check", "--server", "x", "--operations", "y"],
+            "unexpected argument 'check'",
+        ),
+        (
+            &["plan", "--provider", "declaration.json"],
+            "unknown option '--provider'",
+        ),
+        (
+            &["plan", "--server", "x"],
+            "give exactly one of --program and --operations",
+        ),
+        (
+            &["apply", "p.json", "--bridge"],
+            "unknown option '--bridge'",
+        ),
+        (
+            &["apply", "p.json", "--max-probes", "1"],
+            "unknown option '--max-probes'",
+        ),
+        (
+            &["apply", "p.json", "--digest", "sha256:0"],
+            "unknown option '--digest'",
+        ),
+        (
+            &["status", "p.json", "--messages"],
+            "unknown option '--messages'",
+        ),
+        (
+            &["resolve", "p.json", "--operation", "a"],
+            "unknown option '--operation'",
+        ),
+        (
+            &["apply", "p.json", "--journal", "elsewhere.db"],
+            "unknown option '--journal'",
+        ),
+        (
+            &["status", "p.json", "--journal", "elsewhere.db"],
+            "unknown option '--journal'",
+        ),
+        (
+            &[
+                "resolve",
+                "p.json",
+                "a",
+                "--as",
+                "applied",
+                "--journal",
+                "x.db",
+            ],
+            "unknown option '--journal'",
+        ),
+        (&["tools"], "--server is required"),
+        (&["apply"], "apply takes one plan file"),
+        (&["apply", "a.json", "b.json"], "apply takes one plan file"),
+        (&["status"], "status takes one plan file"),
+        (&["resolve"], "a plan file is required"),
+        (
+            &["apply", "p.json", "--approve"],
+            "missing value for --approve",
+        ),
+        (
+            &["apply", "p.json", "--json", "--json"],
+            "--json can only be supplied once",
+        ),
+    ];
+    for (args, expected) in cases {
+        let output = codemode(args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        assert!(output.stdout.is_empty(), "{args:?}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{args:?}: {stderr}");
     }
 }

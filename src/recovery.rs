@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -68,8 +69,15 @@ pub enum Retention {
     #[serde(rename = "metadata/1")]
     Metadata,
     /// `summary/1`: also keeps error messages and probe evidence, each truncated
-    /// to 1 KiB. The provider declares that it writes these itself as short, safe
-    /// explanations (a projection), never raw upstream text.
+    /// to 1 KiB. What that text is depends on the provider, and codemode does
+    /// not check it. A provider may write it itself as a short explanation. The
+    /// MCP provider keeps the server's own words: the text of a tool error or
+    /// the message of a JSON-RPC error. That provider puts no header,
+    /// environment value, or URL into the text, and it replaces a configured
+    /// header value, environment value, or URL query value of 8 bytes or more
+    /// that the server repeats there. A server can still put anything else it
+    /// knows into its own error text, so approve this policy only for a server
+    /// whose error text may be kept and shown.
     #[serde(rename = "summary/1")]
     Summary,
 }
@@ -361,6 +369,13 @@ pub enum FailureEffect {
     Unknown,
 }
 
+/// A provider's rate limit refused an attempt before running it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RateLimit {
+    /// How long the provider asked the caller to wait, when it said.
+    pub retry_after: Option<Duration>,
+}
+
 /// A failed attempt with the provider's statement about its effect.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttemptError {
@@ -368,6 +383,33 @@ pub struct AttemptError {
     pub error: ProviderError,
     /// Whether an effect may have occurred.
     pub effect: FailureEffect,
+    /// Set when the provider's rate limit refused the attempt before running
+    /// it; `effect` is then [`FailureEffect::NotApplied`]. The session sends
+    /// nothing to the provider while it waits, then sends the operation again
+    /// as a new attempt within the approved budget. `None` for every other
+    /// failure.
+    pub rate_limit: Option<RateLimit>,
+}
+
+/// Error codes a provider gives a failed attempt when the system it acts on
+/// sent no answer: nothing was sent (`not_sent`, or the provider refused the
+/// attempt itself with `not_a_write_tool` or `preconditions_unsupported`), or
+/// the attempt was sent and no answer came back (`no_response`, `deadline`,
+/// `cancelled`).
+const NO_ANSWER_CODES: [&str; 6] = [
+    "not_sent",
+    "not_a_write_tool",
+    "preconditions_unsupported",
+    "no_response",
+    "deadline",
+    "cancelled",
+];
+
+/// Whether a failed attempt's error `code` says that the system the provider
+/// acts on answered with an error, as opposed to sending no answer.
+#[must_use]
+pub(crate) fn answered_with_error(code: &str) -> bool {
+    !NO_ANSWER_CODES.contains(&code)
 }
 
 /// The four distinct conclusions a reconciliation can reach.
@@ -433,6 +475,14 @@ pub trait RecoverableProvider: Send + Sync + 'static {
         attempt: Attempt,
         context: CallContext,
     ) -> impl Future<Output = Result<Value, AttemptError>> + Send;
+
+    /// Called once the journal holds what was observed of attempt `number` of
+    /// `operation`, before anything else learns of it. A host can show
+    /// progress from here and be sure that what it shows is recorded. It
+    /// must return quickly. The default does nothing.
+    fn recorded(&self, operation: &Operation, number: u32, observed: &Observed) {
+        let _ = (operation, number, observed);
+    }
 
     /// Establish what happened to the attempts with `keys`, using the method the
     /// contract declares. Called only for tools whose method is not `none`.

@@ -190,8 +190,8 @@ impl fmt::Display for JournalError {
         match self {
             Self::Busy(path) => write!(
                 formatter,
-                "journal {} is locked by another codemode executor (a run, resume, approve, or \
-                 review); wait for it to exit. `codemode plan inspect` can read it meanwhile",
+                "journal {} is locked by another codemode executor (an apply or a resolve); \
+                 wait for it to exit. `codemode status` can read it meanwhile",
                 path.display()
             ),
             Self::ReadOnly { path, detail } => write!(
@@ -627,49 +627,6 @@ fn bounded(text: &str) -> String {
 /// Journals created by this process, so two in one process never share an identity.
 static CREATED: AtomicU64 = AtomicU64::new(0);
 
-/// Write transactions committed by journals in this process.
-#[cfg(feature = "testkit")]
-static COMMITS: AtomicU64 = AtomicU64::new(0);
-
-/// Write transactions every journal in this process has committed so far,
-/// counting only transactions that wrote facts. One commit can hold several
-/// facts. Evaluations read it before and after a session to count that
-/// session's commits. Requires the `testkit` feature.
-///
-/// # Examples
-///
-/// ```
-/// use codemode::{Durability, Journal, Plan, SessionKind, journal_commits};
-///
-/// let plan = Plan::parse(r#"{"version": 1, "operations": [
-///   {"id": "label-101", "tool": "issues.add_label",
-///    "scope": {"provider": "fixture.issues", "account": "triage-bot"},
-///    "arguments": {"issue": 101, "label": "triage"}}]}"#)?;
-/// let path = std::env::temp_dir().join(format!("codemode-commits-{}.db", std::process::id()));
-/// # let _ = std::fs::remove_file(&path);
-/// let mut journal = Journal::create(&path, &plan, Durability::Process)?;
-/// let before = journal_commits();
-/// journal.begin_session(SessionKind::Run)?;
-/// assert!(journal_commits() > before);
-/// # drop(journal);
-/// # std::fs::remove_file(&path)?;
-/// # for suffix in ["db-wal", "db-shm", "db.lock"] {
-/// #     let _ = std::fs::remove_file(path.with_extension(suffix));
-/// # }
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
-#[cfg(feature = "testkit")]
-#[must_use]
-pub fn journal_commits() -> u64 {
-    COMMITS.load(Ordering::Relaxed)
-}
-
-/// Count one committed write transaction; see [`journal_commits`].
-fn counted() {
-    #[cfg(feature = "testkit")]
-    COMMITS.fetch_add(1, Ordering::Relaxed);
-}
-
 /// A new journal's identity. Attempt keys embed it, and providers may keep keys
 /// across journals, so it must differ between journals: it mixes the process, a
 /// per-process counter, the time in nanoseconds, and a randomly keyed hash.
@@ -809,7 +766,6 @@ impl Journal {
             )
             .map_err(storage)?;
         transaction.commit().map_err(storage)?;
-        counted();
         Ok(Self {
             connection,
             _lock: lock,
@@ -889,7 +845,6 @@ impl Journal {
             }
         }
         transaction.commit().map_err(storage)?;
-        counted();
         #[cfg(test)]
         if let Some(hook) = &self.hook {
             for &kind in kinds {
@@ -1053,7 +1008,6 @@ impl Journal {
                 .map_err(storage)?;
             rows.collect::<rusqlite::Result<_>>().map_err(storage)?
         };
-        let wrote = !keys.is_empty();
         for key in keys {
             let ordinal = next_ordinal(&transaction).map_err(storage)?;
             transaction
@@ -1064,9 +1018,6 @@ impl Journal {
                 .map_err(storage)?;
         }
         transaction.commit().map_err(storage)?;
-        if wrote {
-            counted();
-        }
         Ok(())
     }
 
