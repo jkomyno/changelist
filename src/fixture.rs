@@ -1499,13 +1499,22 @@ mod tests {
             .expect("open")
             .add_fault(ADD_LABEL, 101, FaultMode::LoseResponse, 1)
             .expect("fault");
-        let lost = tokio::time::timeout(
-            Duration::from_millis(300),
-            provider.apply(label("k1", ADD_LABEL, 101, "triage"), context()),
-        )
-        .await;
-        assert!(lost.is_err(), "a lost response never returns: {lost:?}");
-        assert_eq!(labels(&scratch, 101), ["triage"]);
+        // Keep the first call alive until its effect is visible: on a loaded
+        // machine the commit can take longer than any fixed wait.
+        let first = provider.apply(label("k1", ADD_LABEL, 101, "triage"), context());
+        tokio::pin!(first);
+        let started = Instant::now();
+        loop {
+            let lost = tokio::time::timeout(Duration::from_millis(50), &mut first).await;
+            assert!(lost.is_err(), "a lost response never returns: {lost:?}");
+            if labels(&scratch, 101) == ["triage"] {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(8),
+                "the effect was never committed"
+            );
+        }
 
         let second = tokio::time::timeout(
             Duration::from_secs(5),
