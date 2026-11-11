@@ -71,6 +71,37 @@ a stand-in GitHub with its own ledger:
 mise run composio-demo
 ```
 
+## Any MCP server
+
+`codemode mcp` runs the same review, approval, journal, and recovery steps
+against any [Model Context Protocol](https://modelcontextprotocol.io/specification/2026-07-28)
+server, with no host adapter: the client is part of the Rust binary, and the
+tool list comes from the server at run time.
+
+```sh
+codemode mcp tools       --server server.json
+codemode mcp investigate --server server.json --program triage.ts --out plan.json
+codemode mcp declare     --server server.json > declaration.json
+codemode plan check plan.json --provider declaration.json
+codemode plan approve plan.json --journal run.db --provider declaration.json --digest sha256:... --approver you
+codemode mcp run         --server server.json --journal run.db
+codemode mcp resume      --server server.json --journal run.db
+```
+
+`server.json` names a Streamable HTTP URL or a stdio command, takes credentials
+from environment variables, and records whether you trust the server's tool
+annotations. A program may call only read tools. An approval binds the server's
+identity and a digest of each tool's name, argument schema, and annotations.
+After a lost reply, a write the trusted server marks idempotent is sent again;
+every other uncertain write waits for a person, because MCP gives a client no
+way to ask whether an earlier call took effect.
+
+The client speaks revision 2026-07-28 and falls back to the `initialize`
+handshake of 2025-11-25 to 2025-03-26. Status: tested offline against a
+stand-in server in both eras and on both transports; it has listed the tools of
+two public 2026-07-28 servers; no write has been sent to a live server, and it
+has not been run against Composio Tool Router. See [the MCP guide](docs/mcp.md).
+
 ## Execution contract
 
 - **Host-owned limits.** `codemode bridge` runs each program in a fresh V8
