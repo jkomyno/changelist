@@ -11,11 +11,11 @@ binary. The tool list comes from the server at run time, so nothing about a
 tool is written into codemode.
 
 **Status.** The client is tested offline against a stand-in server in both
-protocol eras and on both transports. Live and read-only, it has listed the
-tools of two public servers that speak revision 2026-07-28, and it has listed
-tools and run an investigation against a Composio Tool Router session, which
-speaks 2025-11-25 ([details](#composio-tool-router)). No write has been sent
-to a live server.
+protocol eras and on both transports. Live, it has listed the tools of two
+public servers that speak revision 2026-07-28. Against a Composio Tool Router
+session, which speaks 2025-11-25, it has investigated, run approved label
+writes on one GitHub issue, and resumed after a deadline
+([details](#composio-tool-router)). No other live server has received a write.
 
 ## The server file
 
@@ -208,10 +208,11 @@ needs one of them for a tool makes that call fail.
 
 ## Composio Tool Router
 
-**Checked live, read-only, on 2026-11-11** against a Composio staging project:
-`mcp tools`, `mcp investigate`, `mcp declare`, and `plan check`. Nothing was
-approved or run, and no tool reached GitHub: the project had no active GitHub
-connection.
+**Checked live on 2026-11-11.** Read-only against a staging project, then
+with writes against production: label changes on one closed issue of this
+repository, [#3](https://github.com/jkomyno/codemode/issues/3), which ended
+with the labels it started with. Each write was compared with GitHub's own
+API.
 
 A Tool Router session has an MCP URL. By default the session lists three
 meta-tools (`COMPOSIO_SEARCH_TOOLS`, `COMPOSIO_GET_TOOL_SCHEMAS`,
@@ -236,7 +237,7 @@ curl -s https://backend.composio.dev/api/v3.1/tool_router/session \
 }
 ```
 
-What the live check showed:
+What the live checks showed:
 
 - The session endpoint speaks revision **2025-11-25**. codemode's
   `server/discover` probe is not answered as a 2026-07-28 server, and the
@@ -248,18 +249,39 @@ What the live check showed:
   `GITHUB_CREATE_AN_ISSUE_COMMENT` and `GITHUB_UPDATE_AN_ISSUE` write. The two
   search and schema meta-tools are reads; `COMPOSIO_MULTI_EXECUTE_TOOL` is a
   write.
-- Two listings of the same session returned the same tools and definitions.
+- Two listings of the same session returned the same tools and definitions,
+  on staging and on production.
 - The session id is part of the URL path, so an approval is bound to one
-  session, and through it to that session's user and pinned accounts.
+  session, and through it to that session's user and pinned accounts. After
+  the session is deleted, codemode cannot connect to it.
 - A tool's value is Composio's envelope, `{successful, data, error, log_id}`.
   A program reads `result.data`.
-- A GitHub read without an active connection came back as a tool error
-  (`isError`), which the program can catch.
+- **A read with data.** A program read the issue through
+  `GITHUB_GET_AN_ISSUE` and proposed one label addition.
+- **A failed execution sets `isError`.** A read of an issue that does not
+  exist (GitHub 404), a removal of a label that is not on the issue (GitHub
+  404), and a read without an active connection each came back as a tool
+  error with `successful: false` inside. The program can catch the read
+  error; the failed write was recorded as unknown, not as applied.
+- **Writes.** An approved `GITHUB_ADD_LABELS_TO_AN_ISSUE` and an approved
+  `GITHUB_REMOVE_A_LABEL_FROM_AN_ISSUE` each ran once and were recorded as
+  applied. GitHub showed the label, then no label.
+- **A late effect.** The same addition ran again with a 400 ms deadline.
+  codemode stopped waiting and recorded the outcome as unknown; GitHub showed
+  the label anyway. `mcp resume` sent the addition a second time, because its
+  class is repeatable write, and recorded it as applied. The issue held the
+  label once.
 
-Still unknown: whether every failed execution sets `isError`. If one came back
-as a normal result with `successful: false`, codemode would record the write
-as applied. Check this with a real connection before trusting a run. Also not
-checked: any read that returns data, any write, and the production backend.
+Know this about `GITHUB_REMOVE_A_LABEL_FROM_AN_ISSUE`: the server marks it
+idempotent, but a repeat after a removal that worked returns GitHub's 404 as a
+tool error. So after a lost reply codemode sends it again, gets tool errors
+until the attempt budget is spent, and then asks for a review. That is safe,
+but it does not settle by itself.
+
+Not checked: a `write` class tool (for example a comment), a killed process,
+more than one operation in a plan, and every way an execution can fail. A
+failure that came back as a normal result with `successful: false` and no
+`isError` would be recorded as applied; none was seen.
 
 Keep `COMPOSIO_MULTI_EXECUTE_TOOL` out of plans. It is one opaque write to
 codemode, which cannot see or bind the tools it runs.
