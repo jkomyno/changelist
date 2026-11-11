@@ -40,7 +40,7 @@ control. It works with the credentials the operator already has.
 - A plan is a finite list of independent writes. No dependencies between
   writes, no control flow, and no replay of the program that proposed them.
 - No exactly-once claim and no rollback. The states are applied, failed, no
-  reply, refused, resolved by a person, and not sent.
+  reply, refused, resolved by a person, skipped by a person, and not sent.
 - Approval is a deliberate act by a person, not a security boundary against a
   process that holds the same credentials. The docs say so.
 - Credentials stay outside the program worker, the plan file, and the journal.
@@ -63,8 +63,9 @@ control. It works with the credentials the operator already has.
 
 ## Next, in this order
 
-1. **Run the five commands against a live server.** The live check on record
-   used the earlier commands at commit `9be2351`.
+1. **More live runs.** One plan of 9 writes ran through a Tool Router session
+   with GitHub and Linear tools. A lost reply, a rate limit, and a killed
+   process have not happened in a live run yet.
 2. **A verification read for an uncertain write.** After a lost reply, the
    operator could name the read that shows whether a write took effect. This
    would settle most writes that now wait for a person. It needs a design for

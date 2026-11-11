@@ -98,9 +98,10 @@ applied 8 · failed 1 · no reply 0 · not sent 3
 
 failed (1): the server answered with an error
   comment-101  notes.append
-    "upstream said no"
+    upstream said no
     codemode cannot tell whether a failed write changed anything. Check the target, then run:
       codemode resolve triage.plan.json comment-101 --as not-applied   (or --as applied)
+    Use --as skipped for a write that must not be sent.
 
 not sent (3)
   Run `codemode apply triage.plan.json` to continue.
@@ -130,7 +131,9 @@ not sent (3)
 - **No blind repeats.** Every attempt is written to a journal before it is
   sent. After a lost reply or a killed process, a write the server marks
   idempotent is sent again. Every other uncertain write waits for a person,
-  and `resolve` records what the person found.
+  and `resolve` records what the person found. A write that can never
+  succeed, for example because its target was deleted, is recorded
+  `--as skipped`. It is never sent, and the plan can finish without it.
 - **Hostile text stays visible.** Control, bidirectional, and zero-width
   characters from a plan or a server are printed as escapes, so a plan cannot
   hide or fake a line of the review.
@@ -157,11 +160,13 @@ with protocol revision 2026-07-28 and the older `initialize` handshake. The
 tests cover a killed `apply`, lost replies, tool errors, rate limits, and the
 review of a plan with 10,000 writes.
 
-The five commands have not been run against a live server. An earlier build
-with other command names, at commit `9be2351`, listed two public servers and
-ran approved label writes on one GitHub issue through a Composio Tool Router
-session. The [guide](docs/mcp.md#composio-tool-router) records what that
-check showed.
+Live, the five commands ran one plan of 9 writes through a Composio Tool
+Router session on 2026-11-11: one Linear ticket, and a label and a comment on
+each of four GitHub issues. Seven writes were applied. Two failed because
+their issue had been deleted on purpose after `plan`, and `resolve --as
+skipped` closed the plan. The [guide](docs/mcp.md#composio-tool-router)
+records the run. A lost reply, a rate limit, and a killed process are covered
+by the offline tests only.
 
 That commit also holds what this repository used to carry and no longer does:
 a Composio CLI host, Pi and OpenCode adapters, and a comparison benchmark.

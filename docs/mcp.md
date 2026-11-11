@@ -12,7 +12,7 @@ codemode tools   --server <server.json>
 codemode plan    --server <server.json> (--program <file.ts> | --operations <file|->)
 codemode status  <plan file>
 codemode apply   <plan file>
-codemode resolve <plan file> (<id>... | --errors | --no-reply) --as applied|not-applied
+codemode resolve <plan file> (<id>... | --errors | --no-reply) --as applied|not-applied|skipped
 ```
 
 The MCP client is part of the Rust binary. The tool list comes from the server
@@ -20,10 +20,9 @@ at run time, so nothing about a tool is written into codemode.
 
 **Status.** The client and the five commands are tested offline against a
 stand-in server in both protocol eras and on both transports; `mise run demo`
-runs the whole flow. Live, an earlier build listed the tools of two public
-servers that speak revision 2026-07-28, and ran writes against a Composio Tool
-Router session ([details](#composio-tool-router)). The commands on this page
-have not been run against a live server.
+runs the whole flow. Live, the five commands ran one plan of 9 writes with
+GitHub and Linear tools through a Composio Tool Router session
+([details](#composio-tool-router)).
 
 ## The server file
 
@@ -259,7 +258,8 @@ status   not approved
 4 writes with 3 tools
 
 notes.delete  1 write  repeatable  destructive
-  drop-b  id="b"
+  drop-b
+    id  "b"
 
 notes.put  2 writes  repeatable
   different             id: 2 values ("c", "d")
@@ -270,7 +270,9 @@ notes.put  2 writes  repeatable
   put-d  "d"  "delta"
 
 notes.append  1 write  not repeatable
-  log  id="log"  text="tidied"
+  log
+    id    "log"
+    text  "tidied"
 
 Notes
   ! 1 write uses a tool the server marks destructive: notes.delete.
@@ -299,8 +301,11 @@ Next: codemode apply tidy.plan.json
 - Then it lists the writes: the identity and one column for each argument that
   differs. It shows 20 writes per tool and says how many it hides. A value
   over about 60 characters is cut and shown with its size in bytes.
-- A plan with one or two writes prints every argument in full.
-- `--full` prints every write with its arguments as canonical JSON, never cut.
+- A plan with one or two writes prints every argument in full, one per line.
+- A tool with one write prints its identity, then one argument per line. A
+  value over about 60 characters is cut and shown with its size in bytes.
+- `--full` prints every write in full, never cut: a tool with one write one
+  argument per line, the others as canonical JSON.
 - Notes appear only when they apply: a tool without annotations, a tool
   marked destructive, writes that are identical to another write, and that
   the classes come from the server's hints.
@@ -426,9 +431,10 @@ applied 1 · failed 1 · no reply 0 · not sent 2
 
 failed (1): the server answered with an error
   log  notes.append
-    "upstream said no"
+    upstream said no
     codemode cannot tell whether a failed write changed anything. Check the target, then run:
       codemode resolve tidy.plan.json log --as not-applied   (or --as applied)
+    Use --as skipped for a write that must not be sent.
 
 not sent (2)
   Run `codemode apply tidy.plan.json` to continue.
@@ -443,8 +449,9 @@ One line counts the writes. Sections follow, each only when it has writes:
 | --- | --- | --- |
 | failed | the server answered with an error that does not say whether the write changed anything | `resolve`; a repeatable write is sent again by `apply` |
 | no reply | the write may have reached the server, and no answer came back | `resolve`; a repeatable write is sent again by `apply` |
-| refused | the write was not applied and is not sent again: the server refused it before running it, or every attempt is used | fix the cause and `resolve --as not-applied`, or make a new plan |
+| refused | the write was not applied and is not sent again: the server refused it before running it, or every attempt is used | fix the cause and `resolve --as not-applied`, or make a new plan, or `resolve --as skipped` |
 | resolved by a person | a person recorded it as applied | nothing |
+| skipped by a person | a person recorded that it is not applied and must not be sent | nothing |
 | not sent | it was not sent yet, or it is known not to be applied and will be sent again | `apply` |
 | applied | the server answered with a result | nothing |
 
@@ -455,8 +462,9 @@ of identities stops at 20 and says how many it hides; `--full` prints all.
 The `status` line is one of: `not approved`, `approved, not started`,
 `running, or interrupted before it could record its end`, `stopped after N
 failures`, `finished with N failures`, `stopped at the deadline`, `cancelled`,
-`stopped with writes left to send`, `done: every write is applied`, and
-`edited after approval`. A session without a recorded end is running, or it
+`stopped with writes left to send`, `done: every write is applied`,
+`done: N applied, N skipped`, and `edited after approval`. A plan is done when every write is applied,
+resolved as applied, or skipped. A session without a recorded end is running, or it
 was killed; the journal cannot tell which.
 
 ### `--json`
@@ -476,7 +484,7 @@ was killed; the journal cannot tell which.
               "approved_at": "2026-11-11 15:14 UTC", "concurrency": 1, "max_attempts": 3,
               "digest": "sha256:535c97e0b847670c96b5ded03c3dbaac6f49046e3b3e617362a750ee9e3bff6c"},
  "counts": {"total": 4, "applied": 1, "failed": 1, "no_reply": 0, "refused": 0,
-            "resolved": 0, "not_sent": 2},
+            "resolved": 0, "skipped": 0, "not_sent": 2},
  "writes": [
    {"id": "put-c", "tool": "notes.put", "state": "applied", "attempts": 1,
     "error_code": null, "error_text": null, "answered": true, "next": "none"},
@@ -497,10 +505,12 @@ was killed; the journal cannot tell which.
   found the server file. `server.command` is present for a stdio server whose
   identity was shortened.
 - A write's `state` is `applied`, `failed`, `no_reply`, `refused`, `resolved`,
-  or `not_sent`. Its `next` is `none`, `apply`, `resolve`, or `new_plan`.
+  `skipped`, or `not_sent`. Its `next` is `none`, `apply`, `resolve`, or
+  `new_plan`. A skipped write has `next` `none`.
 - `error_code` and `error_text` describe the write's last attempt when it did
   not succeed; see [codes](#codes). `answered` says whether an answer came
-  back for it. A write that a person resolved also has `resolved_by`.
+  back for it. A write that a person resolved or skipped also has
+  `resolved_by`.
 - `plan --json` for a change list without operations prints
   `{"file": null, "state": "no_changes", "writes": []}`.
 
@@ -516,7 +526,7 @@ $ codemode resolve tidy.plan.json log --as not-applied
 Recording 1 write as not applied (reviewer demo):
 
   log  notes.append
-    "upstream said no"
+    upstream said no
 
 Recorded 1 write. Next: codemode apply tidy.plan.json
 ```
@@ -524,13 +534,23 @@ Recorded 1 write. Next: codemode apply tidy.plan.json
 - `--as applied`: the change is there. The write is done.
 - `--as not-applied`: the change is not there. `apply` sends the write again,
   while attempts are left.
+- `--as skipped`: the change is not there, and the write must not be sent.
+  `apply` never sends it, in this run or a later one. This is final. Use it
+  for a write that can never succeed, for example one whose target was
+  deleted after `plan`.
 - Name writes by identity, or select them: `--errors` takes every write in
   the `failed` section, and `--no-reply` every write in the `no reply`
   section. Identities and selectors can be combined. A `refused` write is
   resolved by its identity.
+- A write that was not sent yet can only be skipped, and only by its
+  identity. `--errors` and `--no-reply` never select it.
 - It prints what it selected, grouped by error text, and then records it.
-- It refuses a write that is applied, resolved, or not sent yet, and then
-  records nothing.
+- It refuses a write that is applied, resolved, or skipped, and a write that
+  was not sent yet unless it is skipped. It also refuses while the plan is not
+  approved or was edited. It then records nothing.
+- When every write is applied, resolved as applied, or skipped, the plan is
+  done. `status` then says, for example, `done: 7 applied, 2 skipped`, and
+  `apply` exits with 0.
 - The reviewer is `--reviewer <name>`, or `$USER`, or `unknown`. It is
   recorded as given and not authenticated.
 
@@ -538,7 +558,7 @@ Recorded 1 write. Next: codemode apply tidy.plan.json
 
 | Code | Meaning |
 | --- | --- |
-| 0 | Every write is applied or resolved, or there is nothing to change, or a command that only reads succeeded. |
+| 0 | Every write is applied, resolved as applied, or skipped, or there is nothing to change, or a command that only reads succeeded. |
 | 2 | Usage error, unreadable file, invalid plan, a server file that is not the plan's, a damaged or locked journal, or a server or program failure before any write. |
 | 3 | The plan needs attention: a write failed, has no answer, or was refused, or the run stopped with writes left to send. Also a journal failure after a run started, because a write may have been sent. |
 | 4 | Not approved: no approval was given, the digest was wrong, or the plan was edited after its approval. |
@@ -555,13 +575,14 @@ state.
 | A result that asks for input (elicitation, sampling, roots) | failed | see below |
 | The connection could not be made; nothing was sent | not sent | sent again by a later `apply`, while attempts are left |
 | HTTP 429 | not sent | sent again in the same run after a wait; see [rate limits](#rate-limits) |
-| HTTP 400, 401, 403, 404, 405, 406, 413, 415, or 431, or JSON-RPC error -32700, -32601, -32020, -32021, -32022 | refused | fix the cause, then `resolve --as not-applied` |
+| HTTP 400, 401, 403, 404, 405, 406, 413, 415, or 431, or JSON-RPC error -32700, -32601, -32020, -32021, -32022 | refused | fix the cause, then `resolve --as not-applied`, or `resolve --as skipped` |
 | Any other error or status, or a reply that is not valid MCP | failed | see below |
 | A broken stream, no reply, the deadline, cancellation, a killed `apply` | no reply | see below |
 
 For a **failed** write and for a write with **no reply**, the outcome is
 unknown. A repeatable write is sent again by a later `apply`, while attempts
-are left. A write waits for `codemode resolve`.
+are left. A write waits for `codemode resolve`. When it must not be sent
+again, for example because its target is gone, record it `--as skipped`.
 
 A tool error is unknown, not a plain failure, because `isError` does not say
 whether part of the work was done. This is strict: a plain validation error
@@ -672,6 +693,13 @@ line a stdio server writes to its standard error.
 `status` and `apply` print the text in the section of the write, and as
 `error_text` with `--json`. `resolve` prints it for what it selects.
 
+The text is printed as it is, without JSON quotes, on its own indented line.
+A control, bidirectional, or invisible character is printed as an escape such
+as `\u{1b}`, so a line break in the text never starts a new line. Without
+`--full`, each run of spaces is printed as one space, and a text longer than
+240 characters is cut and shows its whole size in bytes. `--json` carries the
+exact text.
+
 ## Protocol support
 
 - Revision **2026-07-28**: stateless requests with per-request `_meta`, the
@@ -696,8 +724,22 @@ needs one of them for a tool makes that call fail.
 with writes against production: label changes on one closed issue of this
 repository, [#3](https://github.com/jkomyno/codemode/issues/3), which ended
 with the labels it started with. Each write was compared with GitHub's own
-API. The check used the earlier commands (`codemode mcp ...`) at commit
-`9be2351` and has not been repeated with the commands on this page.
+API. That check used the earlier commands (`codemode mcp ...`) at commit
+`9be2351`.
+
+**The five commands, also on 2026-11-11.** One production session with
+GitHub and Linear tools preloaded and `write_tools` naming three of them. A
+program read the open `bug` issues of this repository and the Linear teams,
+and `plan` wrote 9 writes: one `LINEAR_CREATE_LINEAR_ISSUE`, and for each of
+four issues one `GITHUB_ADD_LABELS_TO_AN_ISSUE` and one
+`GITHUB_CREATE_AN_ISSUE_COMMENT`. One issue was deleted on purpose before
+`apply`. The Linear ticket went first and alone. Seven writes were applied,
+and GitHub and Linear showed them. The two writes for the deleted issue came
+back as tool errors with GitHub's 410 and 404. `resolve --errors --as
+skipped` recorded them, and the next `apply` exited with 0 and "done: 7
+applied, 2 skipped". The issues were closed and the ticket was cancelled
+afterwards. A Linear read with `first: 250` was refused by Linear as too
+complex, and `first: 50` worked.
 
 A Tool Router session has an MCP URL. By default the session lists three
 meta-tools (`COMPOSIO_SEARCH_TOOLS`, `COMPOSIO_GET_TOOL_SCHEMAS`,

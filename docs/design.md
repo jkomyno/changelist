@@ -207,13 +207,17 @@ This table gives the rule behind that list.
 | HTTP 429 | not sent | The same run waits and sends it again as a new attempt. When every attempt is used, the write is refused and needs a new plan. |
 | The request is rejected before the tool runs, by the server or by codemode | refused | It is not sent again. After a person fixes the cause and records `--as not-applied`, `apply` sends it while attempts are left. |
 | The connection cannot be made | not sent | A later `apply` sends it, while attempts are left. |
+| A person records `resolve --as skipped` | skipped | Nothing. The write is never sent again, in this run or a later one. |
 
-Every outcome except the first counts toward `--max-failures`. A 429 counts
+Every outcome of an attempt except the first counts toward `--max-failures`. A 429 counts
 only when no further attempt follows it in the same run.
 
 `resolve` adds a person's finding to the journal as one more fact. `applied`
 ends the write. `not-applied` lets `apply` send it again within the approved
-attempts. An answer settles only its own attempt. A repeatable write whose
+attempts. `skipped` ends the write as not applied: no later fact changes it,
+and no run sends or checks it again. A write that was not sent yet can be
+skipped too. A plan is done when every write is applied, resolved as applied,
+or skipped. An answer settles only its own attempt. A repeatable write whose
 first attempt got no reply and whose second was refused is still uncertain.
 
 ## The program worker
@@ -275,6 +279,6 @@ of `reconcile` for a server that can name such a read. It is not built.
   and move or delete them only when no command runs. Deleting or replacing
   the lock file while `apply` runs lets a second executor in.
 - **Formats are unreleased.** A plan file (version 1) or a journal (format
-  version 2) of another version is refused. There is no migration.
+  version 3) of another version is refused. There is no migration.
 - **Platforms and live servers.** CI runs the tests on Linux only, against an
   offline stand-in server. The [guide](mcp.md) says what was checked live.
