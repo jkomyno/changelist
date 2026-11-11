@@ -217,6 +217,7 @@ impl RecoverableProvider for Gated {
             )]
             .into(),
             retention: codemode::Retention::default(),
+            definitions: std::collections::BTreeMap::new(),
         }
     }
 

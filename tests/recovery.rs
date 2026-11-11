@@ -59,6 +59,8 @@ enum Behavior {
 #[derive(Clone)]
 struct Remote {
     contracts: BTreeMap<String, RecoveryContract>,
+    /// Tool definition digests, as a provider with externally defined tools declares them.
+    definitions: BTreeMap<String, codemode::Digest>,
     account: String,
     behaviors: Arc<Mutex<HashMap<String, Behavior>>>,
     /// Attempt keys the provider applied, in order.
@@ -82,6 +84,7 @@ impl Remote {
                     contract(RepeatSafety::Unsafe, ReconcileMethod::None),
                 ),
             ]),
+            definitions: BTreeMap::from([("label".to_string(), codemode::Digest::of(b"v1"))]),
             account: "bot".into(),
             behaviors: Arc::default(),
             applied: Arc::default(),
@@ -112,6 +115,7 @@ impl RecoverableProvider for Remote {
             account: self.account.clone(),
             contracts: self.contracts.clone(),
             retention: codemode::Retention::default(),
+            definitions: self.definitions.clone(),
         }
     }
 
@@ -338,7 +342,7 @@ async fn a_lost_response_is_reconciled_instead_of_repeated() {
 #[tokio::test]
 async fn changed_scope_contracts_or_authorization_refuse_before_sending() {
     let plan = plan(&[("a", "label")]);
-    let cases: [(&str, Change); 3] = [
+    let cases: [(&str, Change); 4] = [
         (
             "provider acts as test/other",
             Box::new(|r| r.account = "other".into()),
@@ -353,6 +357,13 @@ async fn changed_scope_contracts_or_authorization_refuse_before_sending() {
                         reconcile: ReconcileMethod::Receipt,
                     },
                 );
+            }),
+        ),
+        (
+            "tool definitions changed",
+            Box::new(|r| {
+                r.definitions
+                    .insert("label".into(), codemode::Digest::of(b"v2"));
             }),
         ),
         ("refused authorization", Box::new(|r| r.authorized = false)),

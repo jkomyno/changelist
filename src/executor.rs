@@ -642,6 +642,12 @@ fn check_approval(
                 .into(),
         );
     }
+    if current.definitions != approved.definitions {
+        return Err(
+            "the provider's tool definitions changed since approval; review and approve again"
+                .into(),
+        );
+    }
     let binding = approval_binding(plan.digest(), &current, &approval.policy);
     if binding != approval.binding || &approval.plan != plan.digest() {
         return Err("the approval does not bind this plan, provider, and policy".into());

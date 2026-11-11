@@ -75,6 +75,7 @@ integrations/composio/examples/triage.ts
 types/codemode.d.ts
 docs/installation.md
 docs/composio-github.md
+docs/mcp.md
 docs/integrations.md
 docs/recovery.md
 docs/operator-trial.md

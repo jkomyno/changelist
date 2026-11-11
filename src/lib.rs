@@ -28,6 +28,7 @@ pub mod fixture;
 mod inspect;
 mod journal;
 mod json;
+pub mod mcp;
 mod plan;
 mod plan_bridge;
 mod plan_inspect;

@@ -13,6 +13,7 @@ use codemode::{
     serve_bridge,
 };
 
+mod mcp_cli;
 mod plan_cli;
 
 const MAX_TRACE_BYTES: u64 = 64 * 1024 * 1024;
@@ -22,6 +23,7 @@ Usage:
   codemode bridge [options]
   codemode inspect <trace.json|-> [inspect options]
   codemode plan <check|approve|run|resume|inspect|review|trace> ...  (see codemode plan --help)
+  codemode mcp <tools|investigate|declare|run|resume> ...           (see codemode mcp --help)
 
 Options:
   -h, --help             Show this help
@@ -77,6 +79,7 @@ enum Command {
     Bridge(RunConfig),
     Inspect(InspectArgs),
     Plan(Vec<std::ffi::OsString>),
+    Mcp(Vec<std::ffi::OsString>),
 }
 
 fn parse_inspect(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<Command, CliError> {
@@ -129,9 +132,10 @@ fn parse_arguments() -> Result<Command, CliError> {
         Some("bridge") => {}
         Some("inspect") => return parse_inspect(args),
         Some("plan") => return Ok(Command::Plan(args.collect())),
+        Some("mcp") => return Ok(Command::Mcp(args.collect())),
         Some(other) => {
             return Err(CliError(format!(
-                "unknown command '{other}'; expected 'bridge', 'inspect', or 'plan'; use --help for usage"
+                "unknown command '{other}'; expected 'bridge', 'inspect', 'plan', or 'mcp'; use --help for usage"
             )));
         }
     }
@@ -243,6 +247,7 @@ async fn execute() -> Result<u8, Box<dyn Error>> {
             Ok(0)
         }
         Command::Plan(args) => plan_cli::execute(args).await,
+        Command::Mcp(args) => mcp_cli::execute(args).await,
         Command::Inspect(args) => {
             let text = read_input(&args.trace, MAX_TRACE_BYTES, "trace")?;
             let report: RunReport = serde_json::from_str(&text)

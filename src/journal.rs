@@ -1967,6 +1967,7 @@ mod tests {
             account: "x".into(),
             contracts: std::collections::BTreeMap::new(),
             retention: Retention::default(),
+            definitions: std::collections::BTreeMap::new(),
         };
         let policy = crate::recovery::RecoveryPolicy::default();
         let long = "\u{e9}".repeat(MAX_TEXT_BYTES);
