@@ -81,13 +81,13 @@ Exit status for run and resume: 0 every operation is applied or satisfied;
 
 const BOOLEAN_FLAGS: &[&str] = &["--json", "--messages", "--bridge"];
 
-struct Flags {
+pub(crate) struct Flags {
     positional: Vec<String>,
     values: HashMap<String, String>,
 }
 
 impl Flags {
-    fn parse(args: Vec<OsString>, allowed: &[&str]) -> Result<Self, CliError> {
+    pub(crate) fn parse(args: Vec<OsString>, allowed: &[&str]) -> Result<Self, CliError> {
         let mut positional = Vec::new();
         let mut values = HashMap::new();
         let mut args = args.into_iter();
@@ -116,20 +116,24 @@ impl Flags {
         Ok(Self { positional, values })
     }
 
-    fn get(&self, flag: &str) -> Option<&str> {
+    pub(crate) fn get(&self, flag: &str) -> Option<&str> {
         self.values.get(flag).map(String::as_str)
     }
 
-    fn has(&self, flag: &str) -> bool {
+    pub(crate) fn has(&self, flag: &str) -> bool {
         self.values.contains_key(flag)
     }
 
-    fn require(&self, flag: &str) -> Result<&str, CliError> {
+    pub(crate) fn require(&self, flag: &str) -> Result<&str, CliError> {
         self.get(flag)
             .ok_or_else(|| CliError(format!("{flag} is required")))
     }
 
-    fn number<T: std::str::FromStr>(&self, flag: &str, default: T) -> Result<T, CliError> {
+    pub(crate) fn number<T: std::str::FromStr>(
+        &self,
+        flag: &str,
+        default: T,
+    ) -> Result<T, CliError> {
         match self.get(flag) {
             None => Ok(default),
             Some(text) => text
@@ -157,7 +161,7 @@ fn read_declaration(path: &PathBuf) -> Result<ProviderDeclaration, Box<dyn Error
         .map_err(|error| CliError(format!("not a provider declaration: {error}")).into())
 }
 
-fn print_json(value: &impl serde::Serialize) -> Result<(), Box<dyn Error>> {
+pub(crate) fn print_json(value: &impl serde::Serialize) -> Result<(), Box<dyn Error>> {
     let mut stdout = io::stdout().lock();
     serde_json::to_writer(&mut stdout, value)?;
     writeln!(stdout)?;
@@ -271,6 +275,12 @@ fn check(flags: Flags) -> Result<u8, Box<dyn Error>> {
                 value["reconcile"].as_str().unwrap_or("?"),
                 value["repeat"].as_str().unwrap_or("?")
             ));
+        }
+        if let Some(definition) = declaration
+            .as_ref()
+            .and_then(|declaration| declaration.definitions.get(&operation.tool))
+        {
+            out.push_str(&format!("    tool definition {definition}\n"));
         }
     }
     match &declaration {

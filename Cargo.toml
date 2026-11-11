@@ -30,6 +30,11 @@ path = "src/bin/codemode-fixture.rs"
 required-features = ["testkit"]
 
 [[bin]]
+name = "codemode-mcp-fixture"
+path = "src/bin/codemode-mcp-fixture.rs"
+required-features = ["testkit"]
+
+[[bin]]
 name = "codemode-recovery-eval"
 path = "src/bin/codemode-recovery-eval.rs"
 required-features = ["testkit"]
@@ -43,6 +48,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2 = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "sync", "time", "signal", "fs"] }
+base64 = "0.23.1"
+url = "2.5.8"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
 
 # Applies the worker's process data limit (RLIMIT_DATA) without unsafe code.
 [target.'cfg(target_os = "linux")'.dependencies]
